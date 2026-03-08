@@ -1,0 +1,60 @@
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: MULTI_GPU
+downcast_bf16: 'no'
+gpu_ids: '0,1,2,3'
+machine_rank: 0
+main_training_function: main
+mixed_precision: 'no'
+num_machines: 1
+num_processes: 4
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false
+# compute_environment: LOCAL_MACHINE
+# debug: false
+# distributed_type: DEEPSPEED
+# downcast_bf16: 'no'
+# gpu_ids: '0,1,2,3'  
+# machine_rank: 0
+# main_training_function: main
+# mixed_precision: 'no'
+# num_machines: 1
+# num_processes: 4 
+# rdzv_backend: static
+# same_network: true
+# tpu_env: []
+# tpu_use_cluster: false
+# tpu_use_sudo: false
+# use_cpu: false
+# deepspeed_config:
+#   zero_stage: 1
+#   overlap_comm: false
+#   contiguous_gradients: true
+#   gradient_accumulation_steps: 1
+#   gradient_clipping: 1.0
+
+# compute_environment: LOCAL_MACHINE
+# distributed_type: DEEPSPEED
+# gpu_ids: "0,1,2,3"
+# num_machines: 1
+# num_processes: 4
+# machine_rank: 0
+# same_network: true
+# main_training_function: main
+# use_cpu: false
+
+# mixed_precision: fp16           
+
+
+# deepspeed_config:
+#   zero_stage: 2                 
+#   overlap_comm: false           
+#   contiguous_gradients: true
+#   reduce_scatter: true
+#   gradient_accumulation_steps: 1
+#   gradient_clipping: 1.0
+

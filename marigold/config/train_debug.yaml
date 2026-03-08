@@ -1,0 +1,29 @@
+base_config:
+- config/train_marigold.yaml
+
+
+# Training settings
+trainer:
+  save_period: 1
+  backup_period: 1
+  validation_period: 1
+  visualization_period: 1
+
+dataloader:
+  num_workers: 2
+  effective_batch_size: 4
+  max_train_batch_size: 2
+  seed: null  # to ensure continuity when resuming from checkpoint
+
+max_iter: 1
+
+# Validation (and visualization) settings
+validation:
+  denoising_steps: 50
+  ensemble_size: 1  # simplified setting for on-training validation
+  processing_res: 0
+  match_input_res: false
+  resample_method: bilinear
+  main_val_metric: abs_relative_difference
+  main_val_metric_goal: minimize
+  init_seed: 2024

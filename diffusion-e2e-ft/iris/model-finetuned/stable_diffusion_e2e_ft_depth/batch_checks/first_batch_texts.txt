@@ -1,0 +1,6 @@
+First Batch - Batch Size: 1
+================================================================================
+
+Image 0:
+The image shows a spacious, modern living area with a large TV screen and red leather chairs in the foreground, illuminated from above, bookshelves filled with books stacked high on a loft, and a kitchen in the background, with objects at varying distances contributing to depth perception.
+--------------------------------------------------------------------------------

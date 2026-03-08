@@ -1,0 +1,26 @@
+
+# ignore these folders
+/checkpoint
+/data
+/input
+/output
+/temp
+/wandb
+/venv
+/cache
+/Marigold_text
+/Others
+ssh
+ssh.pub
+
+**/.ipynb_checkpoints/
+.vscode/
+.idea
+
+# ignore these types
+*.pyc
+*.out
+*.log
+*.mexa64
+*.pdf
+*.tar
