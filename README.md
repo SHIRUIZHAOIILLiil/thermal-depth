@@ -17,7 +17,7 @@
 </p>
 
 <p>
-  <sup>1</sup>Yale University &ensp; <sup>2</sup>Brown University &ensp; <sup>3</sup>Korea University
+  <sup>1</sup>Yale University &ensp; <sup>2</sup>Brown University &ensp; <sup>3</sup>Chung-Ang University
 </p>
 
 <p><sup>*</sup>Equal contribution</p>
