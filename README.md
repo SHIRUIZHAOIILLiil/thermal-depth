@@ -22,6 +22,8 @@
 
 <p><sup>*</sup>Equal contribution</p>
 
+![pipeline](./img/iris.png)
+
 
 ## Overview
 
