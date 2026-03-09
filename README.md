@@ -1,5 +1,5 @@
-<h1><img src="./img/Iris_logo.png" style="height: 2em; vertical-align: middle;">Iris: Integrating Language into Diffusion-based Monocular Depth Estimation</h1>
-
+<!-- <h1><img src="./img/Iris_logo.png" style="height: 2em; vertical-align: middle;">Iris: Integrating Language into Diffusion-based Monocular Depth Estimation</h1> -->
+<h1>Iris: Integrating Language into Diffusion-based Monocular Depth Estimation</h1>
 <p>
   <a href="https://arxiv.org/abs/2411.16750"><img src="https://img.shields.io/badge/arXiv-2411.16750-b31b1b?style=flat&logo=arxiv&logoColor=white" alt="arXiv"></a>
   <a href="https://adonis-galaxy.github.io/Iris-website/"><img src="https://img.shields.io/badge/Project-Website-4a90d9?style=flat&logo=googlechrome&logoColor=white" alt="Project Website"></a>
@@ -21,6 +21,7 @@
 </p>
 
 <p><sup>*</sup>Equal contribution</p>
+<p>Accepted by CVPR 2026</p>
 
 ![pipeline](./img/iris.png)
 
