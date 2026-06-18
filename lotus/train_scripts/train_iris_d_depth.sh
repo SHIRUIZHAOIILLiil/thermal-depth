@@ -1,10 +1,10 @@
 # export PYTHONPATH="$(dirname "$(dirname "$0")"):$PYTHONPATH"
 
-export MODEL_NAME="stabilityai/stable-diffusion-2-base"
+export MODEL_NAME="${MODEL_NAME:-stabilityai/stable-diffusion-2-base}"
 
 # training dataset
-export TRAIN_DATA_DIR_HYPERSIM=../data/hypersim
-export TRAIN_DATA_DIR_VKITTI=../data/vkitti
+export TRAIN_DATA_DIR_HYPERSIM="${TRAIN_DATA_DIR_HYPERSIM:-../data/hypersim}"
+export TRAIN_DATA_DIR_VKITTI="${TRAIN_DATA_DIR_VKITTI:-../data/vkitti}"
 export RES_HYPERSIM=576
 export RES_VKITTI=375
 export P_HYPERSIM=0.9
@@ -12,7 +12,7 @@ export NORMTYPE="trunc_disparity"
 
 # training configs
 export BATCH_SIZE=4
-export CUDA=123
+export CUDA="${CUDA:-0}"
 export GAS=3
 export TOTAL_BSZ=$(($BATCH_SIZE * ${#CUDA} * $GAS))
 
@@ -21,15 +21,15 @@ export TIMESTEP=999
 export TASK_NAME="depth"
 
 # eval
-export BASE_TEST_DATA_DIR="../datasets/eval/"
-export VALIDATION_IMAGES="../datasets/quick_validation/"
+export BASE_TEST_DATA_DIR="${BASE_TEST_DATA_DIR:-../datasets/eval/}"
+export VALIDATION_IMAGES="${VALIDATION_IMAGES:-../datasets/quick_validation/}"
 export VAL_STEP=500
 
 # output dir
-export OUTPUT_DIR="output/iris_d/train-lotus-d-${TASK_NAME}-bsz${TOTAL_BSZ}/"
+export OUTPUT_DIR="${OUTPUT_DIR:-output/iris_d/train-lotus-d-${TASK_NAME}-bsz${TOTAL_BSZ}/}"
 
-export HYPERSIM_TEXT_PATH="internVL/outputs/lotus/hypersim_depth_descriptions.json"
-export VKITTI_TEXT_PATH="internVL/outputs/lotus/vkitti_depth_descriptions.json"
+export HYPERSIM_TEXT_PATH="${HYPERSIM_TEXT_PATH:-../internVL/outputs/lotus/hypersim_depth_descriptions.json}"
+export VKITTI_TEXT_PATH="${VKITTI_TEXT_PATH:-../internVL/outputs/lotus/vkitti_depth_descriptions.json}"
 
 accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision="fp16" \
   --main_process_port="13324" \

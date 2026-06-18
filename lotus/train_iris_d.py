@@ -1136,6 +1136,15 @@ def main():
                 for _ in range(bsz_per_task):
                     all_prompts.append("")
 
+                    """
+                        batch["pixel_values"]       RGB 图像
+                        batch["depth_values"]       GT depth
+                        batch["normal_values"]      GT normal，如果训练 normal
+                        batch["valid_mask_values"]  有效 depth 区域 mask
+                        batch["sky_mask_values"]    天空区域 mask，有些 depth 数据会特殊处理
+                        batch["text_descriptions"]  caption / 文本描述
+                    """
+
 
 
 

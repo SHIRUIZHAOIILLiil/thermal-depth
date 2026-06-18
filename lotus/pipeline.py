@@ -1018,17 +1018,17 @@ class LotusDPipeline(DirectDiffusionPipeline):
     @torch.no_grad()
     def __call__(
         self,
-        rgb_in: Optional[torch.FloatTensor] = None,
-        task_emb: Optional[torch.FloatTensor] = None,
+        rgb_in: Optional[torch.FloatTensor] = None, # 输入图像 tensor，形状大概是 [B, 3, H, W]，范围 [-1, 1]
+        task_emb: Optional[torch.FloatTensor] = None, # 任务 embedding，告诉模型现在做 depth / normal / reconstruction
         prompt: Union[str, List[str]] = None,
-        timesteps: List[int] = None,
+        timesteps: List[int] = None, # diffusion timestep，但 Lotus-D 只用一个 timestep
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
-        processing_res: Optional[int] = None,
-        match_input_res: bool = True,
+        processing_res: Optional[int] = None, # 处理分辨率
+        match_input_res: bool = True, # 输出是否 resize 回原图大小
         resample_method: str = "bilinear",
         **kwargs,
     ):
@@ -1118,7 +1118,7 @@ class LotusDPipeline(DirectDiffusionPipeline):
         timesteps = torch.tensor(timesteps, device=device).long()
 
         # 4. Prepare latent variables
-        rgb_latents = self.vae.encode(rgb_in.to(device)).latent_dist.sample()
+        rgb_latents = self.vae.encode(rgb_in.to(device)).latent_dist.sample() # 可能会调换的位置
         rgb_latents = rgb_latents * self.vae.config.scaling_factor
 
         # 5. Denoising
@@ -1141,7 +1141,7 @@ class LotusDPipeline(DirectDiffusionPipeline):
             image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
         else:
             image = pred
-            has_nsfw_concept = None
+            has_nsfw_concept = None # Stable Diffusion 是文生图模型，所以原本会有 safety checker，判断生成图片有没有 NSFW 内容。
 
         if has_nsfw_concept is None:
             do_denormalize = [True] * image.shape[0]
@@ -1163,7 +1163,7 @@ class LotusDPipeline(DirectDiffusionPipeline):
 
         return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
 
-class LotusGPipeline(DirectDiffusionPipeline):
+class LotusGPipeline(DirectDiffusionPipeline): # 不是一步预测，而是从一个随机 latent 开始，一步步去噪。
     default_processing_resolution = 768
     @torch.no_grad()
     def __call__(
@@ -1171,11 +1171,11 @@ class LotusGPipeline(DirectDiffusionPipeline):
         rgb_in: Optional[torch.FloatTensor] = None, # Modification 240430
         task_emb: Optional[torch.FloatTensor] = None, 
         prompt: Union[str, List[str]] = None,
-        num_inference_steps: int = 50,
+        num_inference_steps: int = 50, #  denoising 步数
         timesteps: List[int] = None,
-        eta: float = 0.0,
+        eta: float = 0.0,  #  scheduler 用的随机性参数
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-        latents: Optional[torch.FloatTensor] = None,
+        latents: Optional[torch.FloatTensor] = None, # 初始噪声 latent，可手动传入
         prompt_embeds: Optional[torch.FloatTensor] = None,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
@@ -1282,7 +1282,7 @@ class LotusGPipeline(DirectDiffusionPipeline):
         timesteps = torch.tensor(timesteps, device=device).long()
     
         # 5. Prepare latent variables
-        num_channels_latents = self.unet.config.in_channels // 2
+        num_channels_latents = self.unet.config.in_channels // 2 # 因为 Lotus-G 的 UNet 输入后面会拼接两部分：rgb_latents + noisy_depth_latents。如果 UNet 总输入通道是 8，那每一半就是 4：
         latents = self.prepare_latents(
             batch_size,
             num_channels_latents,

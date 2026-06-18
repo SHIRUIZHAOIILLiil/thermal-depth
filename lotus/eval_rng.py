@@ -68,6 +68,12 @@ def parse_args():
         default="datasets/eval/"
     )
     parser.add_argument(
+        "--eval_config_dir",
+        type=str,
+        default=None,
+        help="Directory containing evaluation YAML configs. Defaults to the depth data directory.",
+    )
+    parser.add_argument(
         "--half_precision",
         action="store_true",
         help="Run with half-precision (16-bit float), might lead to suboptimal result.",
@@ -134,6 +140,19 @@ def parse_args():
         "--strict_text_mode",
         action="store_true",
         help="Stop evaluation if any image is missing text description",
+    )
+    parser.add_argument(
+        "--eval_datasets",
+        nargs="+",
+        choices=["nyuv2", "kitti", "scannet", "diode", "eth3d"],
+        default=["nyuv2", "kitti", "scannet", "diode", "eth3d"],
+        help="Depth datasets to evaluate. Defaults to all supported datasets.",
+    )
+    parser.add_argument(
+        "--max_eval_samples",
+        type=int,
+        default=None,
+        help="Limit each selected depth dataset to its first N samples.",
     )
     
     args = parser.parse_args()
@@ -385,6 +404,7 @@ def main():
     with torch.no_grad():
         if args.task_name == 'depth':
             test_data_dir = os.path.join(args.base_test_data_dir, args.task_name)
+            eval_config_dir = args.eval_config_dir or test_data_dir
             test_depth_dataset_configs = {
                 "nyuv2": "configs/data_nyu_test.yaml", 
                 "kitti": "configs/data_kitti_eigen_test.yaml",
@@ -393,11 +413,14 @@ def main():
                 "eth3d": "configs/data_eth3d.yaml",
             }
             for dataset_name, config_path in test_depth_dataset_configs.items():
+                if dataset_name not in args.eval_datasets:
+                    continue
                 eval_dir = os.path.join(args.output_dir, args.task_name, dataset_name)
-                test_dataset_config = os.path.join(test_data_dir, config_path)
+                test_dataset_config = os.path.join(eval_config_dir, config_path)
                 alignment_type = "least_square_disparity" if args.disparity else "least_square"
                 metric_tracker = evaluation_depth(eval_dir, test_dataset_config, test_data_dir, eval_mode="generate_prediction",
-                                                  gen_prediction=gen_depth_with_text, pipeline=pipeline, alignment=alignment_type, processing_res=None)
+                                                  gen_prediction=gen_depth_with_text, pipeline=pipeline, alignment=alignment_type,
+                                                  processing_res=None, max_samples=args.max_eval_samples)
                 print(dataset_name,',', 'abs_relative_difference: ', metric_tracker.result()['abs_relative_difference'], 'delta1_acc: ', metric_tracker.result()['delta1_acc'])
         elif args.task_name == 'normal':
             test_data_dir = os.path.join(args.base_test_data_dir, args.task_name)

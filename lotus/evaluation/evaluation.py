@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 from tabulate import tabulate
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torchvision.transforms.functional import pil_to_tensor, resize, InterpolationMode
 from tqdm.auto import tqdm
 import cv2
@@ -50,7 +50,7 @@ eval_metrics = [
 def evaluation_depth(output_dir, dataset_config, base_data_dir, eval_mode, pred_suffix="", 
                      alignment="least_square", alignment_max_res=None, prediction_dir=None, 
                      gen_prediction=None, pipeline=None, save_pred=False, save_pred_vis=False,
-                     processing_res=None,
+                     processing_res=None, max_samples=None,
                      ):
     '''
     if eval_mode == "load_prediction": assert prediction_dir is not None
@@ -75,7 +75,13 @@ def evaluation_depth(output_dir, dataset_config, base_data_dir, eval_mode, pred_
         cfg_data, base_data_dir=base_data_dir, mode=DatasetMode.EVAL
     )
 
-    dataloader = DataLoader(dataset, batch_size=1, num_workers=8, pin_memory=True)
+    dataset_for_loader = dataset
+    if max_samples is not None:
+        sample_count = min(max_samples, len(dataset))
+        dataset_for_loader = Subset(dataset, range(sample_count))
+        logging.info(f"Limiting evaluation to {sample_count} sample(s).")
+
+    dataloader = DataLoader(dataset_for_loader, batch_size=1, num_workers=8, pin_memory=True)
 
     # -------------------- Eval metrics --------------------
     metric_funcs = [getattr(metric, _met) for _met in eval_metrics]
