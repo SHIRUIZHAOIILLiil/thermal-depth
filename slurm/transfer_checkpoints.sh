@@ -22,6 +22,16 @@ CALIB_SRC="$IRIS_LOCAL/outputs/route_suite/b_thermal_unet_20ep/epoch05_weights.p
 STAGE1_SRC="$IRIS_LOCAL/outputs/route_suite/c1_vae_adapter_20ep/best_weights.pt"
 MIDAS_SRC="$ANYTHERMAL_LOCAL/_download/pretrained_checkpoints/depth"
 
+# 先把连接建起来。不预热的话，认证提示会夹在传输输出里冒出来，
+# 看上去像是 rsync 卡死（其实是 ssh 在等 Duo）。
+warm_connection() {
+  echo "建立 SSH 连接（需要密码 + Duo，之后 8 小时复用）……"
+  if ! ssh -o ConnectTimeout=30 "$REMOTE" 'echo "已连上 $(hostname)"'; then
+    echo "!! 连不上 $REMOTE，检查 ~/.ssh/config、VPN 或跳板机"
+    exit 1
+  fi
+}
+
 send_file() {
   local src="$1" dstdir="$2"
   if [[ ! -f "$src" ]]; then echo "!! 本地不存在，跳过: $src"; return 1; fi
@@ -39,6 +49,8 @@ send_dir() {
   ssh "$REMOTE" "mkdir -p '$dstdir'"
   rsync -aP "$src/" "$REMOTE:$dstdir/"
 }
+
+warm_connection
 
 case "${1:-check}" in
   check)
