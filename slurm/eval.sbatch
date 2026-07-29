@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
-#SBATCH --time=04:00:00
+#SBATCH --time=00:30:00  # 全量 5810 帧实测 8.3 分钟
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #
@@ -53,6 +53,9 @@ ARGS=(
   --route "$ROUTE"
   --output-dir "$OUT"
   --ms2-root "$IRIS_MS2_ROOT"
+  # 评估不读训练集，但脚本仍会哈希校验它并写进 config 记录；
+  # 与训练作业保持同一份，免得记录里留下旧 manifest
+  --train-manifest "${TRAIN_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_train_day2seq_clip75_20260728.jsonl}"
   --eval-checkpoint "$CKPT"
   --val-stride "${VAL_STRIDE:-1}"
   --val-caption-mode "${CAPTION_MODE:-empty}"
