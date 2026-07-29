@@ -89,9 +89,18 @@ if [[ "${CAPTION:-0}" == "1" ]]; then
   ARGS+=(--caption-mode correct --val-caption-mode correct)
 fi
 
-if [[ -n "${INIT_FROM:-}" ]]; then
+# --init-from 起新跑、--resume 接旧跑，脚本层面互斥。已有 latest.pt 时优先续跑并
+# 忽略 INIT_FROM —— 否则一个被墙钟砍掉的 48h 作业，按原命令重投会从头再来。
+RESUMING=0
+if [[ "${SMOKE:-0}" != "1" && "${OVERFIT:-0}" != "1" && -f "$OUT/latest.pt" ]]; then
+  RESUMING=1
+fi
+
+if [[ -n "${INIT_FROM:-}" && "$RESUMING" == "0" ]]; then
   [[ -f "$INIT_FROM" ]] || { echo "!! 找不到 INIT_FROM=$INIT_FROM"; exit 1; }
   ARGS+=(--init-from "$INIT_FROM")
+elif [[ -n "${INIT_FROM:-}" && "$RESUMING" == "1" ]]; then
+  echo "=== 已有 latest.pt，忽略 INIT_FROM 转为续跑 ==="
 fi
 [[ "${FREEZE_ADAPTER:-0}" == "1" ]] && ARGS+=(--freeze-adapter)
 
@@ -103,8 +112,7 @@ elif [[ "${OVERFIT:-0}" == "1" ]]; then
   ARGS+=(--overfit-steps "${OVERFIT_STEPS:-300}" --overfit-samples "${OVERFIT_SAMPLES:-32}" --skip-val)
 else
   ARGS+=(--epochs "$EPOCHS" --snapshot-epochs "${SNAPSHOT_EPOCHS:-1,2,3,5,10,15}")
-  # --init-from 起新跑，--resume 接旧跑，两者互斥；有 INIT_FROM 时不自动 resume
-  if [[ -z "${INIT_FROM:-}" && -f "$OUT/latest.pt" ]]; then
+  if [[ "$RESUMING" == "1" ]]; then
     echo "=== 发现 $OUT/latest.pt，续跑 ==="
     ARGS+=(--resume "$OUT/latest.pt")
   fi
