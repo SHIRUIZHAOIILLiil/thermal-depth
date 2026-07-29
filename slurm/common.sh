@@ -37,7 +37,8 @@ export DATALOADER_WORKERS="${DATALOADER_WORKERS:-7}"
 export MAIN_PROCESS_PORT="$((20000 + ${SLURM_JOB_ID:-0} % 20000))"
 
 echo "=== job ${SLURM_JOB_ID:-N/A} on $(hostname) ==="
-nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv
+# CPU 分区的作业（预取权重、建环境）没有 GPU，set -e 下不能让它中止
+nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv 2>/dev/null || echo "(本节点无 GPU)"
 echo "repo=$IRIS_REPO"
 echo "ms2 =$IRIS_MS2_ROOT"
 echo "mfst=$IRIS_MANIFEST_DIR"
