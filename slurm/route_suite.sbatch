@@ -15,6 +15,10 @@
 #   ROUTE=b_thermal_unet SMOKE=1 sbatch -J smoke_b --time=00:30:00 \
 #     --export=ALL,ROUTE,SMOKE $HOME/Iris/slurm/route_suite.sbatch
 #
+# 过拟合自检（300 步吃 32 个样本，看 loss 能不能压到接近 0）：
+#   ROUTE=d1_anythermal_adapter OVERFIT=1 sbatch -J overfit_d1 --time=02:00:00 \
+#     --export=ALL,ROUTE,OVERFIT $HOME/Iris/slurm/route_suite.sbatch
+#
 # 全量 20 epoch：
 #   ROUTE=b_thermal_unet sbatch -J route_b --export=ALL,ROUTE \
 #     $HOME/Iris/slurm/route_suite.sbatch
@@ -33,7 +37,18 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
 : "${ROUTE:?必须指定 ROUTE，例如 ROUTE=b_thermal_unet}"
 EPOCHS="${EPOCHS:-20}"
-OUT="$IRIS_RUNS/route_suite/${RUN_TAG:-$ROUTE}"
+TAG="${RUN_TAG:-$ROUTE}"
+
+# validate_args() 要求：--smoke-updates 的输出目录名必须含 "smoke"，
+# --overfit-steps 的必须含 "overfit"。这是防止短跑覆盖正式训练输出的护栏，
+# 目录名要跟着模式走，不能只用 route 名。
+if [[ "${SMOKE:-0}" == "1" ]]; then
+  OUT="$IRIS_RUNS/route_suite/smoke_$TAG"
+elif [[ "${OVERFIT:-0}" == "1" ]]; then
+  OUT="$IRIS_RUNS/route_suite/overfit_$TAG"
+else
+  OUT="$IRIS_RUNS/route_suite/$TAG"
+fi
 mkdir -p "$OUT"
 
 cd "$IRIS_REPO"
@@ -45,8 +60,11 @@ ARGS=(
 )
 
 if [[ "${SMOKE:-0}" == "1" ]]; then
-  echo "=== 冒烟模式：5 个 update，跳过验证 ==="
-  ARGS+=(--smoke-updates 5 --skip-val)
+  echo "=== 冒烟模式：${SMOKE_UPDATES:-5} 个 update，跳过验证 ==="
+  ARGS+=(--smoke-updates "${SMOKE_UPDATES:-5}" --skip-val)
+elif [[ "${OVERFIT:-0}" == "1" ]]; then
+  echo "=== 过拟合自检：${OVERFIT_STEPS:-300} 步 / ${OVERFIT_SAMPLES:-32} 样本 ==="
+  ARGS+=(--overfit-steps "${OVERFIT_STEPS:-300}" --overfit-samples "${OVERFIT_SAMPLES:-32}" --skip-val)
 else
   ARGS+=(--epochs "$EPOCHS" --snapshot-epochs "${SNAPSHOT_EPOCHS:-1,2,5,10,15}")
   # 断点续跑：48h 墙钟不够跑完 20 epoch 时，重投同一个 ROUTE 自动接上
