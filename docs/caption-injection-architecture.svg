@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 3840 2160" role="img" aria-labelledby="title desc">
+  <title id="title">Caption injection in the AnyThermal–Lotus framework</title>
+  <desc id="desc">Caption text is encoded by a frozen tokenizer and CLIP text encoder. The resulting text embedding enters the frozen teacher and trainable student U-Nets through cross-attention as encoder hidden states. Thermal condition and noisy latent remain the spatial input path. Caption is not concatenated with the thermal latent.</desc>
+  <defs>
+    <style>
+      .all{font-family:"Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif}.bg{fill:#f7f8fb}.ink{fill:#182135}.muted{fill:#667188}.white{fill:#fff}.navy{fill:#202c4b}.navy2{fill:#2d3b60}.orange{fill:#ef5b2a}.orangeSoft{fill:#fff2ec}.teal{fill:#087f8c}.tealSoft{fill:#eaf7f8}.card{fill:#fff;stroke:#d6deeb;stroke-width:3}.panel{fill:#fff;stroke:#d6deeb;stroke-width:3}.teacherLane{fill:#f0f3f9;stroke:#cad3e2;stroke-width:3}.studentLane{fill:#fff7f3;stroke:#efb29b;stroke-width:3}.title{font-size:72px;font-weight:500}.subtitle{font-size:34px}.section{font-size:40px;font-weight:500}.nodeTitle{font-size:38px;font-weight:500}.nodeSub{font-size:28px}.small{font-size:24px}.tiny{font-size:21px}.mono{font-family:Consolas,Menlo,monospace}.flow{fill:none;stroke:#6e7b92;stroke-width:7;marker-end:url(#m-gray)}.trainFlow{fill:none;stroke:#ef5b2a;stroke-width:8;marker-end:url(#m-orange)}.textFlow{fill:none;stroke:#087f8c;stroke-width:8;marker-end:url(#m-teal)}.thinText{fill:none;stroke:#087f8c;stroke-width:5;marker-end:url(#m-teal)}.dashed{fill:none;stroke:#ef5b2a;stroke-width:6;stroke-dasharray:18 14;marker-end:url(#m-orange)}
+    </style>
+    <marker id="m-gray" markerUnits="userSpaceOnUse" markerWidth="18" markerHeight="18" refX="16" refY="9" orient="auto"><path d="M0 0L18 9 0 18Z" fill="#6e7b92"/></marker>
+    <marker id="m-orange" markerUnits="userSpaceOnUse" markerWidth="20" markerHeight="20" refX="18" refY="10" orient="auto"><path d="M0 0L20 10 0 20Z" fill="#ef5b2a"/></marker>
+    <marker id="m-teal" markerUnits="userSpaceOnUse" markerWidth="20" markerHeight="20" refX="18" refY="10" orient="auto"><path d="M0 0L20 10 0 20Z" fill="#087f8c"/></marker>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="7" stdDeviation="12" flood-color="#202c4b" flood-opacity=".10"/></filter>
+  </defs>
+
+  <rect class="bg" width="3840" height="2160"/>
+  <g class="all">
+    <text x="90" y="92" class="small" fill="#ef5b2a" font-weight="500" letter-spacing="5">CAPTION INJECTION</text>
+    <text x="90" y="188" class="title ink">Caption 到底从哪里进入 Thermal–Lotus？</text>
+    <text x="90" y="250" class="subtitle muted">空间条件走 U-Net 输入通道；文本条件只走 Cross-Attention。两者不会拼在一起。</text>
+
+    <g transform="translate(3020 82)">
+      <rect width="210" height="66" rx="13" class="navy"/><text x="105" y="45" text-anchor="middle" class="nodeSub white">冻结模块</text>
+      <rect x="230" width="210" height="66" rx="13" class="orange"/><text x="335" y="45" text-anchor="middle" class="nodeSub white">可训练模块</text>
+      <rect x="460" width="250" height="66" rx="13" class="teal"/><text x="585" y="45" text-anchor="middle" class="nodeSub white">Caption 路径</text>
+    </g>
+
+    <rect x="75" y="300" width="3690" height="112" rx="22" class="navy"/>
+    <text x="1920" y="372" text-anchor="middle" class="section white">核心：Caption → encoder_hidden_states → U-Net Cross-Attention</text>
+
+    <!-- caption encoding lane -->
+    <rect x="75" y="455" width="3690" height="350" rx="30" class="teacherLane"/>
+    <text x="115" y="510" class="section ink">① 文本编码（冻结）</text>
+
+    <rect x="140" y="555" width="470" height="190" rx="24" class="card" filter="url(#shadow)"/>
+    <text x="375" y="615" text-anchor="middle" class="nodeTitle ink">MS2 Caption</text>
+    <text x="375" y="665" text-anchor="middle" class="nodeSub muted">90% correct · 10% empty</text>
+    <text x="375" y="710" text-anchor="middle" class="small" fill="#087f8c">训练时做 caption dropout</text>
+
+    <path d="M610 650H745" class="textFlow"/>
+    <rect x="770" y="575" width="330" height="150" rx="22" class="navy"/>
+    <text x="935" y="637" text-anchor="middle" class="nodeTitle white">Tokenizer</text>
+    <text x="935" y="685" text-anchor="middle" class="small" fill="#d8e0ef">text → token IDs</text>
+
+    <path d="M1100 650H1235" class="textFlow"/>
+    <rect x="1260" y="555" width="430" height="190" rx="22" class="navy"/>
+    <text x="1475" y="625" text-anchor="middle" class="nodeTitle white">CLIP Text Encoder</text>
+    <text x="1475" y="675" text-anchor="middle" class="nodeSub white">frozen · no_grad</text>
+
+    <path d="M1690 650H1825" class="textFlow"/>
+    <rect x="1850" y="565" width="350" height="170" rx="22" class="tealSoft" stroke="#087f8c" stroke-width="4"/>
+    <text x="2025" y="628" text-anchor="middle" class="nodeTitle ink">E<tspan baseline-shift="sub" font-size="25">text</tspan></text>
+    <text x="2025" y="678" text-anchor="middle" class="nodeSub" fill="#087f8c">[B, L, D]</text>
+    <text x="2025" y="713" text-anchor="middle" class="tiny muted mono">prompt.detach()</text>
+
+    <!-- compact teacher branch -->
+    <rect x="2330" y="565" width="260" height="170" rx="22" class="card"/>
+    <text x="2460" y="625" text-anchor="middle" class="nodeTitle ink">c<tspan baseline-shift="sub" font-size="24">T</tspan> ⊕ z<tspan baseline-shift="sub" font-size="24">t</tspan></text>
+    <text x="2460" y="680" text-anchor="middle" class="small muted">spatial input</text>
+    <path d="M2590 650H2695" class="flow"/>
+    <rect x="2720" y="545" width="500" height="210" rx="24" class="navy"/>
+    <text x="2970" y="615" text-anchor="middle" class="nodeTitle white">Teacher U-Net</text>
+    <text x="2970" y="665" text-anchor="middle" class="nodeSub white">frozen · training only</text>
+    <text x="2970" y="708" text-anchor="middle" class="small" fill="#bfe6e8">E_text → Cross-Attention</text>
+    <path d="M3220 650H3375" class="flow"/>
+    <rect x="3400" y="580" width="270" height="140" rx="20" class="card"/>
+    <text x="3535" y="635" text-anchor="middle" class="nodeTitle ink">r<tspan baseline-shift="sub" font-size="24">T</tspan></text>
+    <text x="3535" y="682" text-anchor="middle" class="small muted">teacher target</text>
+    <path d="M2200 615C2390 475 2770 470 2945 545" class="thinText"/>
+    <text x="2515" y="510" text-anchor="middle" class="small" fill="#087f8c">同一个 E_text</text>
+
+    <!-- student lane -->
+    <rect x="75" y="845" width="3690" height="895" rx="30" class="studentLane"/>
+    <text x="115" y="910" class="section" fill="#d9471d">② Thermal Student（空间流 + 文本流）</text>
+
+    <!-- spatial path -->
+    <rect x="140" y="1080" width="330" height="250" rx="24" class="navy"/>
+    <text x="305" y="1160" text-anchor="middle" class="nodeTitle white">Thermal</text>
+    <text x="305" y="1215" text-anchor="middle" class="nodeSub white">MS2 uint16</text>
+    <text x="305" y="1270" text-anchor="middle" class="small" fill="#d8e0ef">高位深转换</text>
+
+    <path d="M470 1205H600" class="flow"/>
+    <rect x="625" y="1080" width="390" height="250" rx="24" class="navy"/>
+    <text x="820" y="1160" text-anchor="middle" class="nodeTitle white">AnyThermal</text>
+    <text x="820" y="1215" text-anchor="middle" class="nodeSub white">frozen features</text>
+
+    <path d="M1015 1205H1145" class="trainFlow"/>
+    <rect x="1170" y="1060" width="430" height="290" rx="26" class="orange" filter="url(#shadow)"/>
+    <text x="1385" y="1150" text-anchor="middle" class="nodeTitle white">Adapter V2.3</text>
+    <text x="1385" y="1205" text-anchor="middle" class="nodeSub white">thermal → Lotus condition</text>
+    <text x="1385" y="1270" text-anchor="middle" class="small white">trainable</text>
+
+    <path d="M1600 1205H1725" class="trainFlow"/>
+    <rect x="1750" y="1120" width="280" height="170" rx="22" class="card"/>
+    <text x="1890" y="1183" text-anchor="middle" class="nodeTitle ink">c<tspan baseline-shift="sub" font-size="24">S</tspan></text>
+    <text x="1890" y="1233" text-anchor="middle" class="nodeSub" fill="#ef5b2a">[B,4,H,W]</text>
+
+    <rect x="1750" y="1390" width="280" height="150" rx="22" class="tealSoft" stroke="#87c7cd" stroke-width="3"/>
+    <text x="1890" y="1450" text-anchor="middle" class="nodeTitle ink">z<tspan baseline-shift="sub" font-size="24">t</tspan></text>
+    <text x="1890" y="1500" text-anchor="middle" class="small muted">noisy latent</text>
+
+    <path d="M2030 1205H2135" class="trainFlow"/>
+    <path d="M2030 1465H2085V1280H2135" class="flow"/>
+    <circle cx="2190" cy="1205" r="60" fill="#fff" stroke="#ef5b2a" stroke-width="5"/>
+    <text x="2190" y="1220" text-anchor="middle" class="nodeTitle" fill="#d9471d">⊕</text>
+    <text x="2190" y="1302" text-anchor="middle" class="small muted">channel concat</text>
+    <path d="M2250 1205H2435" class="trainFlow"/>
+
+    <!-- student U-Net with explicit cross-attention -->
+    <rect x="2460" y="960" width="900" height="650" rx="34" class="orangeSoft" stroke="#ef5b2a" stroke-width="6" filter="url(#shadow)"/>
+    <rect x="2460" y="960" width="900" height="112" rx="32" class="orange"/>
+    <text x="2910" y="1033" text-anchor="middle" class="section white">Student U-Net · trainable</text>
+
+    <rect x="2550" y="1150" width="720" height="340" rx="28" class="card"/>
+    <text x="2910" y="1208" text-anchor="middle" class="nodeTitle ink">Cross-Attention</text>
+
+    <rect x="2600" y="1260" width="130" height="95" rx="18" fill="#f0f3f9" stroke="#cad3e2" stroke-width="3"/>
+    <text x="2665" y="1318" text-anchor="middle" class="nodeSub ink">h</text>
+    <path d="M2730 1307H2815" class="flow"/>
+    <rect x="2840" y="1240" width="130" height="95" rx="18" fill="#fff2ec" stroke="#efb29b" stroke-width="3"/>
+    <text x="2905" y="1300" text-anchor="middle" class="nodeSub ink">Q</text>
+
+    <rect x="2840" y="1370" width="130" height="95" rx="18" class="tealSoft" stroke="#087f8c" stroke-width="3"/>
+    <text x="2905" y="1430" text-anchor="middle" class="nodeSub ink">K,V</text>
+
+    <path d="M2970 1288H3045" class="flow"/>
+    <path d="M2970 1417H3010V1342H3045" class="thinText"/>
+    <rect x="3070" y="1260" width="130" height="150" rx="20" class="orange"/>
+    <text x="3135" y="1322" text-anchor="middle" class="nodeSub white">Attn</text>
+    <text x="3135" y="1368" text-anchor="middle" class="small white">+ residual</text>
+    <path d="M3200 1335H3240" class="trainFlow"/>
+    <text x="3255" y="1348" class="nodeSub ink">h′</text>
+
+    <!-- text injection into student cross-attention -->
+    <path d="M2025 735V885H2905V1350" class="textFlow"/>
+    <rect x="2180" y="835" width="650" height="80" rx="18" class="teal"/>
+    <text x="2505" y="888" text-anchor="middle" class="nodeSub white mono">encoder_hidden_states = E_text</text>
+
+    <!-- output -->
+    <path d="M3360 1205H3435" class="trainFlow"/>
+    <rect x="3460" y="1125" width="270" height="160" rx="22" class="card"/>
+    <text x="3595" y="1187" text-anchor="middle" class="nodeTitle ink">r<tspan baseline-shift="sub" font-size="24">S</tspan></text>
+    <text x="3595" y="1237" text-anchor="middle" class="small muted">x0 / sample</text>
+    <path d="M3595 1285V1370" class="flow"/>
+    <rect x="3460" y="1395" width="270" height="145" rx="22" class="navy"/>
+    <text x="3595" y="1455" text-anchor="middle" class="nodeSub white">VAE Decoder</text>
+    <text x="3595" y="1500" text-anchor="middle" class="small" fill="#d8e0ef">frozen · FP32</text>
+    <path d="M3595 1540V1605" class="flow"/>
+    <rect x="3460" y="1625" width="270" height="85" rx="18" class="teal"/>
+    <text x="3595" y="1681" text-anchor="middle" class="nodeSub white">Depth</text>
+
+    <!-- bottom explanations -->
+    <rect x="75" y="1785" width="1810" height="280" rx="28" class="panel"/>
+    <text x="125" y="1850" class="section ink">Empty 不是“关闭语言”</text>
+    <text x="125" y="1915" class="nodeSub muted">"" → BOS / EOS → 非零 E<tspan baseline-shift="sub" font-size="19">empty</tspan></text>
+    <path d="M690 1902H915" class="textFlow"/>
+    <rect x="945" y="1860" width="510" height="95" rx="20" class="tealSoft" stroke="#087f8c" stroke-width="3"/>
+    <text x="1200" y="1921" text-anchor="middle" class="nodeSub ink">仍进入同一套 Cross-Attention</text>
+    <text x="125" y="2010" class="small" fill="#087f8c">correct / empty / hard-wrong 只是在替换 E_text，网络路径完全相同。</text>
+
+    <rect x="1930" y="1785" width="1835" height="280" rx="28" class="panel"/>
+    <text x="1980" y="1850" class="section ink">训练关系没有增加新 Loss</text>
+    <text x="1980" y="1915" class="nodeSub muted">同一个 E_text 同时提供给 Teacher 与 Student</text>
+    <text x="1980" y="1970" class="nodeSub muted">CLIP 始终冻结；更新的仍是 Adapter + Student U-Net</text>
+    <rect x="3075" y="1870" width="590" height="110" rx="22" class="orangeSoft" stroke="#ef5b2a" stroke-width="4"/>
+    <text x="3370" y="1918" text-anchor="middle" class="nodeSub ink">原三项 Loss 保持不变</text>
+    <text x="3370" y="1960" text-anchor="middle" class="small" fill="#d9471d">caption 只改变条件信号</text>
+  </g>
+</svg>

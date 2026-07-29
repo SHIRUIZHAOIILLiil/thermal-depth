@@ -9,6 +9,7 @@ from .kitti_dataset import KITTIDataset
 from .nyu_dataset import NYUDataset
 from .scannet_dataset import ScanNetDataset
 from .diode_dataset import DIODEDataset
+from .ms2_thermal_dataset import MS2RGBDataset, MS2ThermalDataset
 
 dataset_name_class_dict = {
     "nyu_v2": NYUDataset,
@@ -16,6 +17,8 @@ dataset_name_class_dict = {
     "eth3d": ETH3DDataset,
     "scannet": ScanNetDataset,
     "diode": DIODEDataset,
+    "ms2_thermal": MS2ThermalDataset,
+    "ms2_rgb": MS2RGBDataset,
 }
 
 

@@ -1,0 +1,73 @@
+<svg width="820" height="672" viewBox="0 0 820 672" role="img" xmlns="http://www.w3.org/2000/svg" font-family="'Microsoft YaHei','微软雅黑','Segoe UI',sans-serif">
+<title>实验1 模型结构（含梯度回传）</title>
+<desc>热像经冻结 Lotus VAE 编码为条件，与逐样本定种子噪声拼接后同时送入两个 U-Net：一个是冻结的 teacher（学生的初始副本，权重完全相同），一个是可训练的 student。两者的输出之间算响应约束损失；student 的输出再经 fp32 解码得预测视差，由稀疏真值的 masked SSI-L1 监督。两个损失的梯度都只回到 student U-Net，VAE 与 teacher 全程冻结。实测约束项占梯度约 86%，每一步都被裁到阈值，一个 epoch 训练损失只降 1.1%。</desc>
+<style>
+text{fill:#2C2C2A}
+.th{font-size:14px;font-weight:500}
+.t{font-size:14px}
+.ts{font-size:12px}
+.tx{font-size:11px}
+.box-gray{fill:#F1EFE8;stroke:#5F5E5A;stroke-width:.6}
+.box-coral{fill:#FAECE7;stroke:#993C1D;stroke-width:.6}
+.box-blue{fill:#E6F1FB;stroke:#185FA5;stroke-width:.6}
+.box-teal{fill:#E1F5EE;stroke:#0F6E56;stroke-width:.6}
+.tt-gray{fill:#444441}.st-gray{fill:#5F5E5A}
+.tt-coral{fill:#712B13}.st-coral{fill:#993C1D}
+.tt-blue{fill:#0C447C}.st-blue{fill:#185FA5}
+.tt-teal{fill:#085041}.st-teal{fill:#0F6E56}
+.fwd{stroke:#5F5E5A;stroke-width:1.5;fill:none}
+.grad{stroke:#D85A30;stroke-width:1.5;fill:none;stroke-dasharray:5 3}
+</style>
+<defs>
+<marker id="af" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#5F5E5A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<marker id="ab" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#D85A30" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+</defs>
+
+<rect x="0" y="0" width="820" height="672" fill="#FFFFFF"/>
+
+<rect x="40" y="12" width="740" height="30" rx="6" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="ts" x="410" y="31" text-anchor="middle" fill="#0C447C">黑箭头 = 前向；珊瑚虚线 = 梯度回传。只更新 student U-Net，VAE 与 teacher 全程冻结</text>
+
+<rect x="310" y="52" width="200" height="44" rx="6" class="box-gray"/><text class="th tt-gray" x="410" y="72" text-anchor="middle">热像输入</text><text class="ts st-gray" x="410" y="89" text-anchor="middle">[B,3,256,640]</text>
+<line class="fwd" x1="410" y1="96" x2="410" y2="112" marker-end="url(#af)"/>
+
+<rect x="260" y="112" width="300" height="56" rx="6" class="box-gray"/><text class="th tt-gray" x="410" y="135" text-anchor="middle">冻结 Lotus VAE 编码（不训练）</text><text class="ts st-gray" x="410" y="155" text-anchor="middle">→ 条件 latent [B,4,32,80]</text>
+
+<rect x="600" y="112" width="200" height="56" rx="6" class="box-gray" stroke-dasharray="4 3"/><text class="ts st-gray" x="700" y="132" text-anchor="middle">逐样本定种子噪声</text><text class="ts st-gray" x="700" y="149" text-anchor="middle">timestep 999 · 空 caption</text><text class="tx st-gray" x="700" y="163" text-anchor="middle">推理时同一 seed，可复现</text>
+
+<line class="fwd" x1="410" y1="168" x2="410" y2="184"/>
+<line class="fwd" x1="700" y1="168" x2="700" y2="184"/>
+<path class="fwd" d="M175 184 L700 184"/>
+<line class="fwd" x1="175" y1="184" x2="175" y2="200" marker-end="url(#af)"/>
+<line class="fwd" x1="550" y1="184" x2="550" y2="200" marker-end="url(#af)"/>
+<text class="tx" x="240" y="180" fill="#5F5E5A">两个 U-Net 收到完全相同的输入</text>
+
+<rect x="50" y="200" width="250" height="80" rx="6" class="box-gray" stroke-dasharray="4 3"/><text class="th tt-gray" x="175" y="222" text-anchor="middle">冻结 teacher U-Net</text><text class="ts st-gray" x="175" y="241" text-anchor="middle">= 学生的初始副本</text><text class="ts st-gray" x="175" y="258" text-anchor="middle">权重完全相同，一步不更新</text><text class="tx st-gray" x="175" y="273" text-anchor="middle">fp16 前向 · no_grad</text>
+
+<rect x="400" y="200" width="300" height="80" rx="6" class="box-coral"/><text class="th tt-coral" x="550" y="222" text-anchor="middle">可训 student U-Net（唯一被训练的部分）</text><text class="ts st-coral" x="550" y="241" text-anchor="middle">由预训练 Lotus 初始化 · fp32</text><text class="ts st-coral" x="550" y="258" text-anchor="middle">cat [B,8,32,80] → x0 [B,4,32,80]</text><text class="tx st-coral" x="550" y="273" text-anchor="middle">AdamW lr 1e-6 · wd 1e-4 · 累积 4 · 2611 步</text>
+
+<line class="fwd" x1="175" y1="280" x2="175" y2="336" marker-end="url(#af)"/>
+<path class="fwd" d="M400 246 L340 246 L340 336" marker-end="url(#af)"/>
+<line class="fwd" x1="550" y1="280" x2="550" y2="336" marker-end="url(#af)"/>
+
+<rect x="50" y="336" width="330" height="112" rx="6" class="box-blue"/><text class="th tt-blue" x="215" y="358" text-anchor="middle">损失②：响应约束（权重 1.0）</text><text class="ts st-blue" x="215" y="377" text-anchor="middle">MSE + 0.1·cosine + 0.5·一阶梯度 L1</text><text class="ts st-blue" x="215" y="394" text-anchor="middle">+ 0.5·多尺度梯度 L1 + 0.5·|log 能量比|</text><text class="ts st-blue" x="215" y="413" text-anchor="middle">起点处恰好 = 0（学生就是 teacher）</text><text class="tx st-blue" x="215" y="434" text-anchor="middle">三项 L1/abs 的回推力不随误差衰减 → 恒力，不松手</text>
+
+<rect x="400" y="336" width="300" height="56" rx="6" class="box-gray"/><text class="th tt-gray" x="550" y="359" text-anchor="middle">fp32 VAE 解码 · 通道均值</text><text class="ts st-gray" x="550" y="379" text-anchor="middle">→ 预测视差 [B,256,640]</text>
+<line class="fwd" x1="550" y1="392" x2="550" y2="412" marker-end="url(#af)"/>
+
+<rect x="400" y="412" width="300" height="90" rx="6" class="box-blue"/><text class="th tt-blue" x="550" y="434" text-anchor="middle">损失③：真值 GT（λ=5）</text><text class="ts st-blue" x="550" y="453" text-anchor="middle">masked SSI-L1 · 仅 ~29% 像素有真值</text><text class="ts st-blue" x="550" y="472" text-anchor="middle">比较前先拟合掉缩放与平移</text><text class="tx st-blue" x="550" y="491" text-anchor="middle">→ 对「整体缩放 / 整体偏移」完全看不见（二维零空间）</text>
+
+<path class="grad" d="M700 460 L760 460 L760 232 L700 232" marker-end="url(#ab)"/>
+<text class="ts" x="712" y="330" fill="#993C1D">梯度</text>
+<text class="ts" x="712" y="346" fill="#993C1D">回传</text>
+<path class="grad" d="M380 370 L392 370" marker-end="url(#ab)"/>
+
+<rect x="50" y="470" width="330" height="126" rx="6" class="box-teal"/><text class="th tt-teal" x="215" y="492" text-anchor="middle">一个 epoch 之后的实测</text><text class="ts st-teal" x="215" y="513" text-anchor="middle">约束项贡献约 86% 的梯度（范数 7.4）</text><text class="ts st-teal" x="215" y="532" text-anchor="middle">100% 的步被裁到阈值 1.0</text><text class="ts st-teal" x="215" y="551" text-anchor="middle">训练损失只降 1.1%（去掉约束的臂降 49%）</text><text class="ts st-teal" x="215" y="570" text-anchor="middle">离出发点的距离 0.0012 → 0.029</text><text class="ts st-teal" x="215" y="589" text-anchor="middle">AbsRel 0.1275 ≈ 冻结原网络 0.1291</text>
+
+<rect x="400" y="516" width="300" height="80" rx="6" class="box-gray" stroke-dasharray="4 3"/><text class="ts st-gray" x="550" y="537" text-anchor="middle">与实验4 / 实验5 的差别</text><text class="ts st-gray" x="550" y="556" text-anchor="middle">实验1：有损失②，无稠密 teacher</text><text class="ts st-gray" x="550" y="574" text-anchor="middle">实验4/5：损失②权重 0，改加稠密伪 GT 损失</text><text class="tx st-gray" x="550" y="590" text-anchor="middle">架构逐层相同，可训练参数同为 U-Net</text>
+
+<rect x="50" y="620" width="14" height="14" rx="3" class="box-gray"/><text class="ts" x="70" y="631">冻结 / 不训练</text>
+<rect x="200" y="620" width="14" height="14" rx="3" class="box-coral"/><text class="ts" x="220" y="631">可训练 U-Net</text>
+<rect x="350" y="620" width="14" height="14" rx="3" class="box-blue"/><text class="ts" x="370" y="631">训练损失（回传）</text>
+<rect x="520" y="620" width="14" height="14" rx="3" class="box-teal"/><text class="ts" x="540" y="631">实测结果</text>
+</svg>

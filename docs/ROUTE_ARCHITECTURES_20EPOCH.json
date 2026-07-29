@@ -1,0 +1,324 @@
+{
+  "routes": {
+    "a_rgb_unet": {
+      "title": "线 a — RGB 输入，只训 U-Net（Baseline）",
+      "modality": "rgb",
+      "condition": "vae",
+      "components": [
+        {
+          "component": "VAE encoder",
+          "class": "Encoder",
+          "parameters": 34163592,
+          "trainable": false,
+          "role": "把输入图编码成 4 通道 latent，作为 U-Net 的 condition"
+        },
+        {
+          "component": "VAE quant_conv",
+          "class": "Conv2d",
+          "parameters": 72,
+          "trainable": false,
+          "role": "latent 量化卷积（encoder 的一部分）"
+        },
+        {
+          "component": "Text encoder",
+          "class": "CLIPTextModel",
+          "parameters": 340387840,
+          "trainable": false,
+          "role": "把 prompt（无 caption 阶段恒为空串）编码成 cross-attention 条件"
+        },
+        {
+          "component": "U-Net",
+          "class": "UNet2DConditionModel",
+          "parameters": 867568324,
+          "trainable": true,
+          "role": "Lotus 主干，单步 x0 预测"
+        },
+        {
+          "component": "VAE post_quant_conv",
+          "class": "Conv2d",
+          "parameters": 20,
+          "trainable": false,
+          "role": "latent 量化卷积（encoder 的一部分）"
+        },
+        {
+          "component": "VAE decoder",
+          "class": "Decoder",
+          "parameters": 49490179,
+          "trainable": false,
+          "role": "把 U-Net 输出的 latent 解回视差图（GT 损失在这之后算）"
+        }
+      ],
+      "trainable_parameters": 867568324,
+      "frozen_parameters": 424041703
+    },
+    "b_thermal_unet": {
+      "title": "线 b — Thermal 输入，只训 U-Net（Baseline）",
+      "modality": "thermal",
+      "condition": "vae",
+      "components": [
+        {
+          "component": "VAE encoder",
+          "class": "Encoder",
+          "parameters": 34163592,
+          "trainable": false,
+          "role": "把输入图编码成 4 通道 latent，作为 U-Net 的 condition"
+        },
+        {
+          "component": "VAE quant_conv",
+          "class": "Conv2d",
+          "parameters": 72,
+          "trainable": false,
+          "role": "latent 量化卷积（encoder 的一部分）"
+        },
+        {
+          "component": "Text encoder",
+          "class": "CLIPTextModel",
+          "parameters": 340387840,
+          "trainable": false,
+          "role": "把 prompt（无 caption 阶段恒为空串）编码成 cross-attention 条件"
+        },
+        {
+          "component": "U-Net",
+          "class": "UNet2DConditionModel",
+          "parameters": 867568324,
+          "trainable": true,
+          "role": "Lotus 主干，单步 x0 预测"
+        },
+        {
+          "component": "VAE post_quant_conv",
+          "class": "Conv2d",
+          "parameters": 20,
+          "trainable": false,
+          "role": "latent 量化卷积（encoder 的一部分）"
+        },
+        {
+          "component": "VAE decoder",
+          "class": "Decoder",
+          "parameters": 49490179,
+          "trainable": false,
+          "role": "把 U-Net 输出的 latent 解回视差图（GT 损失在这之后算）"
+        }
+      ],
+      "trainable_parameters": 867568324,
+      "frozen_parameters": 424041703
+    },
+    "c1_vae_adapter": {
+      "title": "线 c1 — Thermal，VAE 后接 Adapter，U-Net 冻结",
+      "modality": "thermal",
+      "condition": "vae_adapter",
+      "components": [
+        {
+          "component": "VAE encoder",
+          "class": "Encoder",
+          "parameters": 34163592,
+          "trainable": false,
+          "role": "把输入图编码成 4 通道 latent，作为 U-Net 的 condition"
+        },
+        {
+          "component": "VAE quant_conv",
+          "class": "Conv2d",
+          "parameters": 72,
+          "trainable": false,
+          "role": "latent 量化卷积（encoder 的一部分）"
+        },
+        {
+          "component": "Adapter (VAE latent)",
+          "class": "ThermalVAELatentAdapter",
+          "parameters": 7106308,
+          "trainable": true,
+          "role": "在冻结 VAE latent 上的残差 CNN，零初始化 ⇒ 未训练时是恒等"
+        },
+        {
+          "component": "Text encoder",
+          "class": "CLIPTextModel",
+          "parameters": 340387840,
+          "trainable": false,
+          "role": "把 prompt（无 caption 阶段恒为空串）编码成 cross-attention 条件"
+        },
+        {
+          "component": "U-Net",
+          "class": "UNet2DConditionModel",
+          "parameters": 867568324,
+          "trainable": false,
+          "role": "Lotus 主干，单步 x0 预测"
+        },
+        {
+          "component": "VAE post_quant_conv",
+          "class": "Conv2d",
+          "parameters": 20,
+          "trainable": false,
+          "role": "latent 量化卷积（encoder 的一部分）"
+        },
+        {
+          "component": "VAE decoder",
+          "class": "Decoder",
+          "parameters": 49490179,
+          "trainable": false,
+          "role": "把 U-Net 输出的 latent 解回视差图（GT 损失在这之后算）"
+        }
+      ],
+      "trainable_parameters": 7106308,
+      "frozen_parameters": 1291610027
+    },
+    "c2_vae_adapter_unet": {
+      "title": "线 c2 — Thermal，VAE 后接 Adapter，Adapter + U-Net 联合训练",
+      "modality": "thermal",
+      "condition": "vae_adapter",
+      "components": [
+        {
+          "component": "VAE encoder",
+          "class": "Encoder",
+          "parameters": 34163592,
+          "trainable": false,
+          "role": "把输入图编码成 4 通道 latent，作为 U-Net 的 condition"
+        },
+        {
+          "component": "VAE quant_conv",
+          "class": "Conv2d",
+          "parameters": 72,
+          "trainable": false,
+          "role": "latent 量化卷积（encoder 的一部分）"
+        },
+        {
+          "component": "Adapter (VAE latent)",
+          "class": "ThermalVAELatentAdapter",
+          "parameters": 7106308,
+          "trainable": true,
+          "role": "在冻结 VAE latent 上的残差 CNN，零初始化 ⇒ 未训练时是恒等"
+        },
+        {
+          "component": "Text encoder",
+          "class": "CLIPTextModel",
+          "parameters": 340387840,
+          "trainable": false,
+          "role": "把 prompt（无 caption 阶段恒为空串）编码成 cross-attention 条件"
+        },
+        {
+          "component": "U-Net",
+          "class": "UNet2DConditionModel",
+          "parameters": 867568324,
+          "trainable": true,
+          "role": "Lotus 主干，单步 x0 预测"
+        },
+        {
+          "component": "VAE post_quant_conv",
+          "class": "Conv2d",
+          "parameters": 20,
+          "trainable": false,
+          "role": "latent 量化卷积（encoder 的一部分）"
+        },
+        {
+          "component": "VAE decoder",
+          "class": "Decoder",
+          "parameters": 49490179,
+          "trainable": false,
+          "role": "把 U-Net 输出的 latent 解回视差图（GT 损失在这之后算）"
+        }
+      ],
+      "trainable_parameters": 874674632,
+      "frozen_parameters": 424041703
+    },
+    "d1_anythermal_adapter": {
+      "title": "线 d1 — Thermal → AnyThermal → Adapter，U-Net 冻结",
+      "modality": "thermal",
+      "condition": "anythermal_adapter",
+      "components": [
+        {
+          "component": "AnyThermal encoder",
+          "class": "Dinov2Model",
+          "parameters": 86580480,
+          "trainable": false,
+          "role": "AnyThermal 热像基础模型（DINOv2 主干），提供热像特征"
+        },
+        {
+          "component": "Adapter (AnyThermal→latent)",
+          "class": "AnyThermalLotusAdapterV23",
+          "parameters": 9408012,
+          "trainable": true,
+          "role": "把 AnyThermal token 转成 U-Net 可读的 4 通道 latent"
+        },
+        {
+          "component": "Text encoder",
+          "class": "CLIPTextModel",
+          "parameters": 340387840,
+          "trainable": false,
+          "role": "把 prompt（无 caption 阶段恒为空串）编码成 cross-attention 条件"
+        },
+        {
+          "component": "U-Net",
+          "class": "UNet2DConditionModel",
+          "parameters": 867568324,
+          "trainable": false,
+          "role": "Lotus 主干，单步 x0 预测"
+        },
+        {
+          "component": "VAE post_quant_conv",
+          "class": "Conv2d",
+          "parameters": 20,
+          "trainable": false,
+          "role": "latent 量化卷积（encoder 的一部分）"
+        },
+        {
+          "component": "VAE decoder",
+          "class": "Decoder",
+          "parameters": 49490179,
+          "trainable": false,
+          "role": "把 U-Net 输出的 latent 解回视差图（GT 损失在这之后算）"
+        }
+      ],
+      "trainable_parameters": 9408012,
+      "frozen_parameters": 1344026843
+    },
+    "d2_anythermal_adapter_unet": {
+      "title": "线 d2 — Thermal → AnyThermal → Adapter，Adapter + U-Net 联合训练",
+      "modality": "thermal",
+      "condition": "anythermal_adapter",
+      "components": [
+        {
+          "component": "AnyThermal encoder",
+          "class": "Dinov2Model",
+          "parameters": 86580480,
+          "trainable": false,
+          "role": "AnyThermal 热像基础模型（DINOv2 主干），提供热像特征"
+        },
+        {
+          "component": "Adapter (AnyThermal→latent)",
+          "class": "AnyThermalLotusAdapterV23",
+          "parameters": 9408012,
+          "trainable": true,
+          "role": "把 AnyThermal token 转成 U-Net 可读的 4 通道 latent"
+        },
+        {
+          "component": "Text encoder",
+          "class": "CLIPTextModel",
+          "parameters": 340387840,
+          "trainable": false,
+          "role": "把 prompt（无 caption 阶段恒为空串）编码成 cross-attention 条件"
+        },
+        {
+          "component": "U-Net",
+          "class": "UNet2DConditionModel",
+          "parameters": 867568324,
+          "trainable": true,
+          "role": "Lotus 主干，单步 x0 预测"
+        },
+        {
+          "component": "VAE post_quant_conv",
+          "class": "Conv2d",
+          "parameters": 20,
+          "trainable": false,
+          "role": "latent 量化卷积（encoder 的一部分）"
+        },
+        {
+          "component": "VAE decoder",
+          "class": "Decoder",
+          "parameters": 49490179,
+          "trainable": false,
+          "role": "把 U-Net 输出的 latent 解回视差图（GT 损失在这之后算）"
+        }
+      ],
+      "trainable_parameters": 876976336,
+      "frozen_parameters": 476458519
+    }
+  }
+}

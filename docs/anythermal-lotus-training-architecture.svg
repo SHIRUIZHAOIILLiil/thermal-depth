@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2560" height="1440" viewBox="0 0 2560 1440" role="img" aria-labelledby="title desc">
+  <title id="title">AnyThermal to Lotus Adapter V2.3 current training architecture</title>
+  <desc id="desc">Frozen thermal VAE and teacher U-Net supervise a trainable AnyThermal adapter and student U-Net with condition, response, and LiDAR GT losses.</desc>
+  <defs>
+    <style>
+      .bg{fill:#f7f8fb}.ink{fill:#172033}.muted{fill:#5f6b7d}.navy{fill:#1f2b49}.navy2{fill:#2d3b60}.orange{fill:#ef5b2a}.orange2{fill:#fff1eb}.teal{fill:#087f8c}.teal2{fill:#e8f6f7}.panel{fill:#ffffff;stroke:#d8deea;stroke-width:2}.teacherLane{fill:#f1f4fa;stroke:#c6cfdf;stroke-width:2}.studentLane{fill:#fff7f2;stroke:#f4b59d;stroke-width:2}.lossPanel{fill:#ffffff;stroke:#ccd5e4;stroke-width:2}.frozenText{fill:#ffffff}.trainText{fill:#ffffff}.small{font-size:24px}.tiny{font-size:20px}.body{font-size:27px}.label{font-size:30px;font-weight:500}.section{font-size:34px;font-weight:500}.title{font-size:54px;font-weight:500}.mono{font-family:Consolas,Menlo,monospace}.all{font-family:"Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif}.arrow{fill:none;stroke:#6d7990;stroke-width:5;marker-end:url(#arrow)}.arrowOrange{fill:none;stroke:#ef5b2a;stroke-width:6;marker-end:url(#arrowOrange)}.arrowTeal{fill:none;stroke:#087f8c;stroke-width:5;marker-end:url(#arrowTeal)}.dash{stroke-dasharray:12 10}.lossLine{fill:none;stroke:#657289;stroke-width:4;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="12" refY="7" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L14,7 L0,14 z" fill="#6d7990"/></marker>
+    <marker id="arrowOrange" markerWidth="14" markerHeight="14" refX="12" refY="7" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L14,7 L0,14 z" fill="#ef5b2a"/></marker>
+    <marker id="arrowTeal" markerWidth="14" markerHeight="14" refX="12" refY="7" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L14,7 L0,14 z" fill="#087f8c"/></marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#1f2b49" flood-opacity="0.10"/></filter>
+  </defs>
+
+  <rect class="bg" width="2560" height="1440"/>
+  <g class="all">
+    <text x="64" y="72" class="small" fill="#ef5b2a" font-weight="500" letter-spacing="3">CURRENT CHAMPION · TRAINING ARCHITECTURE</text>
+    <text x="64" y="137" class="title ink">AnyThermal → Lotus：Adapter V2.3 + Joint U-Net + GT</text>
+    <g transform="translate(1940 52)">
+      <rect x="0" y="0" width="178" height="54" rx="10" class="navy"/><text x="89" y="37" text-anchor="middle" class="small frozenText">冻结 / no grad</text>
+      <rect x="194" y="0" width="178" height="54" rx="10" class="orange"/><text x="283" y="37" text-anchor="middle" class="small trainText">可训练</text>
+      <rect x="388" y="0" width="178" height="54" rx="10" class="teal"/><text x="477" y="37" text-anchor="middle" class="small frozenText">共享随机量</text>
+    </g>
+
+    <rect x="46" y="192" width="2440" height="910" rx="24" class="panel" filter="url(#shadow)"/>
+    <rect x="310" y="226" width="1600" height="326" rx="22" class="teacherLane"/>
+    <rect x="310" y="580" width="1600" height="478" rx="22" class="studentLane"/>
+    <rect x="1938" y="226" width="520" height="832" rx="22" class="lossPanel"/>
+
+    <text x="340" y="272" class="section ink">① Frozen Lotus teacher</text>
+    <text x="1770" y="272" text-anchor="end" class="small muted">仅生成蒸馏目标；推理时移除</text>
+    <text x="340" y="626" class="section" fill="#d9471d">② Thermal student（部署路径）</text>
+    <text x="1770" y="626" text-anchor="end" class="small muted">训练 Adapter V2.3 + Lotus U-Net</text>
+    <text x="1968" y="272" class="section ink">三条监督</text>
+
+    <!-- Shared input -->
+    <rect x="76" y="392" width="200" height="372" rx="22" class="navy"/>
+    <text x="176" y="454" text-anchor="middle" class="label frozenText">MS2 左热像</text>
+    <text x="176" y="500" text-anchor="middle" class="body frozenText mono">uint16 / I;16</text>
+    <text x="176" y="550" text-anchor="middle" class="body frozenText mono">[B,1,256,640]</text>
+    <line x1="106" y1="586" x2="246" y2="586" stroke="#8390aa" stroke-width="2"/>
+    <text x="176" y="630" text-anchor="middle" class="small frozenText">先解码原数组</text>
+    <text x="176" y="668" text-anchor="middle" class="small frozenText">_array_to_uint8</text>
+    <text x="176" y="706" text-anchor="middle" class="small frozenText">再复制 3 通道</text>
+    <path d="M276 430 H326" class="arrow"/>
+    <path d="M276 733 H326" class="arrowOrange"/>
+
+    <!-- Teacher path -->
+    <rect x="340" y="306" width="300" height="178" rx="18" class="navy"/>
+    <text x="490" y="352" text-anchor="middle" class="label frozenText">Lotus VAE Encoder</text>
+    <text x="490" y="394" text-anchor="middle" class="small frozenText">posterior.mode()</text>
+    <text x="490" y="430" text-anchor="middle" class="small frozenText">× scaling_factor</text>
+    <text x="490" y="466" text-anchor="middle" class="tiny" fill="#c8d4ec">冻结 · deterministic</text>
+    <path d="M640 395 H704" class="arrow"/>
+
+    <rect x="710" y="318" width="285" height="154" rx="18" class="panel"/>
+    <text x="852" y="358" text-anchor="middle" class="label ink">teacher condition</text>
+    <text x="852" y="402" text-anchor="middle" class="body mono" fill="#ef5b2a">c_T [B,4,32,80]</text>
+    <text x="852" y="442" text-anchor="middle" class="tiny muted">detach target</text>
+    <path d="M995 395 H1062" class="arrow"/>
+
+    <rect x="1068" y="318" width="248" height="154" rx="18" class="teal2" stroke="#75bcc3" stroke-width="2"/>
+    <text x="1192" y="358" text-anchor="middle" class="label ink">concat</text>
+    <text x="1192" y="402" text-anchor="middle" class="body mono">[c_T, z_t]</text>
+    <text x="1192" y="442" text-anchor="middle" class="tiny muted">8-channel U-Net input</text>
+    <path d="M1316 395 H1380" class="arrow"/>
+
+    <rect x="1386" y="306" width="356" height="178" rx="18" class="navy"/>
+    <text x="1564" y="352" text-anchor="middle" class="label frozenText">Teacher Lotus U-Net</text>
+    <text x="1564" y="394" text-anchor="middle" class="small frozenText">pretrained “sample” target</text>
+    <text x="1564" y="432" text-anchor="middle" class="body mono" fill="#ffb699">r_T = raw U-Net[0]</text>
+    <text x="1564" y="466" text-anchor="middle" class="tiny" fill="#c8d4ec">torch.no_grad() + detach</text>
+
+    <!-- Shared noise -->
+    <rect x="1026" y="494" width="630" height="68" rx="16" class="teal"/>
+    <text x="1341" y="537" text-anchor="middle" class="small frozenText"><tspan font-weight="500">同一 z_t</tspan><tspan> = scale_model_input(seed noise), </tspan><tspan font-family="Consolas">t = 999</tspan></text>
+    <path d="M1138 494 V472" class="arrowTeal"/>
+    <path d="M1468 562 V688" class="arrowTeal"/>
+
+    <!-- Student path: AnyThermal -->
+    <rect x="340" y="672" width="300" height="206" rx="18" class="navy"/>
+    <text x="490" y="716" text-anchor="middle" class="label frozenText">AnyThermal ViT</text>
+    <text x="490" y="756" text-anchor="middle" class="small frozenText">4 hidden blocks → spatial</text>
+    <text x="490" y="798" text-anchor="middle" class="body frozenText mono">4 × [B,768,18,45]</text>
+    <text x="490" y="840" text-anchor="middle" class="tiny" fill="#c8d4ec">冻结 · no grad</text>
+    <path d="M640 775 H690" class="arrowOrange"/>
+
+    <!-- Adapter detail -->
+    <rect x="696" y="650" width="430" height="292" rx="20" class="orange"/>
+    <text x="911" y="696" text-anchor="middle" class="label trainText">Adapter V2.3（9.41M）</text>
+    <text x="724" y="742" class="small trainText">语义支路</text>
+    <text x="724" y="778" class="tiny trainText">4× 1×1 projection → 192ch</text>
+    <text x="724" y="810" class="tiny trainText">native fusion + progressive skip ×2</text>
+    <text x="724" y="850" class="small trainText">细节支路</text>
+    <text x="724" y="886" class="tiny trainText">thermal gray → stride-2 Conv ×3</text>
+    <text x="724" y="918" class="tiny trainText">direct bridge + affine + residual</text>
+    <path d="M1126 796 H1176" class="arrowOrange"/>
+
+    <rect x="1182" y="706" width="268" height="154" rx="18" class="panel"/>
+    <text x="1316" y="746" text-anchor="middle" class="label ink">student condition</text>
+    <text x="1316" y="790" text-anchor="middle" class="body mono" fill="#ef5b2a">c_S [B,4,32,80]</text>
+    <text x="1316" y="830" text-anchor="middle" class="tiny muted">Adapter output</text>
+    <path d="M1450 783 H1494" class="arrowOrange"/>
+
+    <rect x="1500" y="672" width="356" height="206" rx="18" class="orange"/>
+    <text x="1678" y="718" text-anchor="middle" class="label trainText">Student Lotus U-Net</text>
+    <text x="1678" y="758" text-anchor="middle" class="small trainText">pretrained initialization</text>
+    <text x="1678" y="800" text-anchor="middle" class="body trainText mono">r_S = raw U-Net[0]</text>
+    <text x="1678" y="840" text-anchor="middle" class="tiny" fill="#ffe1d6">867.57M · LR 1e-6</text>
+
+    <!-- Condition loss -->
+    <rect x="1966" y="302" width="464" height="204" rx="18" class="orange2" stroke="#ef5b2a" stroke-width="3"/>
+    <text x="2198" y="346" text-anchor="middle" class="label" fill="#d9471d">L₁ · Condition distillation</text>
+    <text x="1994" y="388" class="small ink">比较：c_S ↔ c_T</text>
+    <text x="1994" y="426" class="tiny ink">MSE + 0.1 cosine + 0.1 channel stats</text>
+    <text x="1994" y="460" class="tiny ink">+ 0.1 ∇L1 + 0.5 multi-scale ∇L1</text>
+    <text x="1994" y="490" class="tiny muted">all reductions: mean（各方向/尺度再相加）</text>
+    <path d="M852 472 C852 540 1880 530 1966 404" class="lossLine dash"/>
+    <path d="M1450 734 C1700 650 1870 545 1966 434" class="lossLine dash"/>
+
+    <!-- Response loss -->
+    <rect x="1966" y="532" width="464" height="250" rx="18" class="orange2" stroke="#ef5b2a" stroke-width="3"/>
+    <text x="2198" y="576" text-anchor="middle" class="label" fill="#d9471d">L₂ · Response consistency</text>
+    <text x="1994" y="618" class="small ink">比较：r_S ↔ r_T（raw U-Net output）</text>
+    <text x="1994" y="656" class="tiny ink">MSE + 0.1 cosine + 0.5 ∇L1</text>
+    <text x="1994" y="690" class="tiny ink">+ 0.5 multi-scale ∇L1</text>
+    <text x="1994" y="724" class="tiny ink">+ 0.5 |log(gradient-energy ratio)|</text>
+    <text x="1994" y="758" class="tiny muted">teacher response: no_grad + detach</text>
+    <path d="M1742 395 C1878 395 1885 600 1966 622" class="lossLine"/>
+    <path d="M1856 775 C1906 775 1916 704 1966 690" class="lossLine"/>
+
+    <!-- GT loss -->
+    <rect x="1966" y="808" width="464" height="222" rx="18" class="orange"/>
+    <text x="2198" y="852" text-anchor="middle" class="label trainText">L₃ · LiDAR GT（λ = 5）</text>
+    <text x="1994" y="894" class="small trainText">r_S → frozen VAE Decoder（FP32）</text>
+    <text x="1994" y="932" class="tiny trainText">→ dense disparity → valid pixels</text>
+    <text x="1994" y="966" class="tiny trainText">→ detached least-squares scale / shift</text>
+    <text x="1994" y="1000" class="tiny trainText">→ masked mean |s·d_pred + b − d_GT|</text>
+    <path d="M1780 878 C1810 970 1888 920 1966 920" class="arrowOrange"/>
+
+    <!-- Footer / exact objective -->
+    <rect x="46" y="1130" width="2440" height="254" rx="24" class="navy" filter="url(#shadow)"/>
+    <text x="88" y="1185" class="section frozenText">Exact objective（当前冠军 frozen config）</text>
+    <text x="88" y="1243" class="label frozenText mono">L_total = 1.0 · L_condition + 1.0 · L_response + 5.0 · L_GT</text>
+    <line x1="88" y1="1272" x2="2418" y2="1272" stroke="#63708e" stroke-width="2"/>
+    <text x="88" y="1320" class="small frozenText"><tspan fill="#ffb699" font-weight="500">训练：</tspan><tspan> Adapter V2.3 + Student U-Net　</tspan><tspan fill="#b9c7e3" font-weight="500">冻结：</tspan><tspan> AnyThermal + VAE + text encoder + teacher U-Net</tspan></text>
+    <text x="88" y="1360" class="small frozenText"><tspan fill="#ffb699" font-weight="500">推理保留：</tspan><tspan> Thermal → AnyThermal → Adapter V2.3 → trained Lotus U-Net → frozen VAE Decoder → dense disparity</tspan></text>
+  </g>
+</svg>

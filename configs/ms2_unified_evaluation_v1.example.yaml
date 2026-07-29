@@ -1,0 +1,37 @@
+protocol_version: MS2-unified-depth-evaluation-v1
+output_dir: outputs/ms2_unified/example_run
+audit_only: true
+gt_audit_samples: 8
+visualization_samples: 8
+
+dataset:
+  manifest: E:/project/thermal-depth/outputs/manifests/sequence_level_internvl3_8b/ms2_fixed_sequence_internvl3_8b_filtered_caption_val.jsonl
+  root: E:/dataset/ms2
+  input_view: left-thermal
+  gt_view: thermal-view-filtered-lidar
+  depth_scale: 256.0
+  allow_legacy_depth_path: false
+
+evaluation:
+  min_depth_m: 0.1
+  max_depth_m: 80.0
+  spearman: true
+  image_wise_primary: true
+  global_pixel_secondary: true
+  bootstrap_iterations: 2000
+  bootstrap_confidence: 0.95
+  bootstrap_seed: 20260630
+
+model:
+  route: iris-lotus  # iris-lotus | adapter-only | adapter+u-net | sp-dit
+  checkpoint: null
+  prediction_dir: null
+  epsilon: 1.0e-6
+  clip_min: null
+  clip_max: null
+
+visualization:
+  colormap: magma_r
+  depth_range_m: [0.1, 80.0]
+  error_max_m: 10.0
+  per_image_minmax_for_main_figures: false

@@ -8,6 +8,7 @@
 /wandb
 /venv
 /cache
+/.wsl/
 /Marigold_text
 /Others
 ssh
@@ -24,3 +25,22 @@ ssh.pub
 *.mexa64
 *.pdf
 *.tar
+
+# ── 实验产物 ──────────────────────────────────────────────────
+# 原有的 /output（单数）挡不住实际在用的 outputs/，这两个目录合计 275 GB，
+# 一次误 add 就能把仓库彻底毁掉。
+/outputs/
+/archive/
+/logs/
+
+# 工具与解释器缓存
+/.codex/
+__pycache__/
+*.pyo
+
+# 训练/评测中间产物
+*.pt
+*.pth
+*.ckpt
+*.npy
+*.npz

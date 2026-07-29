@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 3840 2160" role="img" aria-labelledby="title desc">
+  <title id="title">AnyThermal to Lotus training architecture with explicit loss application</title>
+  <desc id="desc">The original frozen Lotus teacher produces condition and response targets. The thermal student replaces the original condition encoder with frozen AnyThermal plus a trainable Adapter V2.3. Condition, response, and ground-truth losses receive explicit tensor inputs, aggregate into total loss, and backpropagate only to the adapter and student U-Net.</desc>
+  <defs>
+    <style>
+      .all{font-family:"Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif}.bg{fill:#f7f8fb}.ink{fill:#182135}.muted{fill:#667188}.white{fill:#fff}.navy{fill:#202c4b}.navy2{fill:#2d3b60}.orange{fill:#ef5b2a}.orangeSoft{fill:#fff2ec}.teal{fill:#087f8c}.laneT{fill:#f0f3f9;stroke:#cad3e2;stroke-width:2}.laneS{fill:#fff6f1;stroke:#efb29b;stroke-width:2}.card{fill:#fff;stroke:#d6deeb;stroke-width:2}.loss{fill:#fff;stroke:#ef5b2a;stroke-width:4}.title{font-size:70px;font-weight:500}.subtitle{font-size:34px}.laneTitle{font-size:42px;font-weight:500}.nodeTitle{font-size:38px;font-weight:500}.nodeSub{font-size:28px}.small{font-size:24px}.lossTitle{font-size:36px;font-weight:500}.totalTitle{font-size:46px;font-weight:500}.mono{font-family:Consolas,Menlo,monospace}.flow{fill:none;stroke:#6e7b92;stroke-width:6;marker-end:url(#m-gray)}.flowTrain{fill:none;stroke:#ef5b2a;stroke-width:7;marker-end:url(#m-orange)}.operand{fill:none;stroke:#ef5b2a;stroke-width:5;marker-end:url(#m-orange)}.sharedFlow{fill:none;stroke:#087f8c;stroke-width:5;marker-end:url(#m-teal)}.aggregate{fill:none;stroke:#46546d;stroke-width:6;marker-end:url(#m-gray)}.backprop{fill:none;stroke:#ef5b2a;stroke-width:8;stroke-dasharray:18 13;marker-end:url(#m-orange)}
+    </style>
+    <marker id="m-gray" markerUnits="userSpaceOnUse" markerWidth="16" markerHeight="16" refX="14" refY="8" orient="auto"><path d="M0 0L16 8 0 16Z" fill="#6e7b92"/></marker>
+    <marker id="m-orange" markerUnits="userSpaceOnUse" markerWidth="18" markerHeight="18" refX="16" refY="9" orient="auto"><path d="M0 0L18 9 0 18Z" fill="#ef5b2a"/></marker>
+    <marker id="m-teal" markerUnits="userSpaceOnUse" markerWidth="16" markerHeight="16" refX="14" refY="8" orient="auto"><path d="M0 0L16 8 0 16Z" fill="#087f8c"/></marker>
+    <filter id="shadow" x="-10%" y="-15%" width="120%" height="140%"><feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#202c4b" flood-opacity=".10"/></filter>
+  </defs>
+  <rect class="bg" width="3840" height="2160"/>
+  <g class="all">
+    <text x="90" y="88" class="small" fill="#ef5b2a" font-weight="500" letter-spacing="4">OUR TRAINING FRAMEWORK</text>
+    <text x="90" y="180" class="title ink">从原始 Lotus 到 Thermal Student：三个 Loss 到底作用在哪里</text>
+    <text x="90" y="238" class="subtitle muted">每个 Loss 都标出真实输入；三项汇入 Total Loss；梯度只回传到橙色模块</text>
+    <g transform="translate(3180 92)">
+      <rect width="180" height="62" rx="12" class="navy"/><text x="90" y="42" text-anchor="middle" class="nodeSub white">冻结</text>
+      <rect x="202" width="180" height="62" rx="12" class="orange"/><text x="292" y="42" text-anchor="middle" class="nodeSub white">可训练</text>
+      <rect x="404" width="180" height="62" rx="12" class="teal"/><text x="494" y="42" text-anchor="middle" class="nodeSub white">共享输入</text>
+    </g>
+
+    <rect x="75" y="300" width="3690" height="430" rx="30" class="laneT"/>
+    <rect x="75" y="820" width="3690" height="650" rx="30" class="laneS"/>
+    <text x="115" y="360" class="laneTitle ink">① 原始 Lotus Teacher</text>
+    <text x="3580" y="360" text-anchor="end" class="nodeSub muted">冻结 · 只在训练时提供目标</text>
+    <text x="115" y="880" class="laneTitle" fill="#d9471d">② 我们的 Thermal Student</text>
+    <text x="3580" y="880" text-anchor="end" class="nodeSub muted">保留用于推理</text>
+
+    <!-- shared thermal input -->
+    <rect x="120" y="560" width="300" height="520" rx="24" class="navy"/>
+    <text x="270" y="660" text-anchor="middle" class="nodeTitle white">MS2 热像</text>
+    <text x="270" y="715" text-anchor="middle" class="nodeSub white mono">uint16 / I;16</text>
+    <line x1="165" y1="765" x2="375" y2="765" stroke="#73819c" stroke-width="2"/>
+    <text x="270" y="830" text-anchor="middle" class="nodeSub white">高位深转换</text>
+    <text x="270" y="880" text-anchor="middle" class="nodeSub white">→ 3 channels</text>
+    <text x="270" y="1008" text-anchor="middle" class="small" fill="#cdd7e9">同一 thermal input</text>
+    <path d="M420 675C500 675 500 535 590 535" class="flow"/>
+    <path d="M420 1005H490" class="flowTrain"/>
+
+    <!-- teacher forward -->
+    <rect x="600" y="445" width="500" height="180" rx="22" class="navy"/>
+    <text x="850" y="512" text-anchor="middle" class="nodeTitle white">Lotus VAE Encoder</text>
+    <text x="850" y="570" text-anchor="middle" class="nodeSub white">original condition path</text>
+    <path d="M1100 535H1430" class="flow"/>
+    <rect x="1450" y="465" width="300" height="140" rx="20" class="card"/>
+    <text x="1600" y="518" text-anchor="middle" class="nodeTitle ink">c<tspan baseline-shift="sub" font-size="25">T</tspan></text>
+    <text x="1600" y="565" text-anchor="middle" class="nodeSub mono" fill="#ef5b2a">[B,4,32,80]</text>
+    <path d="M1750 535H1930" class="flow"/>
+    <rect x="1950" y="445" width="500" height="180" rx="22" class="navy"/>
+    <text x="2200" y="512" text-anchor="middle" class="nodeTitle white">Teacher U-Net</text>
+    <text x="2200" y="570" text-anchor="middle" class="nodeSub white">frozen · no_grad</text>
+    <path d="M2450 535H2630" class="flow"/>
+    <rect x="2650" y="465" width="300" height="140" rx="20" class="card"/>
+    <text x="2800" y="518" text-anchor="middle" class="nodeTitle ink">r<tspan baseline-shift="sub" font-size="25">T</tspan></text>
+    <text x="2800" y="565" text-anchor="middle" class="nodeSub muted">x0 / sample · detach</text>
+    <!-- in-figure legend for intermediate tensors -->
+    <rect x="3090" y="405" width="610" height="250" rx="22" class="card"/>
+    <text x="3125" y="455" class="nodeTitle ink">中间态图注</text>
+    <rect x="3125" y="485" width="76" height="56" rx="12" class="orangeSoft" stroke="#ef5b2a" stroke-width="2"/>
+    <text x="3163" y="523" text-anchor="middle" class="nodeTitle" fill="#d9471d">c</text>
+    <text x="3230" y="520" class="nodeSub ink">condition latent</text>
+    <text x="3655" y="520" text-anchor="end" class="small muted mono">[B,4,32,80]</text>
+    <rect x="3125" y="560" width="76" height="56" rx="12" class="orangeSoft" stroke="#ef5b2a" stroke-width="2"/>
+    <text x="3163" y="598" text-anchor="middle" class="nodeTitle" fill="#d9471d">r</text>
+    <text x="3230" y="595" class="nodeSub ink">raw U-Net response</text>
+    <text x="3655" y="595" text-anchor="end" class="small muted">x0 / sample latent</text>
+    <text x="3125" y="638" class="small muted">下标：T = Teacher，S = Student</text>
+
+    <!-- shared diffusion input -->
+    <rect x="2040" y="745" width="320" height="74" rx="16" class="teal"/>
+    <text x="2200" y="778" text-anchor="middle" class="nodeSub white">same z<tspan baseline-shift="sub" font-size="20">t</tspan></text>
+    <text x="2200" y="807" text-anchor="middle" class="small white">same timestep = 999</text>
+    <path d="M2135 745V640" class="sharedFlow"/>
+    <path d="M2265 819V1035" class="sharedFlow"/>
+
+    <!-- student forward -->
+    <rect x="500" y="1030" width="380" height="200" rx="22" class="navy"/>
+    <text x="690" y="1105" text-anchor="middle" class="nodeTitle white">AnyThermal</text>
+    <text x="690" y="1165" text-anchor="middle" class="nodeSub white">frozen features</text>
+    <path d="M880 1130H960" class="flowTrain"/>
+    <rect x="980" y="995" width="450" height="270" rx="24" class="orange"/>
+    <text x="1205" y="1078" text-anchor="middle" class="nodeTitle white">Adapter V2.3</text>
+    <text x="1205" y="1138" text-anchor="middle" class="nodeSub white">thermal features</text>
+    <text x="1205" y="1182" text-anchor="middle" class="nodeSub white">→ Lotus condition</text>
+    <text x="1205" y="1230" text-anchor="middle" class="small white">TRAINABLE</text>
+    <path d="M1430 1130H1490" class="flowTrain"/>
+    <rect x="1510" y="1060" width="300" height="140" rx="20" class="card"/>
+    <text x="1660" y="1113" text-anchor="middle" class="nodeTitle ink">c<tspan baseline-shift="sub" font-size="25">S</tspan></text>
+    <text x="1660" y="1160" text-anchor="middle" class="nodeSub mono" fill="#ef5b2a">[B,4,32,80]</text>
+    <path d="M1810 1130H1930" class="flowTrain"/>
+    <rect x="1950" y="1030" width="500" height="200" rx="22" class="orange"/>
+    <text x="2200" y="1105" text-anchor="middle" class="nodeTitle white">Student U-Net</text>
+    <text x="2200" y="1165" text-anchor="middle" class="nodeSub white">TRAINABLE</text>
+    <path d="M2450 1130H2630" class="flowTrain"/>
+    <rect x="2650" y="1060" width="300" height="140" rx="20" class="card"/>
+    <text x="2800" y="1113" text-anchor="middle" class="nodeTitle ink">r<tspan baseline-shift="sub" font-size="25">S</tspan></text>
+    <text x="2800" y="1160" text-anchor="middle" class="nodeSub muted">x0 / sample</text>
+    <path d="M2950 1130H3020" class="flowTrain"/>
+    <rect x="3040" y="1030" width="430" height="200" rx="22" class="navy"/>
+    <text x="3255" y="1105" text-anchor="middle" class="nodeTitle white">VAE Decoder</text>
+    <text x="3255" y="1165" text-anchor="middle" class="nodeSub white">frozen · FP32</text>
+    <path d="M3470 1130H3520" class="flowTrain"/>
+    <rect x="3540" y="1060" width="220" height="140" rx="20" class="card"/>
+    <text x="3650" y="1113" text-anchor="middle" class="nodeTitle ink">d<tspan baseline-shift="sub" font-size="25">pred</tspan></text>
+    <text x="3650" y="1160" text-anchor="middle" class="nodeSub muted">dense disparity</text>
+
+    <!-- loss row label -->
+    <text x="90" y="1550" class="laneTitle ink">③ Loss application（真实操作数）</text>
+
+    <!-- condition loss: cT and cS explicitly feed it -->
+    <rect x="1450" y="1580" width="360" height="170" rx="22" class="loss"/>
+    <text x="1630" y="1640" text-anchor="middle" class="lossTitle ink">Condition loss</text>
+    <text x="1630" y="1692" text-anchor="middle" class="nodeSub muted">inputs: c<tspan baseline-shift="sub" font-size="20">T</tspan> , c<tspan baseline-shift="sub" font-size="20">S</tspan></text>
+    <text x="1630" y="1728" text-anchor="middle" class="small muted">condition latent consistency</text>
+    <path d="M1750 535H1840V1665H1825" class="operand"/>
+    <path d="M1660 1200V1560" class="operand"/>
+
+    <!-- response loss: rT and rS explicitly feed it -->
+    <rect x="2580" y="1580" width="400" height="170" rx="22" class="loss"/>
+    <text x="2780" y="1640" text-anchor="middle" class="lossTitle ink">Response loss</text>
+    <text x="2780" y="1692" text-anchor="middle" class="nodeSub muted">inputs: r<tspan baseline-shift="sub" font-size="20">T</tspan> , r<tspan baseline-shift="sub" font-size="20">S</tspan></text>
+    <text x="2780" y="1728" text-anchor="middle" class="small muted">raw U-Net response consistency</text>
+    <path d="M2950 535H3040V1665H2995" class="operand"/>
+    <path d="M2800 1200V1560" class="operand"/>
+
+    <!-- GT source and loss: decoded prediction + lidar GT -->
+    <rect x="3060" y="1605" width="270" height="120" rx="18" class="card"/>
+    <text x="3195" y="1653" text-anchor="middle" class="nodeTitle ink">LiDAR GT</text>
+    <text x="3195" y="1695" text-anchor="middle" class="small muted">valid pixels only</text>
+    <rect x="3400" y="1580" width="360" height="170" rx="22" class="loss"/>
+    <text x="3580" y="1640" text-anchor="middle" class="lossTitle ink">GT loss × 5</text>
+    <text x="3580" y="1692" text-anchor="middle" class="nodeSub muted">inputs: d<tspan baseline-shift="sub" font-size="20">pred</tspan> , d<tspan baseline-shift="sub" font-size="20">GT</tspan></text>
+    <text x="3580" y="1728" text-anchor="middle" class="small muted">masked SSI L1</text>
+    <path d="M3650 1200V1560" class="operand"/>
+    <path d="M3330 1665H3380" class="operand"/>
+
+    <!-- loss aggregation -->
+    <rect x="1450" y="1900" width="950" height="170" rx="26" class="navy2" filter="url(#shadow)"/>
+    <text x="1925" y="1965" text-anchor="middle" class="totalTitle white">TOTAL LOSS</text>
+    <text x="1925" y="2025" text-anchor="middle" class="nodeTitle white">L<tspan baseline-shift="sub" font-size="25">cond</tspan> + L<tspan baseline-shift="sub" font-size="25">resp</tspan> + 5 × L<tspan baseline-shift="sub" font-size="25">GT</tspan></text>
+    <path d="M1630 1750C1630 1825 1700 1845 1750 1880" class="aggregate"/>
+    <path d="M2780 1750C2780 1840 2410 1860 2260 1900" class="aggregate"/>
+    <path d="M3580 1750C3500 1860 2700 1985 2420 1985" class="aggregate"/>
+
+    <!-- actual gradient destinations -->
+    <path d="M1450 1985H900V1420C900 1335 1020 1310 1130 1275" class="backprop"/>
+    <path d="M2400 1985H2500V1420C2500 1335 2350 1300 2240 1240" class="backprop"/>
+    <rect x="570" y="1845" width="660" height="82" rx="18" class="orangeSoft" stroke="#ef5b2a" stroke-width="3"/>
+    <text x="900" y="1898" text-anchor="middle" class="nodeSub" fill="#d9471d">BACKPROP ONLY → Adapter + Student U-Net</text>
+  </g>
+</svg>

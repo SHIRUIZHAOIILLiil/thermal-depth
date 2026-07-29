@@ -1,0 +1,1128 @@
+"""One trainer for all six routes of the 20-epoch suite.
+
+Why one file instead of six: the task requires "统一数据划分、损失函数和评估方式".
+The previous per-route trainers are copy-edited forks of each other, so any
+route-to-route difference in the data pipeline, the loss, or the checkpoint rule
+is a confound.  Here the only thing that changes between routes is *which
+modules exist and which of them get gradients*.
+
+Routes
+------
+    a_rgb_unet                RGB     -> frozen VAE -> TRAIN U-Net
+    b_thermal_unet            Thermal -> frozen VAE -> TRAIN U-Net
+    c1_vae_adapter            Thermal -> frozen VAE -> TRAIN Adapter -> frozen U-Net
+    c2_vae_adapter_unet       Thermal -> frozen VAE -> TRAIN Adapter -> TRAIN U-Net
+    d1_anythermal_adapter     Thermal -> frozen AnyThermal -> TRAIN Adapter -> frozen U-Net
+    d2_anythermal_adapter_unet Thermal -> frozen AnyThermal -> TRAIN Adapter -> TRAIN U-Net
+
+Objective (identical for every route, by user instruction 2026-07-25)
+---------------------------------------------------------------------
+Pure ground-truth supervision: masked scale-shift-invariant L1 against the
+LiDAR disparity, on valid pixels only.  **No teacher of any kind** -- no frozen
+response-consistency anchor, no condition distillation onto VAE latents, no
+dense depth teacher.  Nothing in this file instantiates a second network to
+imitate.  Pretrained Lotus/AnyThermal weights are used as *initialisation and
+frozen feature extractors*, which is not a teacher-student relationship.
+
+Per-epoch validation runs the official BMSD protocol (ssi_disparity) inline on
+a strided subset of the val manifest, so the epoch curve is directly comparable
+to every number in the frozen document.
+
+Example (route b, 20 epochs, empty prompt):
+
+    python tools/train_route_suite.py --route b_thermal_unet --epochs 20 --output-dir outputs/route_suite/b_thermal_unet_20ep
+
+Gate discipline: `--smoke-updates 5` first, then `--overfit-steps 300` on a
+32-frame subset, only then the full run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import copy
+import csv
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import random
+import sys
+import time
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parents[1]
+LOTUS_ROOT = ROOT / "lotus"
+for path in (ROOT, LOTUS_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+from ms2_eval.official_protocol import evaluate_sample  # noqa: E402
+from models.anythermal_lotus_v2 import thermal_to_lotus_input  # noqa: E402
+from models.anythermal_lotus_v2_4 import seeded_noise  # noqa: E402
+from models.anythermal_lotus_model import extract_anythermal_feature_pyramid  # noqa: E402
+from train_ms2_joint_gt_v3 import (  # noqa: E402
+    load_gt_disparity,
+    masked_ssi_l1,
+    decode_to_disparity,
+)
+
+# 集群上路径不同，用环境变量覆盖；不设时保持本地原有默认值不变。
+MANIFEST_DIR = Path(
+    os.environ.get(
+        "IRIS_MANIFEST_DIR",
+        "/mnt/e/project/thermal-depth/outputs/manifests/sequence_level_internvl3_8b",
+    )
+)
+DEFAULT_TRAIN_MANIFEST = MANIFEST_DIR / "ms2_train_day2seq_20260725.jsonl"
+DEFAULT_VAL_MANIFEST = (
+    MANIFEST_DIR
+    / "ms2_fixed_sequence_internvl3_8b_filtered_caption_val_rgb_depth_v1_clip75_rerun_20260714.jsonl"
+)
+CHECKPOINT_FORMAT = "route_suite_multi_epoch_pure_gt"
+
+# route -> (input modality, condition path, trains adapter, trains U-Net)
+ROUTES = {
+    "a_rgb_unet": ("rgb", "vae", False, True),
+    "b_thermal_unet": ("thermal", "vae", False, True),
+    "c1_vae_adapter": ("thermal", "vae_adapter", True, False),
+    "c2_vae_adapter_unet": ("thermal", "vae_adapter", True, True),
+    "d1_anythermal_adapter": ("thermal", "anythermal_adapter", True, False),
+    "d2_anythermal_adapter_unet": ("thermal", "anythermal_adapter", True, True),
+}
+
+
+# --------------------------------------------------------------------------- #
+# arguments
+# --------------------------------------------------------------------------- #
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--route", required=True, choices=sorted(ROUTES))
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--train-manifest", type=Path, default=DEFAULT_TRAIN_MANIFEST)
+    parser.add_argument("--val-manifest", type=Path, default=DEFAULT_VAL_MANIFEST)
+    parser.add_argument(
+        "--ms2-root",
+        type=Path,
+        default=Path(os.environ.get("IRIS_MS2_ROOT", "/mnt/e/dataset/ms2")),
+    )
+    parser.add_argument("--lotus-model-path", default="jingheya/lotus-depth-g-v2-1-disparity")
+    parser.add_argument("--anythermal-model-path", default="theairlabcmu/AnyThermal")
+
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--micro-batch-size", type=int, default=1)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
+    parser.add_argument("--unet-learning-rate", type=float, default=1e-6)
+    parser.add_argument("--adapter-learning-rate", type=float, default=3e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--max-grad-norm", type=float, default=1.0)
+    parser.add_argument(
+        "--lr-schedule",
+        choices=("constant", "cosine"),
+        default="cosine",
+        help="20 epochs at a constant 1-epoch LR is not a fair convergence test; cosine is the default.",
+    )
+    parser.add_argument("--warmup-updates", type=int, default=200)
+    parser.add_argument("--min-lr-ratio", type=float, default=0.05)
+
+    parser.add_argument("--gt-loss-weight", type=float, default=5.0)
+    parser.add_argument("--gt-min-depth", type=float, default=0.1)
+    parser.add_argument("--gt-max-depth", type=float, default=80.0)
+    parser.add_argument("--depth-scale", type=float, default=256.0)
+    parser.add_argument(
+        "--gt-decode-fp32",
+        dest="gt_decode_fp32",
+        action="store_true",
+        default=True,
+        help="Decode through an fp32 VAE copy (fixes the fp16 GT-gradient underflow). On by default.",
+    )
+    parser.add_argument("--no-gt-decode-fp32", dest="gt_decode_fp32", action="store_false")
+
+    parser.add_argument("--caption-mode", choices=("empty", "correct"), default="empty")
+    parser.add_argument("--caption-dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--input-max-edge",
+        type=int,
+        default=0,
+        help="RGB route only. 0 = native 1224x384; positive downscales the longer edge (multiple of 8).",
+    )
+
+    parser.add_argument("--val-stride", type=int, default=4, help="Val subset stride for the epoch curve.")
+    parser.add_argument("--val-every", type=int, default=1, help="Validate every N epochs.")
+    parser.add_argument(
+        "--val-caption-mode",
+        choices=("empty", "correct", "shuffled"),
+        default="empty",
+        help=(
+            "shuffled: each frame gets another frame's caption, rotated by half the "
+            "set so the donor is kilometres away. Same text distribution as 'correct', "
+            "only the image-text correspondence is broken -- so correct-vs-shuffled "
+            "isolates caption content from the injection tax."
+        ),
+    )
+    parser.add_argument("--skip-val", action="store_true")
+
+    parser.add_argument(
+        "--snapshot-epochs",
+        default="",
+        help="Comma-separated epochs to persist weights for, on top of best/end (e.g. 1,2,5,10).",
+    )
+    parser.add_argument("--timestep", type=int, default=999)
+    parser.add_argument("--seed", type=int, default=20260703)
+    parser.add_argument("--log-interval", type=int, default=25)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--frozen-dtype", choices=("fp16", "fp32"), default="fp16")
+    parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument(
+        "--skip-file-check",
+        action="store_true",
+        help="Trust the manifest instead of stat-ing every referenced file (~50k syscalls).",
+    )
+    parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument(
+        "--init-from",
+        type=Path,
+        default=None,
+        help=(
+            "Start from another run's weights (stage 2 of a staged schedule). Unlike "
+            "--resume this may cross routes and manifests and carries no optimizer "
+            "state: every module the checkpoint and this route share gets loaded, and "
+            "training starts at epoch 0 with a fresh optimiser."
+        ),
+    )
+    parser.add_argument(
+        "--freeze-adapter",
+        action="store_true",
+        help=(
+            "Keep the adapter fixed and train only the U-Net -- stage 2 of 'train the "
+            "adapter first, then the U-Net behind it'. The frozen adapter is still "
+            "written into every checkpoint, so evaluation reproduces the same "
+            "condition path. Requires --init-from."
+        ),
+    )
+    parser.add_argument(
+        "--eval-checkpoint",
+        type=Path,
+        default=None,
+        help="Evaluate this checkpoint instead of training. Use --val-stride 1 for the full val set.",
+    )
+    parser.add_argument(
+        "--eval-tag",
+        default="eval",
+        help="Names the output files: eval_<tag>.json and eval_<tag>_per_sample.csv.",
+    )
+    parser.add_argument("--smoke-updates", type=int, default=None)
+    parser.add_argument("--overfit-steps", type=int, default=None)
+    parser.add_argument(
+        "--overfit-samples",
+        type=int,
+        default=32,
+        help="With --overfit-steps: how many frames the run is allowed to see.",
+    )
+    return parser.parse_args()
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    if args.epochs <= 0:
+        raise ValueError("--epochs must be positive.")
+    if args.micro_batch_size != 1:
+        raise ValueError("This trainer runs micro-batch 1 (variable-length captions, fp32 U-Net).")
+    if args.gradient_accumulation_steps <= 0:
+        raise ValueError("--gradient-accumulation-steps must be positive.")
+    if args.gt_loss_weight <= 0:
+        raise ValueError("--gt-loss-weight must be positive; pure GT is the whole objective.")
+    if args.smoke_updates is not None and args.overfit_steps is not None:
+        raise ValueError("Choose either --smoke-updates or --overfit-steps, not both.")
+    if args.smoke_updates is not None and "smoke" not in args.output_dir.name:
+        raise ValueError("--smoke-updates requires an output dir name containing 'smoke'.")
+    if args.overfit_steps is not None and "overfit" not in args.output_dir.name:
+        raise ValueError("--overfit-steps requires an output dir name containing 'overfit'.")
+    if args.input_max_edge and ROUTES[args.route][0] != "rgb":
+        raise ValueError("--input-max-edge only applies to the RGB route.")
+    if args.freeze_adapter:
+        if ROUTES[args.route][1] == "vae":
+            raise ValueError(f"Route {args.route} has no adapter to freeze.")
+        if not ROUTES[args.route][3]:
+            raise ValueError(
+                f"Route {args.route} does not train the U-Net, so freezing the adapter "
+                "would leave nothing trainable."
+            )
+        if args.init_from is None:
+            raise ValueError(
+                "--freeze-adapter without --init-from would freeze a freshly initialised "
+                "adapter; pass the stage-1 checkpoint."
+            )
+    if args.resume is not None and args.init_from is not None:
+        raise ValueError("--resume continues a run; --init-from starts a new one. Pick one.")
+
+
+# --------------------------------------------------------------------------- #
+# helpers
+# --------------------------------------------------------------------------- #
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def seed_everything(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed % (2**32))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def task_embedding(batch_size, device, dtype):
+    task = torch.tensor([[1.0, 0.0]], device=device, dtype=dtype).repeat(batch_size, 1)
+    return torch.cat([torch.sin(task), torch.cos(task)], dim=-1)
+
+
+def environment_fingerprint(device: torch.device) -> dict:
+    """Record what the run actually executed on.
+
+    Training is chaotic over ~100k updates, so the same configuration on
+    different hardware does not reproduce bit-for-bit. TF32 in particular is on
+    by default from Ampere onward and silently drops fp32 matmuls to ~10 mantissa
+    bits. Any comparison that crosses machines has to be calibrated first, and
+    that is impossible after the fact unless the environment was written down.
+    """
+    fingerprint = {
+        "python": sys.version.split()[0],
+        "torch": torch.__version__,
+        "cuda": torch.version.cuda,
+        "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
+        "platform": sys.platform,
+        "tf32_matmul": bool(torch.backends.cuda.matmul.allow_tf32),
+        "tf32_cudnn": bool(torch.backends.cudnn.allow_tf32),
+        "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
+    }
+    if device.type == "cuda" and torch.cuda.is_available():
+        properties = torch.cuda.get_device_properties(device)
+        fingerprint.update(
+            {
+                "gpu_name": properties.name,
+                "gpu_capability": f"{properties.major}.{properties.minor}",
+                "gpu_memory_gb": round(properties.total_memory / 1024**3, 1),
+                "gpu_count": torch.cuda.device_count(),
+            }
+        )
+    return fingerprint
+
+
+def parameter_audit(module) -> dict:
+    total = int(sum(p.numel() for p in module.parameters()))
+    trainable = int(sum(p.numel() for p in module.parameters() if p.requires_grad))
+    return {"parameters": total, "trainable": trainable, "frozen": total - trainable}
+
+
+def downscaled_size(height: int, width: int, max_edge: int) -> tuple[int, int]:
+    if max_edge <= 0 or max(height, width) <= max_edge:
+        return height, width
+    ratio = max_edge / max(height, width)
+    new_h = max(8, int(height * ratio) // 8 * 8)
+    new_w = max(8, int(width * ratio) // 8 * 8)
+    return new_h, new_w
+
+
+def learning_rate_factor(update: int, total_updates: int, args: argparse.Namespace) -> float:
+    if update < args.warmup_updates:
+        return (update + 1) / max(1, args.warmup_updates)
+    if args.lr_schedule == "constant":
+        return 1.0
+    progress = (update - args.warmup_updates) / max(1, total_updates - args.warmup_updates)
+    progress = min(max(progress, 0.0), 1.0)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return args.min_lr_ratio + (1.0 - args.min_lr_ratio) * cosine
+
+
+# --------------------------------------------------------------------------- #
+# manifests
+# --------------------------------------------------------------------------- #
+
+
+def read_manifest(
+    path: Path, root: Path, modality: str, split: str | None, check_files: bool = True
+) -> list[dict]:
+    """Rows with the input path and the GT map of the *matching view*.
+
+    Conclusion 15: the RGB route must be scored against RGB-view GT and the
+    thermal routes against thermal-view GT. Mixing the two is not a fallback.
+    """
+    rows = []
+    with path.open("r", encoding="utf-8") as handle:
+        for manifest_index, line in enumerate(handle):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if split is not None and row.get("split") != split:
+                raise ValueError(f"Expected split={split!r} but row {row.get('id')} is {row.get('split')!r}")
+            if modality == "rgb":
+                image_field = row.get("rgb_path")
+                depth_field = row.get("rgb_depth_path") or row.get("depth_path")
+                view = "rgb"
+            else:
+                image_field = row.get("thermal_path")
+                depth_field = row.get("thermal_depth_path") or row.get("depth_path")
+                view = "thr"
+            if not image_field or not depth_field:
+                raise ValueError(f"Row {row.get('id')} lacks a {modality} input or its {view}-view GT")
+            if row.get("rgb_depth_path") and f"/{view}/" not in str(depth_field).replace("\\", "/"):
+                raise ValueError(f"Row {row.get('id')}: GT {depth_field} is not the {view} view")
+            image_path = root / image_field
+            depth_path = root / depth_field
+            # ~50k stat calls; cheap locally, slow on a network filesystem. Skip
+            # once the payload has been verified on the target machine.
+            if check_files:
+                if not image_path.is_file():
+                    raise FileNotFoundError(f"Missing input image: {image_path}")
+                if not depth_path.is_file():
+                    raise FileNotFoundError(f"Missing GT depth: {depth_path}")
+            rows.append(
+                {
+                    "id": str(row["id"]),
+                    "sequence": str(row.get("sequence", "")),
+                    "manifest_index": manifest_index,
+                    "image_path": image_path,
+                    "depth_path": depth_path,
+                    "caption": str(row.get("caption", "")),
+                }
+            )
+    if not rows:
+        raise ValueError(f"Manifest {path} produced no rows.")
+    return rows
+
+
+# --------------------------------------------------------------------------- #
+# sample loading
+# --------------------------------------------------------------------------- #
+
+
+def load_input_tensor(row: dict, modality: str, args: argparse.Namespace):
+    """Return (tensor in [-1,1] as [1,3,H,W], diagnostics)."""
+    if modality == "thermal":
+        thermal = thermal_to_lotus_input(row["image_path"], processing_res=0)
+        if thermal.diagnostics["converted_uint8_std"] <= 0:
+            raise RuntimeError(f"Constant thermal conversion: {row['id']}")
+        return thermal.tensor, {"thermal": thermal.diagnostics}
+
+    image = np.asarray(Image.open(row["image_path"]).convert("RGB"))
+    height, width = image.shape[:2]
+    if int(image.min()) == int(image.max()):
+        raise RuntimeError(f"Constant RGB image: {row['id']}")
+    tensor = torch.from_numpy(np.ascontiguousarray(image.astype(np.float32)))
+    tensor = tensor.permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
+    target_hw = downscaled_size(height, width, args.input_max_edge)
+    if target_hw != (height, width):
+        tensor = F.interpolate(tensor, target_hw, mode="bilinear", align_corners=False)
+    if target_hw[0] % 8 or target_hw[1] % 8:
+        raise RuntimeError(f"RGB resolution {target_hw} not divisible by 8: {row['id']}")
+    return tensor, {"native_hw": [height, width], "input_hw": list(target_hw)}
+
+
+def load_sample(row: dict, modality: str, args: argparse.Namespace):
+    tensor, diagnostics = load_input_tensor(row, modality, args)
+    gt_disparity, valid_mask = load_gt_disparity(
+        row["depth_path"], args.gt_min_depth, args.gt_max_depth, args.depth_scale
+    )
+    diagnostics.update({"id": row["id"], "gt_valid_pixels": int(valid_mask.sum())})
+    return tensor, gt_disparity, valid_mask, diagnostics
+
+
+# --------------------------------------------------------------------------- #
+# condition construction (the only place routes differ)
+# --------------------------------------------------------------------------- #
+
+
+class RouteModel:
+    """Owns the modules a route needs and produces its U-Net condition."""
+
+    def __init__(self, args, device, frozen_dtype):
+        self.args = args
+        self.device = device
+        self.frozen_dtype = frozen_dtype
+        modality, condition, train_adapter, train_unet = ROUTES[args.route]
+        # Staged schedule: the adapter exists and is used, it just does not get
+        # gradients in this stage. Tools that build a RouteModel without this
+        # flag (the region analyser) keep the route's own answer.
+        if getattr(args, "freeze_adapter", False):
+            train_adapter = False
+        self.modality = modality
+        self.condition_kind = condition
+        self.trains_adapter = train_adapter
+        self.trains_unet = train_unet
+
+        from pipeline import LotusGPipeline  # noqa: E402
+
+        self.lotus = LotusGPipeline.from_pretrained(
+            args.lotus_model_path,
+            torch_dtype=frozen_dtype,
+            local_files_only=args.local_files_only,
+        ).to(device)
+        for module in (self.lotus.vae, self.lotus.text_encoder, self.lotus.unet):
+            module.requires_grad_(False).eval()
+
+        # The U-Net used for the forward pass is always an fp32 copy, trainable
+        # or not: on the adapter-only routes the adapter's gradient has to travel
+        # back through it, and an fp16 backward is exactly what silently zeroed
+        # the GT gradient before (frozen doc 3.11).
+        self.unet = copy.deepcopy(self.lotus.unet).to(device=device, dtype=torch.float32)
+        if train_unet:
+            self.unet.train().requires_grad_(True)
+        else:
+            self.unet.eval().requires_grad_(False)
+        # The pipeline's own fp16 U-Net is never used again (no teacher here), so
+        # park it on the CPU instead of paying 1.7 GB of VRAM for a dead copy.
+        self.lotus.unet = self.lotus.unet.to("cpu")
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        # fp32 decoder copy: the fp16 backward through the VAE underflows the GT
+        # gradient to exactly zero on most steps.
+        self.gt_vae = None
+        if args.gt_decode_fp32:
+            self.gt_vae = copy.deepcopy(self.lotus.vae).to(device=device, dtype=torch.float32)
+            self.gt_vae.requires_grad_(False).eval()
+            self.gt_vae.encoder = None
+
+        self.adapter = None
+        self.anythermal = None
+        if condition == "vae_adapter":
+            from models.thermal_vae_latent_adapter import ThermalVAELatentAdapter
+
+            self.adapter = ThermalVAELatentAdapter().to(device=device, dtype=torch.float32)
+            self.adapter.train().requires_grad_(train_adapter)
+            if not train_adapter:
+                self.adapter.eval()
+        elif condition == "anythermal_adapter":
+            from models.anythermal_encoder import AnyThermalEncoder
+            from models.anythermal_lotus_adapter_v2_3 import AnyThermalLotusAdapterV23
+
+            self.anythermal = AnyThermalEncoder(
+                model_path=args.anythermal_model_path,
+                device=str(device),
+                local_files_only=args.local_files_only,
+            )
+            self.anythermal.model.requires_grad_(False).eval()
+            self.adapter = AnyThermalLotusAdapterV23().to(device=device, dtype=torch.float32)
+            self.adapter.train().requires_grad_(train_adapter)
+            if not train_adapter:
+                self.adapter.eval()
+
+    # -- prompts ---------------------------------------------------------- #
+
+    def encode_prompt(self, text: str) -> torch.Tensor:
+        encoded, _ = self.lotus.encode_prompt(
+            prompt=text,
+            device=self.device,
+            num_images_per_prompt=1,
+            do_classifier_free_guidance=None,
+        )
+        return encoded.detach().float()
+
+    # -- condition -------------------------------------------------------- #
+
+    def vae_latent(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        encoder_dtype = next(self.lotus.vae.encoder.parameters()).dtype
+        with torch.no_grad():
+            posterior = self.lotus.vae.encode(
+                image_tensor.to(device=self.device, dtype=encoder_dtype)
+            ).latent_dist
+            latent = posterior.mode() * self.lotus.vae.config.scaling_factor
+        return latent.float()
+
+    def condition(self, row: dict, image_tensor: torch.Tensor) -> torch.Tensor:
+        if self.condition_kind in ("vae", "vae_adapter"):
+            latent = self.vae_latent(image_tensor)
+            if self.condition_kind == "vae_adapter":
+                return self.adapter(latent)
+            return latent
+
+        features, _, diagnostics = extract_anythermal_feature_pyramid(
+            self.anythermal, row["image_path"], enable_grad=False
+        )
+        if diagnostics["converted_uint8_std"] <= 0:
+            raise RuntimeError(f"Constant AnyThermal conversion: {row['id']}")
+        features = [feature.detach().float().to(self.device) for feature in features]
+        # target latent grid = whatever the frozen VAE would have produced
+        target_size = (image_tensor.shape[-2] // 8, image_tensor.shape[-1] // 8)
+        thermal = image_tensor.to(device=self.device, dtype=torch.float32)
+        return self.adapter(features, thermal, target_size)
+
+    # -- forward ---------------------------------------------------------- #
+
+    def predict_disparity(self, row: dict, image_tensor: torch.Tensor, prompt: torch.Tensor):
+        condition = self.condition(row, image_tensor)
+        noise = seeded_noise(
+            (1, *condition.shape[1:]),
+            seed=self.args.seed + int(row["manifest_index"]),
+            device=self.device,
+            dtype=torch.float32,
+            scale=float(self.lotus.scheduler.init_noise_sigma),
+        )
+        timestep = torch.full((1,), self.args.timestep, device=self.device, dtype=torch.long)
+        latent_input = self.lotus.scheduler.scale_model_input(noise, timestep).detach()
+        unet_dtype = next(self.unet.parameters()).dtype
+        x0 = self.unet(
+            torch.cat([condition, latent_input], dim=1).to(unet_dtype),
+            timestep,
+            encoder_hidden_states=prompt.to(unet_dtype),
+            class_labels=task_embedding(1, self.device, unet_dtype),
+            return_dict=False,
+        )[0]
+        return decode_to_disparity(self.lotus, x0.float(), self.device, gt_vae=self.gt_vae)
+
+    def trainable_modules(self) -> dict:
+        modules = {}
+        if self.trains_unet:
+            modules["unet"] = self.unet
+        if self.trains_adapter:
+            modules["adapter"] = self.adapter
+        if not modules:
+            raise RuntimeError(f"Route {self.args.route} has no trainable module.")
+        return modules
+
+    def persisted_modules(self) -> dict:
+        """What a checkpoint must carry to reproduce this run's forward path.
+
+        The trainable modules, plus the adapter whenever one exists: a frozen
+        adapter in a staged run holds stage 1's weights, and without it the
+        checkpoint would silently evaluate against a freshly initialised one.
+        For every non-staged route this is exactly `trainable_modules()`.
+        """
+        modules = dict(self.trainable_modules())
+        if self.adapter is not None:
+            modules["adapter"] = self.adapter
+        return modules
+
+    def load_state_dicts(self, state_dicts: dict, context: str) -> list[str]:
+        """Load every module this route shares with `state_dicts`. Returns names."""
+        loaded = []
+        for name, module in self.persisted_modules().items():
+            if name not in state_dicts:
+                continue
+            module.load_state_dict(state_dicts[name], strict=True)
+            loaded.append(name)
+        if not loaded:
+            raise SystemExit(
+                f"{context}: checkpoint carries {sorted(state_dicts)} but this route "
+                f"needs {sorted(self.persisted_modules())} -- nothing to load."
+            )
+        return loaded
+
+    def set_train(self, mode: bool) -> None:
+        for module in self.trainable_modules().values():
+            module.train(mode)
+
+
+# --------------------------------------------------------------------------- #
+# validation (official BMSD protocol, inline)
+# --------------------------------------------------------------------------- #
+
+
+def rotate_captions(rows: list[dict]) -> dict:
+    """Give every frame a distant frame's caption (deterministic half-set rotation).
+
+    A random shuffle is not safe here: MS2 frames sit ~0.5 m apart, so a nearby
+    donor would hand back an almost-correct caption and collapse the contrast.
+    Rotating by half the set puts the donor kilometres away.
+    """
+    offset = len(rows) // 2
+    captions = [row["caption"] for row in rows]
+    missing = sum(1 for caption in captions if not caption.strip())
+    if missing:
+        raise SystemExit(f"--val-caption-mode shuffled needs captions on every row; {missing} lack one")
+    for index, row in enumerate(rows):
+        row["donor_id"] = rows[(index + offset) % len(rows)]["id"]
+        row["caption"] = captions[(index + offset) % len(rows)]
+    return {
+        "rotation_offset": offset,
+        "frames": len(rows),
+        "self_assignments": sum(1 for row in rows if row["donor_id"] == row["id"]),
+    }
+
+
+@torch.no_grad()
+def run_validation(model: RouteModel, rows: list[dict], prompts: dict, args, per_sample: list | None = None) -> dict:
+    model.set_train(False)
+    accumulator: dict[str, float] = {}
+    count = 0
+    for row in rows:
+        image_tensor, _ = load_input_tensor(row, model.modality, args)
+        if args.val_caption_mode == "empty":
+            prompt = prompts["empty"]
+        else:
+            # 'shuffled' rows already carry the donor caption (see rotate_captions)
+            prompt = model.encode_prompt(row["caption"])
+        prediction = model.predict_disparity(row, image_tensor, prompt)
+        gt_metres = np.asarray(Image.open(row["depth_path"]), dtype=np.float32) / args.depth_scale
+        pred = prediction[None, None]
+        if pred.shape[-2:] != gt_metres.shape:
+            pred = F.interpolate(pred, gt_metres.shape, mode="bilinear", align_corners=False)
+        metrics = evaluate_sample(
+            pred[0, 0].float().cpu().numpy(),
+            gt_metres,
+            align="ssi_disparity",
+            min_depth=1e-3,
+            max_depth=80.0,
+        )
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)) and key != "align_mode":
+                accumulator[key] = accumulator.get(key, 0.0) + float(value)
+        count += 1
+        if per_sample is not None:
+            per_sample.append({"id": row["id"], "sequence": row["sequence"], **{
+                k: v for k, v in metrics.items() if k != "align_mode"
+            }})
+    model.set_train(True)
+    if not count:
+        raise RuntimeError("Validation subset is empty.")
+    return {key: value / count for key, value in accumulator.items()} | {"val_samples": count}
+
+
+# --------------------------------------------------------------------------- #
+# checkpoints
+# --------------------------------------------------------------------------- #
+
+
+def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args, output: Path) -> None:
+    """Load a checkpoint and score it with the same forward path training uses."""
+    if not val_rows:
+        raise SystemExit("--eval-checkpoint needs a validation set; drop --skip-val.")
+    checkpoint = torch.load(args.eval_checkpoint.resolve(), map_location="cpu", weights_only=False)
+    if checkpoint.get("route") != args.route:
+        raise SystemExit(
+            f"Checkpoint route {checkpoint.get('route')!r} does not match --route {args.route!r}"
+        )
+    loaded = model.load_state_dicts(checkpoint["state_dicts"], str(args.eval_checkpoint))
+    print(
+        f"[eval] loaded {', '.join(loaded)} from checkpoint",
+        flush=True,
+    )
+    print(
+        f"[eval] {args.eval_checkpoint} (epoch {checkpoint.get('epoch')}) "
+        f"on {len(val_rows)} frames from {args.val_manifest.name}",
+        flush=True,
+    )
+
+    rotation = None
+    if args.val_caption_mode == "shuffled":
+        rotation = rotate_captions(val_rows)
+        print(
+            f"[eval] shuffled captions: rotated by {rotation['rotation_offset']} frames, "
+            f"{rotation['self_assignments']} self-assignments",
+            flush=True,
+        )
+
+    per_sample: list[dict] = []
+    started = time.time()
+    metrics = run_validation(model, val_rows, prompts, args, per_sample=per_sample)
+    metrics.update(
+        {
+            "route": args.route,
+            "checkpoint": str(args.eval_checkpoint),
+            "checkpoint_epoch": checkpoint.get("epoch"),
+            "val_manifest": str(args.val_manifest),
+            "val_stride": args.val_stride,
+            "val_caption_mode": args.val_caption_mode,
+            "caption_rotation": rotation,
+            "environment": environment_fingerprint(model.device),
+            "elapsed_seconds": time.time() - started,
+            "protocol": "official BMSD ssi_disparity, min_depth 1e-3, max_depth 80",
+        }
+    )
+    (output / f"eval_{args.eval_tag}.json").write_text(
+        json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    with (output / f"eval_{args.eval_tag}_per_sample.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(per_sample[0]))
+        writer.writeheader()
+        writer.writerows(per_sample)
+    print(
+        f"[eval] abs_rel {metrics['abs_rel']:.4f}  rmse {metrics['rmse']:.3f}  "
+        f"a1 {metrics['a1']:.4f}  ({metrics['val_samples']} frames, "
+        f"{metrics['elapsed_seconds'] / 60:.1f} min) -> eval_{args.eval_tag}.json",
+        flush=True,
+    )
+
+
+def weights_payload(model: RouteModel, args, epoch: int, manifest_hash: str, metrics: dict | None) -> dict:
+    return {
+        "format": CHECKPOINT_FORMAT,
+        "route": args.route,
+        "epoch": epoch,
+        "manifest_sha256": manifest_hash,
+        "caption_mode": args.caption_mode,
+        "val_metrics": metrics,
+        "trainable_modules": sorted(model.trainable_modules()),
+        "state_dicts": {
+            name: {key: value.detach().cpu() for key, value in module.state_dict().items()}
+            for name, module in model.persisted_modules().items()
+        },
+    }
+
+
+def save_weights(path: Path, model: RouteModel, args, epoch: int, manifest_hash: str, metrics: dict | None) -> None:
+    torch.save(weights_payload(model, args, epoch, manifest_hash, metrics), path)
+
+
+def save_resume_state(path: Path, model, optimizer, args, epoch, update, manifest_hash, best) -> None:
+    payload = weights_payload(model, args, epoch, manifest_hash, None)
+    payload["optimizer_state_dict"] = optimizer.state_dict()
+    payload["update"] = update
+    payload["best"] = best
+    payload["torch_rng_state"] = torch.get_rng_state()
+    payload["python_rng_state"] = random.getstate()
+    temporary = path.with_suffix(".tmp")
+    torch.save(payload, temporary)
+    temporary.replace(path)
+
+
+# --------------------------------------------------------------------------- #
+# main
+# --------------------------------------------------------------------------- #
+
+
+def main() -> None:
+    args = parse_args()
+    validate_args(args)
+    modality = ROUTES[args.route][0]
+
+    device = torch.device(args.device)
+    frozen_dtype = torch.float16 if args.frozen_dtype == "fp16" else torch.float32
+    output = args.output_dir
+    output.mkdir(parents=True, exist_ok=True)
+
+    seed_everything(args.seed)
+    # Say something before the silent part: hashing the manifest and stat-ing
+    # every referenced file is ~50k syscalls, which takes minutes over WSL's
+    # /mnt/e, and until it finishes the run looks dead.
+    print(f"[init] route {args.route}; hashing + validating {args.train_manifest.name} ...", flush=True)
+    manifest_hash = sha256(args.train_manifest)
+    train_rows = read_manifest(
+        args.train_manifest, args.ms2_root, modality, split="train", check_files=not args.skip_file_check
+    )
+    if args.overfit_steps is not None:
+        train_rows = train_rows[: args.overfit_samples]
+
+    val_rows: list[dict] = []
+    if not args.skip_val:
+        val_rows = read_manifest(
+            args.val_manifest, args.ms2_root, modality, split=None, check_files=not args.skip_file_check
+        )
+        val_rows = val_rows[:: max(1, args.val_stride)]
+
+    if args.caption_mode == "correct":
+        missing = [row["id"] for row in train_rows if not row["caption"].strip()]
+        if missing:
+            raise SystemExit(
+                f"--caption-mode correct but {len(missing)} train rows lack captions (first: {missing[:3]})"
+            )
+
+    print(f"[data] train {len(train_rows)} frames from {args.train_manifest.name}", flush=True)
+    if val_rows:
+        print(f"[data] val   {len(val_rows)} frames (stride {args.val_stride})", flush=True)
+
+    model = RouteModel(args, device, frozen_dtype)
+    prompts = {"empty": model.encode_prompt("")}
+    caption_rng = random.Random(args.seed + 424242)
+
+    if args.eval_checkpoint is not None:
+        run_evaluation(model, val_rows, prompts, args, output)
+        return
+
+    init_from = None
+    if args.init_from is not None:
+        payload = torch.load(args.init_from.resolve(), map_location="cpu", weights_only=False)
+        loaded = model.load_state_dicts(payload["state_dicts"], str(args.init_from))
+        init_from = {
+            "path": str(args.init_from),
+            "sha256": sha256(args.init_from),
+            "source_route": payload.get("route"),
+            "source_epoch": payload.get("epoch"),
+            "source_caption_mode": payload.get("caption_mode"),
+            "source_manifest_sha256": payload.get("manifest_sha256"),
+            "modules_loaded": loaded,
+            "modules_left_at_pretrained_init": sorted(
+                set(model.persisted_modules()) - set(loaded)
+            ),
+        }
+        del payload
+        print(
+            f"[init-from] {args.init_from.name}: loaded {', '.join(loaded)} "
+            f"(from route {init_from['source_route']}, epoch {init_from['source_epoch']}); "
+            f"fresh optimiser, training restarts at epoch 0",
+            flush=True,
+        )
+        if init_from["modules_left_at_pretrained_init"]:
+            print(
+                f"[init-from] not in that checkpoint, left at pretrained init: "
+                f"{', '.join(init_from['modules_left_at_pretrained_init'])}",
+                flush=True,
+            )
+
+    parameter_groups = []
+    if model.trains_unet:
+        parameter_groups.append({"params": model.unet.parameters(), "lr": args.unet_learning_rate})
+    if model.trains_adapter:
+        parameter_groups.append({"params": model.adapter.parameters(), "lr": args.adapter_learning_rate})
+    optimizer = torch.optim.AdamW(parameter_groups, weight_decay=args.weight_decay)
+    base_learning_rates = [group["lr"] for group in optimizer.param_groups]
+
+    updates_per_epoch = math.ceil(len(train_rows) / args.gradient_accumulation_steps)
+    total_updates = updates_per_epoch * args.epochs
+    if args.overfit_steps is not None:
+        total_updates = args.overfit_steps
+    if args.smoke_updates is not None:
+        total_updates = args.smoke_updates
+
+    audit = {
+        name: parameter_audit(module)
+        for name, module in {
+            "vae": model.lotus.vae,
+            "text_encoder": model.lotus.text_encoder,
+            "unet": model.unet,
+            **({"adapter": model.adapter} if model.adapter is not None else {}),
+            **({"anythermal": model.anythermal.model} if model.anythermal is not None else {}),
+        }.items()
+    }
+    frozen_config = {
+        "format": CHECKPOINT_FORMAT,
+        "route": args.route,
+        "objective": "pure masked SSI-L1 vs LiDAR disparity; no teacher of any kind",
+        "modality": modality,
+        "condition": ROUTES[args.route][1],
+        "trains_adapter": model.trains_adapter,
+        "trains_unet": model.trains_unet,
+        "freeze_adapter": args.freeze_adapter,
+        "init_from": init_from,
+        "train_manifest": str(args.train_manifest),
+        "train_manifest_sha256": manifest_hash,
+        "train_frames": len(train_rows),
+        "val_manifest": str(args.val_manifest),
+        "val_frames": len(val_rows),
+        "epochs": args.epochs,
+        "updates_per_epoch": updates_per_epoch,
+        "total_updates": total_updates,
+        "effective_batch_size": args.micro_batch_size * args.gradient_accumulation_steps,
+        "lr_schedule": args.lr_schedule,
+        "warmup_updates": args.warmup_updates,
+        "caption_mode": args.caption_mode,
+        "seed": args.seed,
+        "environment": environment_fingerprint(device),
+        "parameter_audit": audit,
+        "settings": {
+            key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
+        },
+    }
+    (output / "frozen_config.json").write_text(
+        json.dumps(frozen_config, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    for name, entry in audit.items():
+        print(f"[audit] {name:12s} total {entry['parameters']:>12,}  trainable {entry['trainable']:>12,}", flush=True)
+
+    snapshot_epochs = {
+        int(token) for token in args.snapshot_epochs.split(",") if token.strip().isdigit()
+    }
+
+    start_epoch = 0
+    update = 0
+    best = {"epoch": None, "abs_rel": float("inf")}
+    if args.resume is not None:
+        checkpoint = torch.load(args.resume.resolve(), map_location="cpu", weights_only=False)
+        if checkpoint.get("format") != CHECKPOINT_FORMAT or checkpoint.get("route") != args.route:
+            raise RuntimeError("Resume checkpoint belongs to a different route or format.")
+        if checkpoint.get("manifest_sha256") != manifest_hash:
+            raise RuntimeError("Resume manifest hash differs from this run.")
+        model.load_state_dicts(checkpoint["state_dicts"], str(args.resume))
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = int(checkpoint["epoch"])
+        update = int(checkpoint["update"])
+        best = checkpoint.get("best", best)
+        torch.set_rng_state(checkpoint["torch_rng_state"])
+        random.setstate(checkpoint["python_rng_state"])
+        del checkpoint
+        print(f"[resume] continuing from epoch {start_epoch}, update {update}", flush=True)
+
+    metrics_path = output / "epoch_metrics.jsonl"
+    started = time.time()
+    stop = False
+    is_gate_run = args.smoke_updates is not None or args.overfit_steps is not None
+
+    for epoch in range(start_epoch, args.epochs):
+        permutation = list(range(len(train_rows)))
+        random.Random(args.seed + epoch).shuffle(permutation)
+        epoch_started = time.time()
+        running = {"gt_ssi_l1": 0.0, "gt_abs_rel": 0.0}
+        # The epoch-cumulative mean stops moving once a few thousand samples are
+        # in, which makes a live run look frozen. Keep a short window for the
+        # console; the epoch record still uses the full-epoch mean.
+        window: collections.deque = collections.deque(maxlen=800)
+        seen = 0
+        optimizer.zero_grad(set_to_none=True)
+
+        for position, index in enumerate(permutation):
+            row = train_rows[index]
+            image_tensor, gt_disparity, valid_mask, _ = load_sample(row, modality, args)
+            gt_disparity = gt_disparity.to(device)
+            valid_mask = valid_mask.to(device)
+
+            if args.caption_mode == "correct" and caption_rng.random() >= args.caption_dropout:
+                prompt = model.encode_prompt(row["caption"])
+            else:
+                prompt = prompts["empty"]
+
+            prediction = model.predict_disparity(row, image_tensor, prompt)
+            if prediction.shape != gt_disparity.shape[-2:]:
+                prediction = F.interpolate(
+                    prediction[None, None], gt_disparity.shape[-2:], mode="bilinear", align_corners=False
+                )[0, 0]
+            gt_loss, gt_abs_rel, _ = masked_ssi_l1(prediction[None], gt_disparity, valid_mask)
+            loss = args.gt_loss_weight * gt_loss
+            (loss / args.gradient_accumulation_steps).backward()
+
+            step_loss = float(gt_loss.detach())
+            running["gt_ssi_l1"] += step_loss
+            running["gt_abs_rel"] += float(gt_abs_rel.detach())
+            window.append(step_loss)
+            seen += 1
+
+            is_last = position == len(permutation) - 1
+            if (position + 1) % args.gradient_accumulation_steps == 0 or is_last:
+                factor = learning_rate_factor(update, total_updates, args)
+                for group, base in zip(optimizer.param_groups, base_learning_rates):
+                    group["lr"] = base * factor
+                trainable = [
+                    parameter
+                    for module in model.trainable_modules().values()
+                    for parameter in module.parameters()
+                    if parameter.requires_grad
+                ]
+                grad_norm = torch.nn.utils.clip_grad_norm_(trainable, args.max_grad_norm)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                update += 1
+
+                if update % args.log_interval == 0:
+                    print(
+                        f"[e{epoch + 1}/{args.epochs} u{update}/{total_updates}] "
+                        f"gt_ssi_l1 {sum(window) / len(window):.5f} "
+                        f"(epoch {running['gt_ssi_l1'] / max(1, seen):.5f}) "
+                        f"abs_rel {running['gt_abs_rel'] / max(1, seen):.4f} "
+                        f"lr x{factor:.3f} grad {float(grad_norm):.3f}",
+                        flush=True,
+                    )
+                    # Step-level record so a long run is inspectable while it
+                    # runs. Key names match tools/watch_training.py.
+                    grad_key = "unet_grad_norm" if model.trains_unet else "adapter_grad_norm"
+                    with (output / "training_metrics.jsonl").open("a", encoding="utf-8") as handle:
+                        handle.write(
+                            json.dumps(
+                                {
+                                    "step": update,
+                                    "epoch": epoch + 1,
+                                    "total": running["gt_ssi_l1"] / max(1, seen),
+                                    "window_gt_ssi_l1": sum(window) / len(window),
+                                    "gt_abs_rel": running["gt_abs_rel"] / max(1, seen),
+                                    grad_key: float(grad_norm),
+                                    "lr_factor": factor,
+                                    "samples_seen": epoch * len(train_rows) + seen,
+                                    "elapsed_seconds": time.time() - started,
+                                }
+                            )
+                            + "\n"
+                        )
+                if args.smoke_updates is not None and update >= args.smoke_updates:
+                    stop = True
+                    break
+                if args.overfit_steps is not None and update >= args.overfit_steps:
+                    stop = True
+                    break
+
+        epoch_record = {
+            "epoch": epoch + 1,
+            "updates": update,
+            "train_gt_ssi_l1": running["gt_ssi_l1"] / max(1, seen),
+            "train_gt_abs_rel": running["gt_abs_rel"] / max(1, seen),
+            "epoch_seconds": time.time() - epoch_started,
+        }
+
+        # Also validate when a smoke/overfit run stops early: otherwise the
+        # validation path would never execute before the full runs.
+        should_validate = bool(val_rows) and (
+            stop or (epoch + 1) % args.val_every == 0 or epoch + 1 == args.epochs
+        )
+        if should_validate:
+            validation_started = time.time()
+            val_metrics = run_validation(model, val_rows, prompts, args)
+            epoch_record["val"] = val_metrics
+            epoch_record["val_seconds"] = time.time() - validation_started
+            print(
+                f"[val e{epoch + 1}] abs_rel {val_metrics['abs_rel']:.4f} "
+                f"rmse {val_metrics['rmse']:.3f} a1 {val_metrics['a1']:.4f} "
+                f"({val_metrics['val_samples']} frames, {epoch_record['val_seconds'] / 60:.1f} min)",
+                flush=True,
+            )
+            if val_metrics["abs_rel"] < best["abs_rel"]:
+                best = {"epoch": epoch + 1, "abs_rel": val_metrics["abs_rel"]}
+                if not is_gate_run:
+                    save_weights(
+                        output / "best_weights.pt", model, args, epoch + 1, manifest_hash, val_metrics
+                    )
+                    print(f"[val e{epoch + 1}] new best -> best_weights.pt", flush=True)
+
+        with metrics_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(epoch_record, ensure_ascii=False) + "\n")
+
+        if epoch + 1 in snapshot_epochs:
+            save_weights(
+                output / f"epoch{epoch + 1:02d}_weights.pt",
+                model, args, epoch + 1, manifest_hash, epoch_record.get("val"),
+            )
+
+        # Gate runs are throwaway: a resume state carries the optimizer moments
+        # and costs ~10 GB for a 5-step smoke. Only real runs get checkpoints.
+        if not is_gate_run:
+            save_resume_state(
+                output / "latest.pt", model, optimizer, args, epoch + 1, update, manifest_hash, best
+            )
+
+        if stop:
+            break
+
+    if not is_gate_run:
+        save_weights(output / "end_weights.pt", model, args, args.epochs, manifest_hash, None)
+    summary = dict(frozen_config)
+    summary.update(
+        {
+            "completed_updates": update,
+            "elapsed_seconds": time.time() - started,
+            "best": best,
+            "stopped_early": stop,
+            "end_checkpoint_sha256": None if is_gate_run else sha256(output / "end_weights.pt"),
+            "gate_run": is_gate_run,
+        }
+    )
+    (output / "summary.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    print(
+        f"[done] {args.route}: {update} updates in {(time.time() - started) / 3600:.2f} h; "
+        f"best epoch {best['epoch']} abs_rel {best['abs_rel']:.4f}",
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    main()
