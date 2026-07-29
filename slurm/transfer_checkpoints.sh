@@ -4,7 +4,9 @@
 #   bash slurm/transfer_checkpoints.sh check   # 只看本地有没有、多大
 #   bash slurm/transfer_checkpoints.sh calib   # 机器差标定用（3.47 GB）
 #   bash slurm/transfer_checkpoints.sh stage1  # 任务 1b 阶段二的 --init-from（28 MB）
+#   bash slurm/transfer_checkpoints.sh caption # 任务 1a/2 的 b+caption e3（3.2 GB）
 #   bash slurm/transfer_checkpoints.sh midas   # 任务 4 的 AnyThermal MiDaS 权重
+#   bash slurm/transfer_checkpoints.sh bmsd    # 任务 4 的 BMSD 脚手架（代码）
 #   bash slurm/transfer_checkpoints.sh all
 #
 # 这些不走 git —— checkpoint 是产物，.gitignore 已挡掉 *.pt。
@@ -31,6 +33,9 @@ ANYTHERMAL_LOCAL="${ANYTHERMAL_LOCAL:-/mnt/e/project/AnyThermal}"
 CALIB_SRC="$IRIS_LOCAL/outputs/route_suite/b_thermal_unet_20ep/epoch05_weights.pt"
 STAGE1_SRC="$IRIS_LOCAL/outputs/route_suite/c1_vae_adapter_20ep/best_weights.pt"
 MIDAS_SRC="$ANYTHERMAL_LOCAL/_download/pretrained_checkpoints/depth"
+BCAP_SRC="$IRIS_LOCAL/outputs/route_suite/b_thermal_unet_caption_20ep/best_weights.pt"  # = epoch 3
+BMSD_SRC="$ANYTHERMAL_LOCAL/baselines/depth/BridgeMultiSpectralDepth"
+CODE_DEST="${CODE_DEST:-/mnt/scratch/sc23sz/code}"
 
 # 先把连接建起来。不预热的话，认证提示会夹在传输输出里冒出来，
 # 看上去像是 rsync 卡死（其实是 ssh 在等 Duo）。
@@ -65,11 +70,18 @@ warm_connection
 case "${1:-check}" in
   check)
     printf '%-12s %-10s %s\n' 用途 大小 路径
-    for pair in "标定:$CALIB_SRC" "阶段一:$STAGE1_SRC"; do
+    for pair in "标定:$CALIB_SRC" "阶段一:$STAGE1_SRC" "caption臂:$BCAP_SRC"; do
       n="${pair%%:*}"; p="${pair#*:}"
       if [[ -f "$p" ]]; then printf '%-12s %-10s %s\n' "$n" "$(du -h "$p" | cut -f1)" "$p"
       else printf '%-12s %-10s %s\n' "$n" "缺失" "$p"; fi
     done
+    if [[ -d "$BMSD_SRC" ]]; then
+      printf '%-12s %-10s %s
+' "BMSD" "$(du -sh "$BMSD_SRC" | cut -f1)" "$BMSD_SRC"
+    else
+      printf '%-12s %-10s %s
+' "BMSD" "缺失" "$BMSD_SRC"
+    fi
     if [[ -d "$MIDAS_SRC" ]]; then
       printf '%-12s %-10s %s\n' "MiDaS" "$(du -sh "$MIDAS_SRC" | cut -f1)" "$MIDAS_SRC"
       ls "$MIDAS_SRC"
@@ -79,13 +91,17 @@ case "${1:-check}" in
     echo; echo "--- 远端已有 ---"
     $SSH "$REMOTE" "ls -laR '$CKPT_DEST' '$MODEL_DEST' 2>/dev/null || echo '(尚未创建)'"
     ;;
-  calib)  send_file "$CALIB_SRC"  "$CKPT_DEST/calibration" ;;
-  stage1) send_file "$STAGE1_SRC" "$CKPT_DEST/c1_stage1" ;;
-  midas)  send_dir  "$MIDAS_SRC"  "$MODEL_DEST/anythermal_midas" ;;
+  calib)   send_file "$CALIB_SRC"  "$CKPT_DEST/calibration" ;;
+  stage1)  send_file "$STAGE1_SRC" "$CKPT_DEST/c1_stage1" ;;
+  caption) send_file "$BCAP_SRC"   "$CKPT_DEST/b_caption_e03" ;;
+  midas)   send_dir  "$MIDAS_SRC"  "$MODEL_DEST/anythermal_midas" ;;
+  bmsd)    send_dir  "$BMSD_SRC"   "$CODE_DEST/BridgeMultiSpectralDepth" ;;
   all)
     send_file "$STAGE1_SRC" "$CKPT_DEST/c1_stage1"
     send_file "$CALIB_SRC"  "$CKPT_DEST/calibration"
+    send_file "$BCAP_SRC"   "$CKPT_DEST/b_caption_e03"
     send_dir  "$MIDAS_SRC"  "$MODEL_DEST/anythermal_midas"
+    send_dir  "$BMSD_SRC"   "$CODE_DEST/BridgeMultiSpectralDepth"
     ;;
-  *) echo "用法: $0 {check|calib|stage1|midas|all}"; exit 1 ;;
+  *) echo "用法: $0 {check|calib|stage1|caption|midas|bmsd|all}"; exit 1 ;;
 esac
