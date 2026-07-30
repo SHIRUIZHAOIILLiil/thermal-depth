@@ -19,7 +19,8 @@
 #   MIDAS_VARIANT  Midas_anythermal（默认）| Midas_dinov2 | Midas_small
 #   MANIFEST       考卷；默认独立 test 集 16-08-46
 #   TAG            输出目录名，默认跟 variant 走
-#   MAX_SAMPLES    调试用，限制帧数
+#   MAX_SAMPLES    帧数上限。**脚本自身默认只有 8**（调试值），所以这里默认传 0
+#                  ＝ 全量；要抽样调试才显式设小值
 #
 #   MIDAS_VARIANT=Midas_anythermal sbatch -J at_midas \
 #     --export=ALL,MIDAS_VARIANT ~/Iris/slurm/anythermal_midas.sbatch
@@ -36,6 +37,12 @@ OUT="$IRIS_RUNS/anythermal/${TAG:-$VARIANT}"
 [[ -d "$BMSD_DIR" ]] || { echo "!! 找不到 $BMSD_DIR —— 先跑 transfer_checkpoints.sh bmsd"; exit 1; }
 [[ -f "$MANIFEST" ]] || { echo "!! 找不到 manifest: $MANIFEST"; exit 1; }
 
+# run_ms2_anythermal_midas.py 拒绝非空输出目录，重跑时要么换 TAG 要么先清掉
+if [[ -d "$OUT" ]] && [[ -n "$(ls -A "$OUT" 2>/dev/null)" ]]; then
+  echo "!! 输出目录非空，脚本会拒绝: $OUT"
+  echo "   换个 TAG，或先 rm -rf '$OUT'"
+  exit 1
+fi
 mkdir -p "$OUT"
 export PYTHONPATH="$BMSD_DIR:${PYTHONPATH:-}"
 
@@ -47,7 +54,8 @@ ARGS=(
   --output-dir "$OUT"
   --checkpoint "$CKPT_DIR"
 )
-[[ -n "${MAX_SAMPLES:-}" ]] && ARGS+=(--max-samples "$MAX_SAMPLES")
+# choose_uniform(): count <= 0 或 >= 总数都返回全部。不传的话会用脚本默认的 8。
+ARGS+=(--max-samples "${MAX_SAMPLES:-0}")
 
 echo "=== python tools/run_ms2_anythermal_midas.py ${ARGS[*]} ==="
 python tools/run_ms2_anythermal_midas.py "${ARGS[@]}"
