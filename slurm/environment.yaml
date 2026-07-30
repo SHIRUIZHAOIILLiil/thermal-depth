@@ -32,3 +32,8 @@ dependencies:
       - transformers==4.40.1
       # train_iris_d.sh 用了 --use_8bit_adam，但 requirements.txt 里没列
       - bitsandbytes==0.43.1
+      # 任务 4：BMSD 的 MiDaS/DPT 骨干要 timm，且必须是老版 —— 它用
+      # vit_deit_base_patch16_384 / vit_base_resnet50_384 这些在 timm 0.9+
+      # 已改名的模型，还依赖 patch_embed.backbone.stages 这类内部结构。
+      # 0.6.12 是 MiDaS 官方钉的版本。
+      - timm==0.6.12
