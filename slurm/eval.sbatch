@@ -62,6 +62,9 @@ ARGS=(
 )
 [[ -n "${VAL_MANIFEST:-}" ]] && ARGS+=(--val-manifest "$VAL_MANIFEST")
 [[ "${LOCAL_FILES_ONLY:-1}" == "1" ]] && ARGS+=(--local-files-only)
+# 任务 3 的可视化和九分层都吃 raw_predictions/<id>.npy。
+# 每帧约 0.5 MB + 1 个 inode，所以默认关，要用时显式 SAVE_RAW=1。
+[[ "${SAVE_RAW:-0}" == "1" ]] && ARGS+=(--save-raw-pred)
 
 echo "=== 评估 $CKPT ==="
 echo "=== python tools/train_route_suite.py ${ARGS[*]} ==="
