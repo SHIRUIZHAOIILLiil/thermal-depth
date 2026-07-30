@@ -123,6 +123,22 @@ python tools/train_route_suite.py "${ARGS[@]}"
 rc=$?
 
 echo "=== 退出码 $rc ==="
+
+# ── 跑完即清 latest.pt ──────────────────────────────────────────────
+# latest.pt 含优化器动量，约 10.4 GB，唯一用途是断点续训。12 条线全投时它占
+# 约 125 GB / 1 TB，盘满会让后续作业静默失败（本地踩过：41 个训练攒到 1165 GB）。
+# 三道闸（沿用本地清盘纪律）：① 退出码 0 ② 有 summary.json ③ end_weights.pt 幸存。
+# 被墙钟砍掉的作业 rc≠0，latest.pt 会保住，续投不受影响。KEEP_LATEST=1 可关闭。
+if [[ "$rc" == "0" && "${SMOKE:-0}" != "1" && "${OVERFIT:-0}" != "1" && "${KEEP_LATEST:-0}" != "1" ]]; then
+  if [[ -f "$OUT/summary.json" && -f "$OUT/end_weights.pt" && -f "$OUT/latest.pt" ]]; then
+    sz=$(du -h "$OUT/latest.pt" | cut -f1)
+    rm -f "$OUT/latest.pt"
+    echo "=== 清理：已删 latest.pt（$sz）；summary.json 与 end_weights.pt 均在 ==="
+  else
+    echo "=== 清理：跳过（缺 summary.json / end_weights.pt，或已无 latest.pt）==="
+  fi
+fi
+
 du -sh "$OUT" 2>/dev/null
 ls -la "$OUT"
 lfs quota -h -u "$USER" /scratch
