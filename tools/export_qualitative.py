@@ -18,6 +18,7 @@ points are invisible at slide size, and an undilated GT panel reads as noise.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -33,12 +34,19 @@ for path in (ROOT, LOTUS_ROOT):
         sys.path.insert(0, str(path))
 
 from utils.image_utils import colorize_depth_map  # noqa: E402  (Iris official)
-from train_route_suite import ROUTES, RouteModel, load_input_tensor, read_manifest  # noqa: E402
+from ms2_eval.official_protocol import fit_scale_shift, official_valid_mask  # noqa: E402
+from train_route_suite import (  # noqa: E402
+    ROUTES,
+    RouteModel,
+    load_input_tensor,
+    read_manifest,
+    rotate_captions,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--models", nargs="+", required=True, metavar="ROUTE:CHECKPOINT")
+    parser.add_argument("--models", nargs="+", required=True, metavar="ROUTE:CHECKPOINT[:LABEL]")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/route_suite/qualitative"))
     parser.add_argument(
         "--val-manifest",
@@ -61,7 +69,64 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timestep", type=int, default=999)
     parser.add_argument("--seed", type=int, default=20260703)
     parser.add_argument("--depth-scale", type=float, default=256.0)
+    parser.add_argument(
+        "--caption-mode",
+        default="empty",
+        help=(
+            "empty | correct | shuffled, or one per model as a comma list. A "
+            "caption-trained checkpoint rendered under 'empty' is being shown outside "
+            "the input mode it was trained in. 'shuffled' keeps the text distribution "
+            "and breaks only the image-text correspondence, so the same checkpoint "
+            "listed twice (correct / shuffled) isolates caption content."
+        ),
+    )
+    parser.add_argument(
+        "--style",
+        default="official",
+        choices=("official", "shared", "both"),
+        help=(
+            "official = Iris's colorize_depth_map,每个面板按自己的量程归一化（与论文图可比，"
+            "但两个模型的同一颜色不代表同一距离）。shared = 先按官方协议把预测对齐成米制深度，"
+            "再让整行共用该帧真值的量程 —— 只有这个模式下'天空发黄'才能读作'距离判错'。"
+        ),
+    )
+    parser.add_argument("--min-depth", type=float, default=0.1)
+    parser.add_argument("--max-depth", type=float, default=80.0)
     return parser.parse_args()
+
+
+def align_to_metric_depth(prediction, gt, min_depth, max_depth):
+    """Official ssi_disparity path: fit in disparity space, invert, clamp."""
+    valid = official_valid_mask(gt, min_depth, max_depth)
+    gt_disparity = np.zeros_like(gt, np.float64)
+    gt_disparity[valid] = 1.0 / gt[valid].astype(np.float64)
+    scale, shift = fit_scale_shift(prediction, gt_disparity.astype(np.float32), valid)
+    aligned = 1.0 / np.clip(prediction.astype(np.float64) * scale + shift, 1e-3, None)
+    return np.clip(aligned, min_depth, max_depth), valid
+
+
+def colour_shared(disparity, lo, hi, mask=None):
+    """Iris's own colorize_depth_map, forced onto a shared normalisation range.
+
+    The official helper always min-max normalises the array it is handed, which
+    is exactly what makes two panels incomparable. Rather than re-implement the
+    colouring (and risk inverting the colormap), clip to the shared range and
+    append a one-pixel-tall sentinel row carrying lo and hi: the official
+    function then normalises against those bounds, and the row is cropped off.
+    Every displayed pixel is genuine, and the colouring is literally Iris's --
+    disparity in, reverse_color=True, i.e. 红=近 / 蓝=远, the same convention as
+    `lotus/infer.py:211` (`reverse_color=args.disparity`).
+    """
+    clipped = np.clip(np.asarray(disparity, np.float32), lo, hi)
+    sentinel = np.full((1, clipped.shape[1]), lo, np.float32)
+    sentinel[0, 0] = hi
+    padded = np.vstack([clipped, sentinel])
+    if mask is not None:
+        mask = np.vstack([mask, np.zeros((1, mask.shape[1]), bool)])
+        image = colorize_depth_map(padded, mask=torch.from_numpy(mask), reverse_color=True)
+    else:
+        image = colorize_depth_map(padded, reverse_color=True)
+    return image.crop((0, 0, image.width, image.height - 1))
 
 
 def dilate(values: np.ndarray, valid: np.ndarray, window: int):
@@ -103,17 +168,35 @@ def strip(panels: list[tuple[str, Image.Image]], width: int, label_h: int = 34) 
 def main() -> None:
     args = parse_args()
     args.val_caption_mode = "empty"
-    args.caption_mode = "empty"
     args.gt_decode_fp32 = True
     args.input_max_edge = 0
     args.gt_min_depth, args.gt_max_depth = 0.1, 80.0
 
+    modes = [token.strip() for token in args.caption_mode.split(",") if token.strip()]
+    if len(modes) == 1:
+        modes *= len(args.models)
+    if len(modes) != len(args.models):
+        raise SystemExit(
+            f"--caption-mode takes one value or one per model; got {len(modes)} for {len(args.models)}"
+        )
+    unknown = sorted(set(modes) - {"empty", "correct", "shuffled"})
+    if unknown:
+        raise SystemExit(f"Unknown caption mode(s): {unknown}")
+
     specs = []
-    for entry in args.models:
-        route, _, checkpoint = entry.partition(":")
+    for entry, mode in zip(args.models, modes):
+        parts = entry.split(":")
+        route, checkpoint = parts[0], parts[1] if len(parts) > 1 else ""
+        label = parts[2] if len(parts) > 2 else ""
         if route not in ROUTES or not checkpoint:
-            raise SystemExit(f"Bad --models entry {entry!r}; expected ROUTE:CHECKPOINT")
-        specs.append((route, Path(checkpoint)))
+            raise SystemExit(f"Bad --models entry {entry!r}; expected ROUTE:CHECKPOINT[:LABEL]")
+        path = Path(checkpoint)
+        # Two arms of one experiment share a route name (b_thermal_unet empty vs
+        # caption), so keying panels by route alone would overwrite one of them.
+        specs.append((route, path, label or f"{path.parent.name}", mode))
+    labels = [spec[2] for spec in specs]
+    if len(set(labels)) != len(labels):
+        raise SystemExit(f"Model labels must be unique, got {labels}")
 
     device = torch.device(args.device)
     frozen_dtype = torch.float16 if args.frozen_dtype == "fp16" else torch.float32
@@ -129,58 +212,152 @@ def main() -> None:
         rows = rows[step::step][: args.frames]
     print(f"[data] {len(rows)} frames: {[r['id'] for r in rows]}", flush=True)
 
+    texts = {"correct": {row["id"]: row["caption"] for row in rows}}
+    if "shuffled" in modes:
+        # Rotate a copy so a 'correct' model in the same figure keeps its own text.
+        # The selected frames are hundreds to thousands of frames apart, so the
+        # donor caption describes a completely different place.
+        rotated = [dict(row) for row in rows]
+        rotation = rotate_captions(rotated)
+        texts["shuffled"] = {row["id"]: row["caption"] for row in rotated}
+        print(
+            f"[data] shuffled captions: rotated by {rotation['rotation_offset']} of "
+            f"{len(rows)} selected frames, {rotation['self_assignments']} self-assignments",
+            flush=True,
+        )
+
     predictions: dict[str, dict[str, np.ndarray]] = {}
-    for route, checkpoint in specs:
-        print(f"[model] {route} <- {checkpoint.name}", flush=True)
+    for route, checkpoint, label, mode in specs:
+        print(f"[model] {label}: {route} <- {checkpoint.name}  (prompt: {mode})", flush=True)
         args.route = route
+        args.caption_mode = mode
         model = RouteModel(args, device, frozen_dtype)
         payload = torch.load(checkpoint.resolve(), map_location="cpu", weights_only=False)
         if payload.get("route") != route:
             raise SystemExit(f"{checkpoint}: route {payload.get('route')!r} != {route!r}")
-        for name, module in model.trainable_modules().items():
-            module.load_state_dict(payload["state_dicts"][name], strict=True)
+        model.load_state_dicts(payload["state_dicts"], str(checkpoint))
         model.set_train(False)
-        prompt = model.encode_prompt("")
+        empty_prompt = model.encode_prompt("")
         store = {}
         with torch.no_grad():
             for row in rows:
+                if mode == "empty":
+                    prompt = empty_prompt
+                else:
+                    text = texts[mode][row["id"]]
+                    if not text.strip():
+                        raise SystemExit(f"--caption-mode {mode} but {row['id']} has no caption")
+                    prompt = model.encode_prompt(text)
                 image_tensor, _ = load_input_tensor(row, ROUTES[route][0], args)
                 store[row["id"]] = model.predict_disparity(row, image_tensor, prompt).float().cpu().numpy()
-        predictions[route] = store
+        predictions[label] = store
         del model
         torch.cuda.empty_cache()
 
-    strips = []
+    styles = ("official", "shared") if args.style == "both" else (args.style,)
+    strips: dict[str, list] = {style: [] for style in styles}
+    sky_report: list[dict] = []
+
     for row in rows:
         thermal = np.asarray(Image.open(row["image_path"])).astype(np.float32)
-        lo, hi = np.percentile(thermal, [1, 99])
-        grey = Image.fromarray((np.clip((thermal - lo) / max(hi - lo, 1e-6), 0, 1) * 255).astype(np.uint8)).convert("RGB")
+        t_lo, t_hi = np.percentile(thermal, [1, 99])
+        grey = Image.fromarray(
+            (np.clip((thermal - t_lo) / max(t_hi - t_lo, 1e-6), 0, 1) * 255).astype(np.uint8)
+        ).convert("RGB")
 
         gt = np.asarray(Image.open(row["depth_path"])).astype(np.float32) / args.depth_scale
         valid = gt > 1e-3
-        disparity = np.zeros_like(gt)
-        disparity[valid] = 1.0 / gt[valid]
-        shown, mask = dilate(disparity, valid, args.gt_dilate)
-        gt_panel = colorize_depth_map(shown, mask=torch.from_numpy(mask), reverse_color=True)
+        top = slice(0, gt.shape[0] // 3)
 
-        panels = [("Thermal input", grey),
-                  (f"LiDAR GT  ({valid.mean():.0%} valid, dilated)", gt_panel)]
-        for route, _ in specs:
-            pred = predictions[route][row["id"]]
-            panels.append((f"Route {route.split('_')[0]}  prediction", colorize_depth_map(pred, reverse_color=True)))
-            single = colorize_depth_map(pred, reverse_color=True)
-            single.save(args.output_dir / f"{route.split('_')[0]}_pred_demo.png")
-        strips.append(strip(panels, args.panel_width))
+        aligned_by_label = {}
+        for _, _, label, _ in specs:
+            pred = predictions[label][row["id"]]
+            if pred.shape != gt.shape:
+                pred = F.interpolate(
+                    torch.from_numpy(pred)[None, None], gt.shape, mode="bilinear", align_corners=False
+                )[0, 0].numpy()
+                predictions[label][row["id"]] = pred
+            aligned, _ = align_to_metric_depth(pred, gt, args.min_depth, args.max_depth)
+            aligned_by_label[label] = aligned
+            # Keep the aligned maps: re-colouring a figure then costs nothing,
+            # instead of re-running both models on the GPU.
+            (args.output_dir / "aligned").mkdir(parents=True, exist_ok=True)
+            np.save(args.output_dir / "aligned" / f"{label}__{row['id']}.npy", aligned.astype(np.float32))
+            gt_top = gt[top][valid[top]]
+            sky_report.append(
+                {
+                    "frame": row["id"],
+                    "model": label,
+                    "top_third_pred_median_m": float(np.median(aligned[top])),
+                    "top_third_pred_p90_m": float(np.percentile(aligned[top], 90)),
+                    "top_third_gt_median_m": float(np.median(gt_top)) if gt_top.size else None,
+                    "top_third_gt_valid_px": int(valid[top].sum()),
+                }
+            )
 
-    total_h = sum(im.height for im in strips) + 12 * (len(strips) - 1)
-    canvas = Image.new("RGB", (strips[0].width, total_h), (255, 255, 255))
-    y = 0
-    for im in strips:
-        canvas.paste(im, (0, y))
-        y += im.height + 12
-    out = args.output_dir / "comparison_strip.png"
-    canvas.save(out)
-    print(f"[done] {out}  ({canvas.width}x{canvas.height})")
+        if "official" in styles:
+            disparity = np.zeros_like(gt)
+            disparity[valid] = 1.0 / gt[valid]
+            shown, mask = dilate(disparity, valid, args.gt_dilate)
+            panels = [
+                ("Thermal input", grey),
+                (f"LiDAR GT  ({valid.mean():.0%} valid, dilated)", colorize_depth_map(
+                    shown, mask=torch.from_numpy(mask), reverse_color=True)),
+            ]
+            for _, _, label, mode in specs:
+                pred = predictions[label][row["id"]]
+                panel = colorize_depth_map(pred, reverse_color=True)
+                panels.append((f"{label}  [{mode}]", panel))
+                panel.save(args.output_dir / f"{label}_pred_demo.png")
+            strips["official"].append(strip(panels, args.panel_width))
+
+        if "shared" in styles:
+            # Iris colours disparity, so the shared range lives in disparity too.
+            gt_disparity = np.zeros_like(gt)
+            gt_disparity[valid] = 1.0 / gt[valid]
+            lo = float(np.percentile(gt_disparity[valid], 1))
+            hi = float(np.percentile(gt_disparity[valid], 99))
+            shown, mask = dilate(gt_disparity, valid, args.gt_dilate)
+            panels = [
+                ("Thermal input", grey),
+                (f"LiDAR GT  {1 / hi:.0f}-{1 / lo:.0f} m ({valid.mean():.0%} valid)",
+                 colour_shared(shown, lo, hi, mask=mask)),
+            ]
+            for _, _, label, mode in specs:
+                aligned = aligned_by_label[label]
+                median_top = float(np.median(aligned[top]))
+                panels.append((
+                    f"{label}  [{mode}]   top1/3 median {median_top:.0f} m",
+                    colour_shared(1.0 / np.maximum(aligned, 1e-6), lo, hi),
+                ))
+            strips["shared"].append(strip(panels, args.panel_width))
+
+    for style, images in strips.items():
+        total_h = sum(im.height for im in images) + 12 * (len(images) - 1)
+        canvas = Image.new("RGB", (images[0].width, total_h), (255, 255, 255))
+        y = 0
+        for im in images:
+            canvas.paste(im, (0, y))
+            y += im.height + 12
+        suffix = "" if args.style != "both" else f"_{style}"
+        out = args.output_dir / f"comparison_strip{suffix}.png"
+        canvas.save(out)
+        print(f"[done] {out}  ({canvas.width}x{canvas.height})")
+
+    # The sky question is a distance question, so print the distances too: the
+    # top third is where LiDAR has almost no returns, which is exactly why a
+    # wrong depth there costs nothing in the metric and shows up only in colour.
+    print(f"\n{'frame':>28} {'model':>28} {'top1/3 pred median':>19} {'p90':>8} {'GT median':>10} {'GT px':>7}")
+    for entry in sky_report:
+        gt_median = f"{entry['top_third_gt_median_m']:.1f}" if entry["top_third_gt_median_m"] else "-"
+        print(
+            f"{entry['frame']:>28} {entry['model']:>28} {entry['top_third_pred_median_m']:>19.1f} "
+            f"{entry['top_third_pred_p90_m']:>8.1f} {gt_median:>10} {entry['top_third_gt_valid_px']:>7}"
+        )
+    (args.output_dir / "sky_band_depths.json").write_text(
+        json.dumps(sky_report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    print(f"[done] {args.output_dir / 'sky_band_depths.json'}")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import glob
 import hashlib
 import json
 import math
@@ -39,6 +40,7 @@ for path in (ROOT, LOTUS_ROOT):
 from models.anythermal_lotus_v2 import thermal_to_lotus_input  # noqa: E402
 from models.anythermal_lotus_v2_4 import response_consistency_losses, seeded_noise  # noqa: E402
 from train_ms2_joint_gt_v3 import (  # noqa: E402
+    MIN_VALID_PIXELS,
     load_gt_disparity,
     masked_ssi_l1,
     decode_to_disparity,
@@ -77,6 +79,30 @@ def parse_args() -> argparse.Namespace:
                             "otherwise abort the masked SSI loss mid-epoch). MS2 manifests "
                             "carry no such field and are unaffected."
                         ))
+    parser.add_argument(
+        "--gt-sparsify",
+        choices=("none", "ms2_lidar", "random"),
+        default="none",
+        help=(
+            "Thin the TRAINING supervision; evaluation is untouched. Iris learns its "
+            "text pathway under dense per-pixel GT and only *reports* on sparse test "
+            "sets, whereas we always train on sparse LiDAR. This closes that gap from "
+            "the other side: 'ms2_lidar' transfers a real MS2 LiDAR validity pattern "
+            "onto each frame (structured blindness -- sky and far field go dark), "
+            "'random' drops the same fraction uniformly, which separates 'fewer pixels' "
+            "from 'blind exactly where text would help'."
+        ),
+    )
+    parser.add_argument(
+        "--gt-sparsify-source",
+        default="/mnt/e/dataset/ms2/proj_depth/_2021-08-06-11-23-45/thr/depth_filtered/*.png",
+        help="Glob of MS2 depth maps whose validity patterns get borrowed (ms2_lidar).",
+    )
+    parser.add_argument("--gt-sparsify-count", type=int, default=400,
+                        help="How many MS2 validity patterns to cache and cycle through.")
+    parser.add_argument("--gt-sparsify-density", type=float, default=0.0,
+                        help="random mode: fraction of pixels kept. 0 = match the measured ms2_lidar density.")
+    parser.add_argument("--gt-sparsify-seed", type=int, default=20260729)
     parser.add_argument("--micro-batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--unet-learning-rate", type=float, default=1e-6)
@@ -265,6 +291,67 @@ def validate_protocol(args) -> None:
             raise ValueError("--overfit-steps cannot be combined with --resume.")
 
 
+_SPARSIFY_MASKS: list | None = None
+_SPARSIFY_DENSITY: float | None = None
+
+
+def load_sparsify_masks(args) -> tuple[list, float]:
+    """MS2 LiDAR validity patterns, cached once per process."""
+    global _SPARSIFY_MASKS, _SPARSIFY_DENSITY
+    if _SPARSIFY_MASKS is not None:
+        return _SPARSIFY_MASKS, _SPARSIFY_DENSITY
+    paths = sorted(glob.glob(args.gt_sparsify_source))[: args.gt_sparsify_count]
+    if not paths:
+        raise SystemExit(f"--gt-sparsify {args.gt_sparsify}: no depth maps matched {args.gt_sparsify_source}")
+    masks = [np.asarray(Image.open(path)) > 0 for path in paths]
+    _SPARSIFY_MASKS = masks
+    _SPARSIFY_DENSITY = float(np.mean([mask.mean() for mask in masks]))
+    print(
+        f"[sparsify] {len(masks)} MS2 validity patterns from {Path(args.gt_sparsify_source).parent.parent.parent.name}, "
+        f"mean density {_SPARSIFY_DENSITY * 100:.1f}%",
+        flush=True,
+    )
+    return _SPARSIFY_MASKS, _SPARSIFY_DENSITY
+
+
+def sparsify_gt(gt_disparity, valid_mask, row, args):
+    """Zero the supervision outside a thinned mask. Deterministic per row, so the
+    empty and caption arms of one comparison see byte-identical supervision."""
+    height, width = valid_mask.shape[-2:]
+    masks, measured = load_sparsify_masks(args)
+    pattern = masks[int(row["manifest_index"]) % len(masks)]
+    structured = np.asarray(
+        Image.fromarray(pattern.astype(np.uint8) * 255).resize((width, height), Image.NEAREST)
+    ) > 127
+
+    if args.gt_sparsify == "ms2_lidar":
+        keep = structured
+    else:
+        # Match the structured arm's pixel COUNT per frame, not the pattern's
+        # density: MS2's LiDAR blindness overlaps RGBDT500's own holes (both are
+        # the sky), so the intersection is smaller than the product. Sampling the
+        # same number of pixels leaves spatial arrangement as the only difference.
+        dense = valid_mask[0].numpy() > 0.5
+        target = int((dense & structured).sum())
+        if args.gt_sparsify_density:
+            target = int(round(args.gt_sparsify_density * dense.sum()))
+        offsets = np.flatnonzero(dense)
+        rng = np.random.default_rng(args.gt_sparsify_seed + int(row["manifest_index"]))
+        chosen = rng.choice(offsets, size=min(target, offsets.size), replace=False)
+        keep = np.zeros(dense.size, bool)
+        keep[chosen] = True
+        keep = keep.reshape(dense.shape)
+    keep_tensor = torch.from_numpy(keep.astype(np.float32))[None]
+    thinned = valid_mask * keep_tensor
+    remaining = int(thinned.sum())
+    if remaining < MIN_VALID_PIXELS:
+        raise RuntimeError(
+            f"{row['id']}: --gt-sparsify {args.gt_sparsify} left {remaining} valid pixels "
+            f"(floor {MIN_VALID_PIXELS}); raise --min-gt-valid-fraction to drop such frames."
+        )
+    return gt_disparity * thinned, thinned, remaining
+
+
 def load_sample(row, args):
     thermal = thermal_to_lotus_input(row["thermal_path"], processing_res=0)
     if thermal.diagnostics["converted_uint8_std"] <= 0:
@@ -272,7 +359,11 @@ def load_sample(row, args):
     gt_disparity, valid_mask = load_gt_disparity(
         row["depth_path"], args.gt_min_depth, args.gt_max_depth, args.depth_scale
     )
+    dense_valid = int(valid_mask.sum())
+    if args.gt_sparsify != "none":
+        gt_disparity, valid_mask, _ = sparsify_gt(gt_disparity, valid_mask, row, args)
     diagnostics = {
+        "gt_valid_pixels_dense": dense_valid,
         "id": row["id"],
         "manifest_index": row["manifest_index"],
         "thermal": thermal.diagnostics,

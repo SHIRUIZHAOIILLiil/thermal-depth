@@ -158,13 +158,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-every", type=int, default=1, help="Validate every N epochs.")
     parser.add_argument(
         "--val-caption-mode",
-        choices=("empty", "correct", "shuffled"),
+        choices=("empty", "correct", "shuffled", "permuted"),
         default="empty",
         help=(
-            "shuffled: each frame gets another frame's caption, rotated by half the "
-            "set so the donor is kilometres away. Same text distribution as 'correct', "
-            "only the image-text correspondence is broken -- so correct-vs-shuffled "
-            "isolates caption content from the injection tax."
+            "shuffled: donor caption from half a set away (kilometres along the path). "
+            "permuted: donor drawn uniformly at random -- USE THIS. The rotation is a "
+            "contaminated control: these drives double back, so a donor kilometres "
+            "along the path can be metres away in space, and its caption still predicts "
+            "the recipient's median GT depth at R^2 0.32 (MS2) / 0.46 (RGBDT500) versus "
+            "~-0.1 for a uniform permutation (probe_caption_scale_information.py)."
         ),
     )
     parser.add_argument("--skip-val", action="store_true")
@@ -214,6 +216,16 @@ def parse_args() -> argparse.Namespace:
         help="Evaluate this checkpoint instead of training. Use --val-stride 1 for the full val set.",
     )
     parser.add_argument(
+        "--save-raw-pred",
+        action="store_true",
+        help=(
+            "During --eval-checkpoint, also write each prediction to "
+            "raw_predictions/<id>.npy at native model resolution, float32 -- the same "
+            "convention run_ms2_lotus_*_official.py uses, so analyze_prediction_regions.py "
+            "reads either interchangeably. Costs roughly 0.5 MB and one inode per frame."
+        ),
+    )
+    parser.add_argument(
         "--eval-tag",
         default="eval",
         help="Names the output files: eval_<tag>.json and eval_<tag>_per_sample.csv.",
@@ -261,6 +273,14 @@ def validate_args(args: argparse.Namespace) -> None:
             )
     if args.resume is not None and args.init_from is not None:
         raise ValueError("--resume continues a run; --init-from starts a new one. Pick one.")
+    if args.val_caption_mode in ("shuffled", "permuted") and args.eval_checkpoint is None:
+        # The donor reassignment happens in run_evaluation, not in the per-epoch
+        # run_validation, so a training run would silently score with each frame's
+        # OWN caption and label the curve "shuffled". Fail instead of lying.
+        raise ValueError(
+            f"--val-caption-mode {args.val_caption_mode} only applies to an evaluation run "
+            "(--eval-checkpoint); during training it would silently behave like 'correct'."
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -653,8 +673,52 @@ def rotate_captions(rows: list[dict]) -> dict:
     }
 
 
+def permute_captions(rows: list[dict], seed: int) -> dict:
+    """Give every frame a UNIFORMLY RANDOM other frame's caption.
+
+    The half-set rotation above turns out to be a contaminated control: measured
+    with `probe_caption_scale_information.py`, a rotated caption still predicts
+    the recipient frame's median GT depth at R^2 0.32 (MS2) / 0.46 (RGBDT500),
+    against 0.55 / 0.69 for the frame's own caption and about -0.1 for a uniform
+    permutation. The reason is geometric -- these drives double back, and
+    RGBDT500's frames come from only 100 videos -- so a donor "kilometres along
+    the path" can be metres away in space and describe the same scene.
+
+    A uniform permutation has no such structure, which makes it the control that
+    actually isolates caption content. Self-assignments are swapped away.
+    """
+    captions = [row["caption"] for row in rows]
+    missing = sum(1 for caption in captions if not caption.strip())
+    if missing:
+        raise SystemExit(f"--val-caption-mode permuted needs captions on every row; {missing} lack one")
+    order = np.random.default_rng(seed).permutation(len(rows))
+    for index in range(len(rows)):
+        if order[index] == index:                       # swap with a neighbour
+            partner = (index + 1) % len(rows)
+            order[index], order[partner] = order[partner], order[index]
+    for index, row in enumerate(rows):
+        donor = int(order[index])
+        row["donor_id"] = rows[donor]["id"]
+        row["caption"] = captions[donor]
+    return {
+        "permutation_seed": seed,
+        "frames": len(rows),
+        "self_assignments": sum(1 for row in rows if row["donor_id"] == row["id"]),
+        "median_donor_offset_frames": float(
+            np.median([abs(int(order[i]) - i) for i in range(len(rows))])
+        ),
+    }
+
+
 @torch.no_grad()
-def run_validation(model: RouteModel, rows: list[dict], prompts: dict, args, per_sample: list | None = None) -> dict:
+def run_validation(
+    model: RouteModel,
+    rows: list[dict],
+    prompts: dict,
+    args,
+    per_sample: list | None = None,
+    raw_dir: Path | None = None,
+) -> dict:
     model.set_train(False)
     accumulator: dict[str, float] = {}
     count = 0
@@ -666,6 +730,11 @@ def run_validation(model: RouteModel, rows: list[dict], prompts: dict, args, per
             # 'shuffled' rows already carry the donor caption (see rotate_captions)
             prompt = model.encode_prompt(row["caption"])
         prediction = model.predict_disparity(row, image_tensor, prompt)
+        if raw_dir is not None:
+            # Native resolution, before the resize to GT below: that is what
+            # run_ms2_lotus_*_official.py --save-raw-pred writes, and
+            # analyze_prediction_regions.py resizes to the GT shape itself.
+            np.save(raw_dir / f"{row['id']}.npy", prediction.float().cpu().numpy().astype(np.float32))
         gt_metres = np.asarray(Image.open(row["depth_path"]), dtype=np.float32) / args.depth_scale
         pred = prediction[None, None]
         if pred.shape[-2:] != gt_metres.shape:
@@ -724,15 +793,30 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
             f"{rotation['self_assignments']} self-assignments",
             flush=True,
         )
+    elif args.val_caption_mode == "permuted":
+        rotation = permute_captions(val_rows, args.seed)
+        print(
+            f"[eval] permuted captions: uniform random donors (seed {args.seed}), "
+            f"median donor offset {rotation['median_donor_offset_frames']:.0f} frames, "
+            f"{rotation['self_assignments']} self-assignments",
+            flush=True,
+        )
+
+    raw_dir = None
+    if args.save_raw_pred:
+        raw_dir = output / "raw_predictions"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[eval] saving raw predictions to {raw_dir}", flush=True)
 
     per_sample: list[dict] = []
     started = time.time()
-    metrics = run_validation(model, val_rows, prompts, args, per_sample=per_sample)
+    metrics = run_validation(model, val_rows, prompts, args, per_sample=per_sample, raw_dir=raw_dir)
     metrics.update(
         {
             "route": args.route,
             "checkpoint": str(args.eval_checkpoint),
             "checkpoint_epoch": checkpoint.get("epoch"),
+            "raw_predictions_saved": bool(args.save_raw_pred),
             "val_manifest": str(args.val_manifest),
             "val_stride": args.val_stride,
             "val_caption_mode": args.val_caption_mode,

@@ -168,8 +168,12 @@ bitsandbytes        （同一条 import 未报错）
 | `common.sh` | 公共环境：module、conda、路径导出、数据存在性检查 | ✅ 已验证 |
 | `transfer_ms2.sh` | 数据/manifest 传输与校验（`check`/`manifests`/`data`/`verify`） | ✅ 已验证 |
 | `overnight.sh` | 过夜编排：manifest → 建环境作业 → 数据 → 校验 | ✅ 已执行 |
-| `prefetch_models.sbatch` | 预取 HuggingFace 权重 | ⏳ **未执行** |
-| `route_suite.sbatch` | 六线训练作业（SMOKE / OVERFIT / 全量三种模式） | ⏳ **未验证通过** |
+| `prefetch_models.sbatch` | 预取 HuggingFace 权重 | ✅ 已执行（6914389） |
+| `route_suite.sbatch` | 六线训练（SMOKE / OVERFIT / 全量），支持 CAPTION、INIT_FROM、FREEZE_ADAPTER | ✅ 冒烟已通过 |
+| `eval.sbatch` | `--eval-checkpoint` 全量评估，吃 ROUTE/CKPT/TAG/VAL_MANIFEST/CAPTION_MODE | ✅ 已跑通（6914834） |
+| `transfer_checkpoints.sh` | 传 checkpoint 与外部权重：`calib`/`stage1`/`caption`/`midas`/`bmsd` | ✅ calib、stage1 已传 |
+| `anythermal_midas.sbatch` | 任务 4：原版 AnyThermal MiDaS 出预测 | ⏳ 待 midas/bmsd 传上去 |
+| `analyze.sbatch` | 九分层区域分析，**不占 GPU**（纯读 npy，走标准分区） | ⏳ 待 raw 预测 |
 | `smoke_lotus_d.sbatch`、`train_lotus_d.sbatch` | ⚠️ 上游 **baseline 线**（hypersim/vkitti），**与六线无关**，历史遗留 | 未使用 |
 
 ---
@@ -185,87 +189,396 @@ bitsandbytes        （同一条 import 未报错）
 | conda 环境 | ✅ `iris`，torch/CUDA 已验证 |
 | Slurm 资源配比 | ✅ 1 GPU + 8 核 + 80G，已实际分配到 L40S |
 | 路径解析（环境变量覆盖） | ✅ 作业日志确认 `ms2=` / `mfst=` 指向 scratch |
-| **HuggingFace 权重** | ❌ **未拉取** |
-| **冒烟测试** | ❌ **未通过** |
-| **六线全量** | ❌ **未启动** |
+| **HuggingFace 权重** | ✅ **已预取** 6.7 GB（job 6914389） |
+| **冒烟测试** | ✅ **已通过**（job 6914833，1 分 34 秒） |
+| **评估链路** | ✅ **已跑通**（job 6914834，全量 5,810 帧 8.3 分钟） |
+| **跨机器标定** | ✅ **已通过**，差 0.000009 |
+| 已上集群的 checkpoint | ✅ `calibration/epoch05_weights.pt`、`c1_stage1/best_weights.pt` |
+| **四条线全量**（a / c2 / d1 / d2） | ❌ **未启动** |
+| MiDaS + BMSD（任务 4） | ❌ **未传** |
+| b+caption e3（任务 1a / 2） | ❌ **未传** |
+| raw 预测导出（任务 3） | ❌ **代码未提交**，见 §14 |
 
-### 唯一一次实跑：job 6913886（失败）
+### 作业记录
+
+| Job | 内容 | 结果 |
+|---|---|---|
+| 6913886 | 冒烟（旧脚本） | FAILED — 目录命名护栏，`d9277f186` 已修 |
+| 6913999 | 冒烟（pull 前提交） | FAILED — `sbatch` 在提交时快照脚本，跑的仍是旧版 |
+| 6914389 | 预取 HF 权重 | ✅ Lotus 4.02 GB / AnyThermal 2.65 GB，缓存 6.7 GB |
+| 6914833 | 冒烟 `b_thermal_unet` | ✅ COMPLETED 0:0，1 分 34 秒 |
+| 6914834 | 标定 `b` e05 全量 val | ✅ COMPLETED 0:0，9 分 12 秒 |
+
+**教训**：`sbatch` 在提交那一刻就把脚本快照进 spool，之后 `git pull` 不影响已排队的作业。
+改完脚本必须先 pull 再提交。
+
+### 跨机器标定结果（§12.6 的前置，已完成）
 
 ```
-=== job 6913886 on gpu008 ===
-NVIDIA L40S, 46068 MiB
-ms2 =/mnt/scratch/sc23sz/data/ms2
-mfst=/mnt/scratch/sc23sz/manifests/sequence_level_internvl3_8b
-...
-ValueError: --smoke-updates requires an output dir name containing 'smoke'.
+集群 abs_rel = 0.07749105      本地 abs_rel = 0.0775      差 0.000009
 ```
 
-失败点是 `validate_args()` 的护栏（防止冒烟结果覆盖正式训练输出目录），
-不是环境问题——**GPU 分配、conda 激活、数据与 manifest 路径、存在性检查全部通过**。
-已由 `d9277f186` 修复（输出目录按模式加 `smoke_` / `overfit_` 前缀），**修复后尚未重跑**。
+阈值 0.0005，实测小 55 倍。**集群结果可与本地 b（0.0775）、c1（0.1127）、
+b+caption（e3）并进同一张表**，脚注注明双机即可，不必自成一组。
+
+旁证：`val_samples 5810` 一致；`val_caption_mode empty` 与该 checkpoint 训练模式一致；
+协议 `official BMSD ssi_disparity, min_depth 1e-3, max_depth 80` 同口径；
+环境 `torch 2.3.1+cu121 / L40S / capability 8.9 / 44.4 GB`。
+
+**副产物**：全量 5,810 帧评估 = **8.3 分钟**。`eval.sbatch` 的 `--time` 已据此从 4 小时
+下调到 30 分钟，backfill 更易插队。
 
 ---
 
 ## 8. 待办（按顺序）
 
-**① 预取 HF 权重**（必须在投六线之前，否则六个作业并发写同一缓存目录会下坏）
+§7 的前置全部完成——权重已预取、冒烟已过、标定已过、c1 adapter 已在集群。
+以下是**当前真正剩下的**。
+
+### ① 立刻可投，无任何依赖
+
+d2 是六条线里唯一从未冒烟过的，先单独验一次：
 
 ```bash
-cd ~/Iris && git pull && cd $SCRATCH/logs && sbatch ~/Iris/slurm/prefetch_models.sbatch
+cd ~/Iris && git pull && cd $SCRATCH/logs && ROUTE=d2_anythermal_adapter_unet SMOKE=1 sbatch -J smoke_d2 --time=00:30:00 --export=ALL,ROUTE,SMOKE ~/Iris/slurm/route_suite.sbatch
 ```
 
-需要的两个仓库：
+c2 阶段二与 d1 可以同时投（`INIT_FROM` 要的 c1 adapter 已在集群）：
 
-| 模型 | 用途 | 谁需要 |
+```bash
+cd $SCRATCH/logs && ROUTE=c2_vae_adapter_unet RUN_TAG=c2_stage2 FREEZE_ADAPTER=1 INIT_FROM=$SCRATCH/checkpoints/c1_stage1/best_weights.pt sbatch -J route_c2_stage2 --time=2-00:00:00 --export=ALL,ROUTE,RUN_TAG,FREEZE_ADAPTER,INIT_FROM ~/Iris/slurm/route_suite.sbatch && ROUTE=d1_anythermal_adapter sbatch -J route_d1 --time=1-00:00:00 --export=ALL,ROUTE ~/Iris/slurm/route_suite.sbatch
+```
+
+d2 冒烟过后再投它的全量（`--time=2-00:00:00`）。
+**b 与 c1 本地已完结且标定证明可比，不要在集群重跑。**
+
+### ② 还需要传（WSL 侧，与训练并行）
+
+```bash
+cd /mnt/e/project/Iris && bash slurm/transfer_checkpoints.sh caption && bash slurm/transfer_checkpoints.sh midas && bash slurm/transfer_checkpoints.sh bmsd
+```
+
+| 内容 | 体积 | 给谁 |
 |---|---|---|
-| `jingheya/lotus-depth-g-v2-1-disparity` | Lotus 主干 | 六条线全部 |
-| `theairlabcmu/AnyThermal` | 热成像编码器（`trust_remote_code`） | 仅 `d1` / `d2` |
+| b+caption `best_weights.pt`（= **epoch 3**，已由 `checkpoint_epoch` 确认） | 3.2 GB | 任务 1a、2 |
+| AnyThermal MiDaS 三个变体 | 903 MB | 任务 4 |
+| BMSD 脚手架 | — | 任务 4（重建器依赖） |
 
-**② 冒烟**（1 卡 / 30 分钟墙钟，backfill 易插队）
+### ③ 任务 2 现在就能开跑
 
-```bash
-cd $SCRATCH/logs && ROUTE=b_thermal_unet SMOKE=1 sbatch -J smoke_b --time=00:30:00 --export=ALL,ROUTE,SMOKE ~/Iris/slurm/route_suite.sbatch
-```
-
-**③ 六线全投**（QoS 允许 15 卡并发、作业数不限）
+b(e05) 和 c1 的 checkpoint 已在集群，test manifest 也在，不必等训练：
 
 ```bash
-cd $SCRATCH/logs && for r in a_rgb_unet b_thermal_unet c1_vae_adapter c2_vae_adapter_unet d1_anythermal_adapter d2_anythermal_adapter_unet; do ROUTE=$r sbatch -J "route_$r" --export=ALL,ROUTE ~/Iris/slurm/route_suite.sbatch; done
+cd $SCRATCH/logs && ROUTE=b_thermal_unet TAG=b_e05_on_test CKPT=$SCRATCH/checkpoints/calibration/epoch05_weights.pt VAL_MANIFEST=$SCRATCH/manifests/sequence_level_internvl3_8b/ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl sbatch -J eval_b_test --export=ALL,ROUTE,TAG,CKPT,VAL_MANIFEST ~/Iris/slurm/eval.sbatch
 ```
 
-输出落在 `$SCRATCH/runs/route_suite/<route>/`，日志在 `$SCRATCH/logs/`。
-`route_suite.sbatch` 报 24h（分区上限 48h），跑不完时重投同一 `ROUTE` 会自动
-`--resume latest.pt` 续跑。
+caption 臂评估记得加 `CAPTION_MODE=correct`——必须与该 checkpoint 训练时的输入模式一致。
+
+### ④ 被代码卡住的
+
+任务 3 与任务 1a 的分层，见 §14。
 
 ---
 
 ## 9. 已知问题与风险
 
-1. **`route_suite.sbatch` 尚未跑通任何一次训练**。`validate_args()` 里还有其他约束
-   （`--micro-batch-size` 必须为 1、`--freeze-adapter` 与 route 的组合限制等），
-   后续可能再撞到。
+1. ~~`route_suite.sbatch` 尚未跑通~~ **已通过**（6914833）。但只验了 `b_thermal_unet`
+   这一条，`--freeze-adapter` + `--init-from`（c2 阶段二）那条路径仍未实跑。
 2. **排队是主要瓶颈**，不是算力。84 卡常年 80+ 占用。`--time` 报准能吃到 backfill 红利。
 3. **Windows 侧 SSH 无连接复用**（Windows OpenSSH 不支持 ControlMaster），每次连接
    要两次 Duo。WSL 侧已配 `ControlPersist 8h`，迭代循环建议走 WSL。
 4. **本地 `.git` 有 55 GB 不可达对象**，不影响推送，但占磁盘。
 5. `origin/main` 与本地 `main` **无共同祖先**（`git merge-base` 为空），
    所以走的是新分支 `aire-hpc-setup` 而非推 `main`。这条历史分叉尚未解决。
-6. 六线全量的**实际耗时未知**——本地 20 epoch 的耗时未换算到 L40S，
-   24h 是否够跑完 20 epoch 需要第一个作业跑起来才知道。
+6. 六线全量的**实际耗时仍未知**。已知的只有推理侧：全量 5,810 帧评估 8.3 分钟。
+   训练吞吐没有可比数，`--time` 只能沿用本地外推值。第一条线跑完才能校准。
+7. **`sbatch` 在提交时快照脚本**，`git pull` 不影响已排队作业（6913999 因此白跑）。
+   改完脚本必须先 pull 再提交。
 
 ---
 
-## 10. 请另一个对话核对的点
+## 10. 核对结果（2026-07-29 已回答）
 
-1. 六条线是否确为 `train_route_suite.py` 的 `ROUTES`（a / b / c1 / c2 / d1 / d2），
-   而非 `run_six_route_caption_ablation.sh` 的 route_a–route_f？
-2. 训练/验证 manifest 的默认值是否正确：
-   - train `ms2_train_day2seq_20260725.jsonl`
-   - val `ms2_fixed_sequence_internvl3_8b_filtered_caption_val_rgb_depth_v1_clip75_rerun_20260714.jsonl`
-   - 记忆里提到「待决：1m 去冗余重跑」，是否应改用 `ms2_train_day2seq_1m_20260725.jsonl`？
-3. 六线全量的超参是否沿用 `train_route_suite.py` 默认（20 epoch、
-   `--snapshot-epochs 1,2,5,10,15`、micro-batch 1、GAS 4）？
-4. 未传的 `nir/` `lidar/` `img_right/` 等模态，后续实验是否确实用不到？
-   （需要时：`KEEP_ALL=1 bash slurm/transfer_ms2.sh data`）
-5. `16-19-00`、`21-36-10` 两个序列只被 `ms2_test_rainy_*` 和全局 manifest 引用，
-   六线训练是否会用到？
+**1. 六条线** ✅ 确为 `train_route_suite.py` 的 `ROUTES`。参数量与运行产出的
+`frozen_config.json → parameter_audit` 一致（b 线 unet 867,568,324；c1 adapter 7,106,308）。
+route_a–route_f 命名撞车的警告保留，那套是推理评测流程。
+
+**2. Manifest** — val 默认值正确；**train 要换成 `ms2_train_day2seq_clip75_20260728.jsonl`**
+（sha256 `1e56fa1e028c990684a55b0ee7e97940a09c4c716bb8d82770b435616dc1ff0b`，19,949 行）。
+旧的 `ms2_train_day2seq_20260725.jsonl` 里 11-37-46 的 9,508 行仍是旧 v1 caption
+（实测最长 125 词，会被 CLIP 77 token 截断）；新版为 clip75 口径，全部 ≤75 token 且
+**逐帧同序同路径**，因此换用后仍能与既有 empty 数字逐帧配对。无 caption 的线用哪份都行，
+统一用新版省心。
+
+**1m 去冗余：不换。** 本地已完成的 b（0.0775@e5）与 c1（0.1127）都是全帧跑的，
+换 1m 后集群结果无法与其并表；集群瓶颈是排队而非算力，省这点步数不值得付治理代价。
+
+**3. 超参**沿用默认，但三处必改：
+- caption 臂必须同时给 `--caption-mode correct --val-caption-mode correct`。
+  `--val-caption-mode` 默认 `empty`，会用空 prompt 给 caption 模型打分，而
+  `best_weights.pt` 正是按这条曲线自动选的 —— 等于用它没训过的输入模式挑冠军。
+- `--snapshot-epochs` 改成 `1,2,3,5,10,15`。本地 caption 臂的最好点落在 **e3**，
+  而原设定没存 e3。
+- `--time` 按线分别设，见 §12.5。
+
+**4. 未传模态**：六线训练确实只读 `rgb_path` / `thermal_path` 与对应视角 GT。
+⚠️ 但原 grep 漏了一处：**`build_ms2_multiseq_manifest.py --min-spacing-m` 会读
+`sync_data/<seq>/gps_imu/data/*.txt`**（该文件第 133 行），目录缺失直接 `SystemExit`。
+只要不在集群上重建"按里程去冗余"的 manifest 就不受影响 —— 1m/2m 两份已生成，
+需要时传 jsonl 即可，不必传 `gps_imu/`。
+
+**5. `16-19-00` / `21-36-10`**：六线训练都不用。`16-19-00` 是雨天二次验证的考卷
+（评估要用，勿清）；`21-36-10` 目前只被全局 manifest 引用，留作夜间备用序列。
+
+---
+
+## 11. 本周任务（导师 2026-07-28 布置）在集群上的执行清单
+
+本文档原先只覆盖「六线 × 20 epoch 无 caption」。本周的任务单是另一组，六线是它的底座
+而不是它本身。逐条对应如下 —— **耗时列是本地实测或本地外推，L40S 未标定**（见 §12.6）。
+
+| 任务 | 内容 | 集群上要跑什么 | 状态 / 预算 |
+|---|---|---|---|
+| **1a** | Thermal + 解冻 U-Net + caption，看远端 | `b_thermal_unet --caption-mode correct --val-caption-mode correct` | **本地已跑完**（22.42 h，99,760 步，best e3 = 0.07773）。集群不必重跑，只剩全量评估与分层 |
+| **1b** | 先训 Adapter、再训后面的 U-Net，看天空 | 阶段一 = 已完成的 `c1`；阶段二 = `c2_vae_adapter_unet --init-from <c1 best> --freeze-adapter` | 阶段二约 32 h。若天空无改善，再加 caption 臂（再 32 h） |
+| **1c** | AnyThermal Adapter，补齐未做的实验 | `d1_anythermal_adapter`（约 11 h）、`d2_anythermal_adapter_unet`（约 32 h） | d1 的 overfit gate 已过（`gt_ssi_l1` 降 72.2%）；**d2 从未 smoke，先跑 5 步** |
+| **2** | 独立 Test 集 | 所有 checkpoint 用 `--eval-checkpoint --val-manifest <test>` 各评一次 | 数据已在集群（见下）；caption manifest 待补传 |
+| **3** | 与 AnyThermal、零训练直推的对比可视化 | 导出 raw 预测 + `build_route_vis_figures.py` | 需要 vis 导出（本地的已在清盘时删光） |
+| **4** | 原版 AnyThermal 是否也错判天空 | `run_ms2_anythermal_midas.py` 出预测 → `analyze_prediction_regions.py` 分层 | **checkpoint 未传，见 §12.1** |
+
+### 11.1 独立 Test 集（任务 2）
+
+`2021-08-13-16-08-46`，官方 **val** split、白天、**2,543 帧**，我们从未接触过，
+AnyThermal 也只在官方 train 上训过 → 双方都没见过，对比公平。数据已随 §3.2 传上集群。
+
+治理约束：**11-23-45 继续当 val（选 epoch 用），16-08-46 只在定稿时评一次**。
+此前 11-23-45 同时充当选择集与汇报集（`best_weights.pt` 就是按它选的），
+本周之后所有对外数字都应带 test 列。
+
+备用考卷（数据都已在集群）：`21-58-13`（官方 val，夜间，2,539 帧）、
+`16-59-13`（官方 test_rainy，6,483 帧）。夜间那条的 caption 由 RGB 生成、
+夜景 RGB 接近全黑，caption 质量本身会成为混淆变量，结论需单独讲。
+
+---
+
+## 12. 补充的欠缺与风险（2026-07-29 追加）
+
+### 12.1 还需要传上集群的东西
+
+| 内容 | 体积 | 给谁用 | 目的地 |
+|---|---:|---|---|
+| `outputs/route_suite/c1_vae_adapter_20ep/best_weights.pt` | 28 MB | 任务 1b 的 `--init-from` | `$SCRATCH/checkpoints/c1_stage1/` |
+| `outputs/route_suite/b_thermal_unet_20ep/epoch05_weights.pt` | 3.47 GB | 机器差标定（§12.6） | `$SCRATCH/checkpoints/calibration/` |
+| AnyThermal MiDaS 权重 `E:/project/AnyThermal/_download/pretrained_checkpoints/depth/{Midas_anythermal,Midas_dinov2,Midas_small}` | — | 任务 4 | `$SCRATCH/models/anythermal_midas/` |
+| BMSD 脚手架 `E:/project/AnyThermal/baselines/depth/BridgeMultiSpectralDepth` | — | 任务 4（重建器依赖） | `$SCRATCH/code/` 或并入仓库 |
+| ~~`ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl`~~ | — | — | ✅ **已在集群**。`transfer_ms2.sh manifests` 是整目录打包（`tar -C $CAPTION_SRC .`），19 个文件全部传了，`ms2_train_day2seq_clip75_20260728.jsonl` 同理 |
+
+⚠️ **AnyThermal 的 depth checkpoint 不在 HuggingFace 上**，`prefetch_models.sbatch` 拉不到 ——
+那三个模型是从官方 zip 用 `tools/build_anythermal_midas.py` 重建的（`strict 231/231` 张量
+加载通过）。任务 4 没有它就做不了。
+
+（`theairlabcmu/AnyThermal` 那个 HF 仓库是 **热成像编码器**，`d1`/`d2` 用；与这里说的
+depth checkpoint 是两码事。）
+
+### 12.2 只有训练、没有评估与回传
+
+`--eval-checkpoint` 的全量评估（5,810 帧 × 多个 checkpoint，比训练更吃卡）、
+`compare_route_evals.py`、`analyze_route_regions.py`、`analyze_prediction_regions.py`
+都没有 sbatch 模板，产物如何回传本地做 slides 也没写。建议补一个
+`eval.sbatch`，吃 `ROUTE` / `CKPT` / `TAG` / `VAL_MANIFEST` / `CAPTION_MODE` 五个变量。
+
+### 12.3 输出配额没算过
+
+scratch 1 TB。每条 U-Net 线 20 epoch 写：`latest.pt` 10.4 GB + best 3.47 + end 3.47
++ 5 个快照 × 3.47 ≈ **35 GB**。a/b/c2/d2 四条 ≈ 140 GB；加 caption 臂翻倍 ≈ 280 GB；
+再加 raw predictions（本地历史上攒到 172 GB）就危险。建议 sbatch 结尾调
+`tools/slim_checkpoints.py` 自动清中间档，三道闸照旧：①目录有 `summary.json`
+②至少一个 `_end.pt` 幸存 ③只删非 `_end.pt`。
+
+### 12.4 `HF_HOME` 必须显式指定，并配 `--local-files-only`
+
+`$HOME` 仅 65 GB 且已被 conda 环境占 11.9 GB。更要紧的是本地踩过的坑：HF_HOME 不一致
+会让训练启动时**静默重下 4 GB 权重**，表现为「任务没起来」（实为卡在 `Fetching 13 files`）。
+
+- `common.sh` 里 `export HF_HOME=$SCRATCH/hf_cache`；
+- 预取完成后，**所有训练/评估作业加 `--local-files-only`** —— 权重缺失会立即报错，
+  而不是六个作业并发去写同一个缓存目录（§8 担心的正是这个，这个 flag 就是那道保险）。
+
+### 12.5 墙钟算术：`--time` 别统一 24 h
+
+`latest.pt` 在**每个 epoch 末尾**才写（`train_route_suite.py:1097`），被砍最多丢一个 epoch。
+按本地实测外推：
+
+| 线 | 20 epoch 本地耗时 | 24 h 报时够不够 |
+|---|---:|---|
+| `b_thermal_unet` | 21.73 h | **贴边**，很可能最后一个 epoch 差一点，白排一次队 |
+| `b` + caption | 22.42 h | 同上 |
+| `c1_vae_adapter` | 19.06 h | 够 |
+| `a_rgb_unet` | 约 88 h（外推） | 要续 4 次 |
+
+分区上限 48 h，贵的线直接报 48 h 更划算。
+
+### 12.6 跨机器可比性 —— 投六线之前必须先做的一步
+
+集群 torch 2.3.1+cu121 / L40S，本地 torch 2.7.0+cu128 / 另一张卡。本地已完成的
+b（0.0775@e5）、c1（0.1127@best）、b+caption（0.07773@e3）若要与集群跑出的
+a/c2/d1/d2 并进同一张表，中间隔着一个未标定的机器差。
+
+**标定方法（1 卡 × 约 30 分钟）**：把 `b_thermal_unet_20ep/epoch05_weights.pt` 传上去，
+在集群用 `--eval-checkpoint` 跑同一份 val，与本地的全量 **0.0775** 比对。
+差值 <0.0005 即可并表并在脚注写明；更大则集群结果只能自成一组。
+**这一步要在投六线之前做**，否则跑完才发现不可比就晚了。
+
+### 12.7 代码状态（2026-07-29 更新）
+
+本周新增的三处改动与两个工具**已在 `HEAD` 且与 `origin/aire-hpc-setup` 同步**，
+集群 `git pull` 即可拿到：
+
+- `train_route_suite.py`：`--init-from`（跨 route 搬权重、不带优化器状态）、
+  `--freeze-adapter`（任务 1b 的阶段二）、**冻结的 adapter 现在也会写进 checkpoint**
+  （否则阶段二的档只有 U-Net，评估时 adapter 会静默退回随机初始化）；
+- `analyze_route_regions.py`：`--caption-mode`，可**逐 checkpoint 指定**
+  （`empty,correct` → 两臂各自在自己训练时的输入模式下评估，同帧同序，配对仍合法）；
+  并修了「两臂检查点同名（都叫 `epoch05_weights.pt`）会静默丢一条」的 bug；
+- `analyze_prediction_regions.py`（新）：吃 manifest + `raw_predictions/*.npy`，
+  给外部模型（AnyThermal）做同样的九分层；对齐镜像逐帧与 `evaluate_sample` 自校验；
+- `build_ms2_sequence_manifest.py`（新）：为盘上任何一条序列生成全字段 manifest。
+
+**新 manifest 是数据不是代码**，仍需走 `transfer_ms2.sh manifests`。
+
+---
+
+## 13. 提交前检查（2026-07-30，投 a / c2 / d1 / d2 之前）
+
+> ⚠️ **本节的「仍缺」清单写于预取和标定完成之前，第 1、2、4、6 项均已完成。**
+> 当前状态以 §7 为准，当前待办以 §8 为准。保留原文以便对照。
+
+### ✅ 已核实
+
+| 项 | 结果 |
+|---|---|
+| clip75 训练 manifest 在集群 | `ms2_train_day2seq_clip75_20260728.jsonl` **28,675,498 字节 = 本地同字节** |
+| `slurm/` 全部脚本语法 | 12 个 `.sbatch`/`.sh` 全部 `bash -n` 通过 |
+| 集群脚本的 python 依赖 | 只用 `train_route_suite.py`、`analyze_prediction_regions.py`、`run_ms2_anythermal_midas.py`，**三个都在 HEAD 且已推送** |
+| 集群脚本是否依赖未推送的旗标 | **不依赖**（grep 过 `permuted` / `gt-sparsify` / 新探针，无引用）→ 不必等本地推送就能投 |
+| `route_suite.sbatch` 已实现 | clip75 默认 manifest、`LOCAL_FILES_ONLY=1`、CAPTION 同时设 train+val、snapshot 含 e3、`INIT_FROM` 与续跑互斥、输出目录按模式加前缀 |
+
+集群侧再核一次内容（不只是大小）：
+
+```bash
+sha256sum /mnt/scratch/sc23sz/manifests/sequence_level_internvl3_8b/ms2_train_day2seq_clip75_20260728.jsonl
+```
+
+应为 `1e56fa1e028c990684a55b0ee7e97940a09c4c716bb8d82770b435616dc1ff0b`。
+
+### ❌ 仍缺，必须按此顺序
+
+1. ✅ **已完成**（job 6914389，6.7 GB）。~~HF 权重预取（从未执行）。~~`LOCAL_FILES_ONLY` 默认 1 → 权重不在 `$SCRATCH/hf_cache` 时**所有作业立即失败**。
+   `cd $SCRATCH/logs && sbatch ~/Iris/slurm/prefetch_models.sbatch`，完成后确认两个仓库都在。
+2. ✅ **已完成**（job 6914833，`b_thermal_unet`，1 分 34 秒）。~~一条冒烟。至今没跑通任何一次训练（唯一一次死在命名护栏，修完未重跑）。
+   `ROUTE=c1_vae_adapter SMOKE=1 sbatch -J smoke_c1 --time=00:30:00 --export=ALL,ROUTE,SMOKE ~/Iris/slurm/route_suite.sbatch`
+3. ❌ **仍缺** — 投四条（b 与 c1 本地已完结，勿重跑）：c2 `--time=2-00:00:00`、
+   d1 `1-00:00:00`、d2 `2-00:00:00`、a `2-00:00:00`（a 外推 88 h，需续投两次）。
+   ⚠️ **d2 从未冒烟**（§11 自己写了），应先单独冒烟再投全量。
+4. ✅ **已完成**：`c1_stage1/best_weights.pt`（28,442,797 字节）已在集群，省掉重跑 c1 的 19 GPU·h。
+5. ❌ **仍缺** — 任务 4 前置：`transfer_checkpoints.sh midas` 和 `bmsd` 分两次跑
+   （脚本一次只吃一个子命令）。AnyThermal 的 **depth** checkpoint 不在 HuggingFace 上，预取拉不到。
+6b. ❌ **仍缺** — 任务 1a/2 前置：`transfer_checkpoints.sh caption`，b+caption 的
+   `best_weights.pt`（= epoch 3，3.2 GB）。
+6. ✅ **已完成且通过**（job 6914834）：集群 `0.07749105` vs 本地 `0.0775`，**差 0.000009**，
+   阈值 0.0005。集群结果可与本地并表。
+
+### ⚠️ 两条提醒
+
+- **`CAPTION_MODE=permuted` 现在会失败**：HEAD 的 `--val-caption-mode` 只有 `empty/correct/shuffled`，`permuted` 还在本地未推送。
+- **半长旋转的 `shuffled` 是被污染的对照**：实测旋转后的 caption 仍能解释接收帧 R² 0.32（MS2）/ 0.46（RGBDT500）的中位深度方差，而随机置换约 −0.1（`tools/probe_caption_scale_information.py`）。集群上做 caption 对照请等 `permuted` 推送后再用，或明确标注该局限。
+
+---
+
+## 14. Checkpoint 格式验证：任务 3 的拦路虎（2026-07-30）
+
+任务 3（可视化对比）和任务 1a 的九分层都要 `raw_predictions/*.npy`。
+`train_route_suite.py` **不能导出 raw 预测**，只有旧的 `run_ms2_lotus_*_official.py`
+支持 `--save-raw-pred`。所以问题变成：route suite 训出的 checkpoint 能不能喂给旧脚本？
+
+### 实测两边格式（从 `.pt` 文件直接读出，非推测）
+
+route suite 写出的：
+
+```
+顶层键: format, route, epoch, caption_mode, manifest_sha256, val_metrics, state_dicts
+b epoch05  → state_dicts: {'unet':    690 个张量, 'conv_in.weight' ...}
+c1 best    → state_dicts: {'adapter':  54 个张量, 'blocks.0.norm1.weight' ...}
+```
+
+旧脚本要的：`checkpoint["lotus_unet_state_dict"]`（顶层扁平，`strict=True`）、
+`checkpoint["adapter_state_dict"]` + `adapter_hidden_channels` + `adapter_blocks`。
+
+### 逐条线结论
+
+| 线 | 训练什么 | 能否转换 |
+|---|---|---|
+| `a` / `b` | 只有 unet | ✅ 张量键名就是 `UNet2DConditionModel` 原生键名，改外层 key 即可 |
+| `c1` | 只有 adapter | ✅ 映射到 `--latent-adapter-checkpoint`，但要补 route suite 未记录的架构元数据 |
+| `c2` | adapter + unet | ❌ **无路径** |
+| `d1` / `d2` | anythermal adapter (+unet) | ⚠️ 需 `adapter_architecture` / `train_mode` / `settings`，route suite 一个都没存 |
+
+`c2` 是硬阻塞——旧脚本明写 `--latent-adapter-checkpoint` 与 `--unet-checkpoint` 互斥
+（"Line e keeps the U-Net frozen"）。旧脚本是为 a–f 那套设计的，每条线只训一样东西；
+新套件的 `c2`/`d2` 联合训练 adapter 与 unet，旧脚本在架构上就没这个组合。
+
+### 结论：不写转换器，给评估路径加 `--save-raw-pred`
+
+转换器要分四种情况处理、补造未记录的元数据，且 `c2` 依然无解。
+改 `train_route_suite.py` 的评估分支更直接：它已经在跑完整前向和官方协议，
+落一份 `.npy` 是增量改动。六条线全部可用，不存在格式漂移。
+
+**改动（已写好，未提交，见下）**：
+
+1. 新参数 `--save-raw-pred`（`store_true`）
+2. `run_validation()` 加 `raw_dir` 参数，默认 `None`；给了就在 resize 到 GT 之前存
+   `raw_dir/<id>.npy`，float32、**原生分辨率**
+3. `run_evaluation()` 建目录并传下去，metrics 记 `raw_predictions_saved`
+
+原生分辨率这一点两边都核对过：旧脚本 `run_ms2_lotus_thermal_vae_official.py:376`
+存的就是 resize 前的返回值，`analyze_prediction_regions.py:171` 自己做
+`resize_dense_prediction(raw, gt.shape)`。文件名与 dtype 也一致，所以分层脚本
+可以无差别地吃两种来源。
+
+`raw_dir` 默认 `None` 意味着**训练期每 epoch 的验证不受影响**。
+开销：每帧约 0.5 MB + 1 个 inode，全量 5,810 帧约 2.9 GB。
+
+### ⚠️ 未提交，原因
+
+改动落在 `tools/train_route_suite.py`，而该文件同时有另一个会话未提交的
+`permuted` caption 模式改动，无法只提交其中一半。当前工作区未提交清单：
+
+```
+ M docs/AIRE_HPC_MIGRATION_STATUS_20260729.md
+ M tools/export_qualitative.py
+ M tools/train_ms2_thermal_vae_unet_gt.py
+ M tools/train_route_suite.py        ← --save-raw-pred + permuted 混在一起
+?? tools/probe_caption_predicted_alignment.py
+?? tools/probe_caption_scale_information.py
+?? tools/run_rgbdt500_sparsity_eval_queue.sh
+```
+
+需要两个会话协调后统一提交。**在此之前任务 3 无法在集群上开工。**
+
+### 附带观察
+
+`permuted` 与既有的 `shuffled` 都只接在 `run_evaluation()` 里，训练期的
+`run_validation()` 走不到。训练时传 `--val-caption-mode permuted` 不会打乱 caption，
+实际等同 `correct` 且不报错。看起来是有意为之（纯评估对照），但值得确认。
+
+---
+
+## 15. 仍然没人做的
+
+| 项 | 说明 |
+|---|---|
+| 产物回传本地 | 做 slides 要把 vis 和 metrics 从 scratch 拉回来，没有脚本 |
+| `slim_checkpoints.py` 未接入 sbatch | §12.3 提的输出配额自动清理。当前 scratch 64 GB/1 TB，四条线约 140 GB、加 caption 臂 280 GB、再加 raw predictions 约 510 GB（51%），有余量但仍该清 |
+| `build_route_vis_figures.py` 无作业模板 | 它只吃 `--frames --which --style`，大概率在本地跑，需确认 |
+| `compare_route_evals.py` / `analyze_route_regions.py` | 纯 CPU 分析，可复用 `analyze.sbatch` 的模式，尚未写 |
+| `a_rgb_unet` 是否本周投 | 外推 88 h，不在本周任务单（1a/1b/1c/2/3/4）里，需决定 |
