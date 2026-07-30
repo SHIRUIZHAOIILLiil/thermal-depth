@@ -582,3 +582,54 @@ c1 best    → state_dicts: {'adapter':  54 个张量, 'blocks.0.norm1.weight' .
 | `build_route_vis_figures.py` 无作业模板 | 它只吃 `--frames --which --style`，大概率在本地跑，需确认 |
 | `compare_route_evals.py` / `analyze_route_regions.py` | 纯 CPU 分析，可复用 `analyze.sbatch` 的模式，尚未写 |
 | `a_rgb_unet` 是否本周投 | 外推 88 h，不在本周任务单（1a/1b/1c/2/3/4）里，需决定 |
+
+---
+
+## 16. 跨会话协调结论（2026-07-30）
+
+### 已解除：§14 的提交阻塞
+
+统一提交完成并推送：**`7843153b8`**（`aire-hpc-setup`）。`--save-raw-pred` 与
+`permuted` 现在都在 origin 上，集群 `git pull` 即可，**任务 3 不再被挡**。
+
+### §14 的「附带观察」是真 bug，已修
+
+训练期的 `run_validation()` 确实不做供体重排，`--val-caption-mode shuffled/permuted`
+在训练时会**静默等同 `correct`**，而曲线标签仍写 shuffled。不是有意为之。
+`validate_args()` 现在显式拒绝（实测已拦下）：这两个模式只允许配 `--eval-checkpoint`。
+
+### §15 需订正一条
+
+`analyze_route_regions.py` **不是纯 CPU**：它构造 `RouteModel` 自己跑前向，是 GPU 作业。
+只有 `compare_route_evals.py` 是纯 CPU。所以它的模板不能照 `analyze.sbatch`
+（那个吃现成 `.npy`），要按 GPU 作业写。
+
+### §15 没覆盖、会卡任务 2 的两件
+
+1. **test caption manifest 已生成但未传**：
+   `ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl` —— 2,543 行、`caption_status`
+   全 ok、token 37–75、零超限、零空串。集群上没有它，任务 2 的 caption 评估无法进行。
+   `bash slurm/transfer_ms2.sh manifests` 补传。§12.1 列的 `stage1` / `calib` /
+   `midas` / `bmsd` 四项 checkpoint 传输同样待确认。
+2. **谁进 test 集，没人定**。任务 2 的治理点是「11-23-45 只用于选 epoch，16-08-46
+   只评一次」，但没有任何地方列出参评清单。建议定死为：b-e5（本地）、b+caption-e3
+   （本地）、c1-best（本地）、c2/d1/d2-best（集群）、AnyThermal MiDaS —— **每个一次，
+   且必须在 val 上选定 epoch 之后**。谁先跑完谁评，评完立即写回。
+
+### 再补三项
+
+3. **集群上要不要跑 caption 臂，没定**。§11 记 1a 已在本地完结，但 c2/d1/d2 的
+   caption 臂尚无排期（六线×2 约再 95 GPU·h）。建议只给 **d2** 加：历史上 f 线
+   （AnyThermal + Adapter）是唯一测出正 caption 效应的线（+0.0013\*），d2 是它的
+   20-epoch 版本，先验最强。
+4. **结论回写没人负责**：集群产出的所有数字最终要进
+   `LOTUS_LINE_V2_ROUTE_AND_CAPTION_FREEZE_20260705.md`，未指定章节与责任人。
+5. **机器差标定必须早于并表**（§12.6）。c2/d1/d2 出结果之后再做就晚了——那时若发现
+   差异 >0.0005，集群数字只能自成一组，跨线阶梯（`a→b→c2→d2`）会断在本地/集群交界处。
+
+### 数据质量脚注
+
+三份 clip75 manifest 都有约 4.5–6.2% 的帧含相邻重复词（如 "driving driving"，
+InternVL 的生成瑕疵）：test 16-08-46 6.2%、train 11-37-46 4.5%、val 11-23-45 4.7%。
+比例在三份之间接近，且 caption 臂与 empty 臂读的是同一批文本，**不构成配对混淆**，
+记录备查即可。
