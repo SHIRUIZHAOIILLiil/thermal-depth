@@ -22,17 +22,25 @@ import argparse
 import importlib.util
 import sys
 import types
+import os
 from pathlib import Path
 
 import torch
 
-BMSD_CANDIDATES = (
-    Path("/mnt/e/project/AnyThermal/baselines/depth/BridgeMultiSpectralDepth"),
-    Path("E:/project/AnyThermal/baselines/depth/BridgeMultiSpectralDepth"),
+# 集群上这两样都不在本地路径下，用环境变量覆盖；不设时保持原有本地默认值。
+BMSD_CANDIDATES = tuple(
+    Path(p) for p in (
+        os.environ.get("IRIS_BMSD_ROOT"),
+        "/mnt/e/project/AnyThermal/baselines/depth/BridgeMultiSpectralDepth",
+        "E:/project/AnyThermal/baselines/depth/BridgeMultiSpectralDepth",
+    ) if p
 )
-DEFAULT_CHECKPOINT_CANDIDATES = (
-    Path("/mnt/e/project/AnyThermal/_download/pretrained_checkpoints/depth/Midas_anythermal/ckpt_epoch=28_step=145000.ckpt"),
-    Path("E:/project/AnyThermal/_download/pretrained_checkpoints/depth/Midas_anythermal/ckpt_epoch=28_step=145000.ckpt"),
+DEFAULT_CHECKPOINT_CANDIDATES = tuple(
+    Path(p) for p in (
+        os.environ.get("IRIS_ANYTHERMAL_CKPT"),
+        "/mnt/e/project/AnyThermal/_download/pretrained_checkpoints/depth/Midas_anythermal/ckpt_epoch=28_step=145000.ckpt",
+        "E:/project/AnyThermal/_download/pretrained_checkpoints/depth/Midas_anythermal/ckpt_epoch=28_step=145000.ckpt",
+    ) if p
 )
 
 

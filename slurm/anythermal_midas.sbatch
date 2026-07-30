@@ -44,7 +44,17 @@ if [[ -d "$OUT" ]] && [[ -n "$(ls -A "$OUT" 2>/dev/null)" ]]; then
   exit 1
 fi
 mkdir -p "$OUT"
-export PYTHONPATH="$BMSD_DIR:${PYTHONPATH:-}"
+
+# build_anythermal_midas.py 按硬编码候选列表找 BMSD 脚手架和 .ckpt，
+# 不走 sys.path —— 所以 PYTHONPATH 没用，要用它认的环境变量。
+export IRIS_BMSD_ROOT="$BMSD_DIR"
+
+# --checkpoint 要的是 .ckpt 文件本身，不是变体目录
+CKPT_FILE=$(ls "$CKPT_DIR"/*.ckpt 2>/dev/null | head -1)
+[[ -n "$CKPT_FILE" ]] || { echo "!! $CKPT_DIR 下没有 .ckpt 文件"; ls -la "$CKPT_DIR"; exit 1; }
+export IRIS_ANYTHERMAL_CKPT="$CKPT_FILE"
+echo "checkpoint = $CKPT_FILE"
+echo "bmsd       = $BMSD_DIR"
 
 cd "$IRIS_REPO"
 
@@ -52,7 +62,7 @@ ARGS=(
   --manifest "$MANIFEST"
   --ms2-root "$IRIS_MS2_ROOT"
   --output-dir "$OUT"
-  --checkpoint "$CKPT_DIR"
+  --checkpoint "$CKPT_FILE"
 )
 # choose_uniform(): count <= 0 或 >= 总数都返回全部。不传的话会用脚本默认的 8。
 ARGS+=(--max-samples "${MAX_SAMPLES:-0}")
