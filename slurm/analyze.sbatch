@@ -68,8 +68,14 @@ for entry in "${ENTRIES[@]}"; do
   ARGS+=(--predictions "$entry")
 done
 
-[[ -n "${ROUTE:-}" ]]     && ARGS+=(--route "$ROUTE")
-[[ -n "${ALIGN:-}" ]]     && ARGS+=(--align "$ALIGN")
+[[ -n "${ROUTE:-}" ]] && ARGS+=(--route "$ROUTE")
+
+# --align 默认是 auto，而 auto 要靠 --route 去查官方对齐表。多个预测集来自不同的线时
+# 单个 --route 描述不了它们，而 --align 本来就是统一作用于所有目录的 —— 所以这里
+# 显式给 ssi_disparity：全部评估数（eval json 的 protocol 字段）都是按它算的，
+# 换别的对齐方式，分层结果就和已有的 abs_rel 对不上。
+ARGS+=(--align "${ALIGN:-ssi_disparity}")
+
 [[ -n "${BOOTSTRAP:-}" ]] && ARGS+=(--bootstrap "$BOOTSTRAP")
 
 echo "=== python tools/analyze_prediction_regions.py ${ARGS[*]} ==="
