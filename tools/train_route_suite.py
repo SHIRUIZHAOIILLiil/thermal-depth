@@ -154,6 +154,23 @@ def parse_args() -> argparse.Namespace:
         help="RGB route only. 0 = native 1224x384; positive downscales the longer edge (multiple of 8).",
     )
 
+    parser.add_argument(
+        "--eval-min-depth",
+        type=float,
+        default=1e-3,
+        help=(
+            "Valid-GT lower bound for the official protocol. The default is MS2's and "
+            "every historical number in the frozen document was produced with it -- do "
+            "not change it for MS2. RGBDT500 needs 0.1: its millimetre sensor noise "
+            "otherwise counts as GT and inflated all four caption cells from 0.36 to 0.82."
+        ),
+    )
+    parser.add_argument(
+        "--eval-max-depth",
+        type=float,
+        default=80.0,
+        help="Official upper bound. MS2 = 80 m; RGBDT500's sensor ceiling is 20 m.",
+    )
     parser.add_argument("--val-stride", type=int, default=4, help="Val subset stride for the epoch curve.")
     parser.add_argument("--val-every", type=int, default=1, help="Validate every N epochs.")
     parser.add_argument(
@@ -743,8 +760,8 @@ def run_validation(
             pred[0, 0].float().cpu().numpy(),
             gt_metres,
             align="ssi_disparity",
-            min_depth=1e-3,
-            max_depth=80.0,
+            min_depth=args.eval_min_depth,
+            max_depth=args.eval_max_depth,
         )
         for key, value in metrics.items():
             if isinstance(value, (int, float)) and key != "align_mode":
