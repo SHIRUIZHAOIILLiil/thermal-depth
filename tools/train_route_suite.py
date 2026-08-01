@@ -1161,6 +1161,7 @@ def main() -> None:
                                     "total": running["gt_ssi_l1"] / max(1, seen),
                                     "window_gt_ssi_l1": sum(window) / len(window),
                                     "gt_abs_rel": running["gt_abs_rel"] / max(1, seen),
+                                    "grad_match": running["grad_match"] / max(1, seen),
                                     grad_key: float(grad_norm),
                                     "lr_factor": factor,
                                     "samples_seen": epoch * len(train_rows) + seen,
@@ -1181,6 +1182,8 @@ def main() -> None:
             "updates": update,
             "train_gt_ssi_l1": running["gt_ssi_l1"] / max(1, seen),
             "train_gt_abs_rel": running["gt_abs_rel"] / max(1, seen),
+            # 权重 0 时恒为 0；开启时用来核对两项量级是否失衡
+            "train_grad_match": running["grad_match"] / max(1, seen),
             "epoch_seconds": time.time() - epoch_started,
         }
 
