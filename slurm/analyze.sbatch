@@ -70,11 +70,20 @@ done
 
 [[ -n "${ROUTE:-}" ]] && ARGS+=(--route "$ROUTE")
 
-# --align 默认是 auto，而 auto 要靠 --route 去查官方对齐表。多个预测集来自不同的线时
-# 单个 --route 描述不了它们，而 --align 本来就是统一作用于所有目录的 —— 所以这里
-# 显式给 ssi_disparity：全部评估数（eval json 的 protocol 字段）都是按它算的，
-# 换别的对齐方式，分层结果就和已有的 abs_rel 对不上。
-ARGS+=(--align "${ALIGN:-ssi_disparity}")
+# 对齐方式是按模型定的，不是全局常量：官方表里 anythermal-midas 用 ssi，
+# route suite 的线用 ssi_disparity（train_route_suite.py 的评估路径就是它，
+# 分层表能与 eval json 逐位吻合可证）。用错空间做尺度-平移拟合，误差会翻几倍。
+#
+# 所以：给了 ROUTE 就让 --align 保持 auto 去查表；没给 ROUTE 才兜底成
+# ssi_disparity。ALIGN 显式设置时一律优先。
+#
+# ⚠️ --align 统一作用于所有 --predictions 目录，所以**对齐方式不同的模型不能放进
+#    同一个作业**。跨对齐比较要分开跑，再把表并排读（分层定义是共享的）。
+if [[ -n "${ALIGN:-}" ]]; then
+  ARGS+=(--align "$ALIGN")
+elif [[ -z "${ROUTE:-}" ]]; then
+  ARGS+=(--align ssi_disparity)
+fi
 
 [[ -n "${BOOTSTRAP:-}" ]] && ARGS+=(--bootstrap "$BOOTSTRAP")
 
