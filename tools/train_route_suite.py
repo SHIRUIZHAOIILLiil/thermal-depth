@@ -69,6 +69,7 @@ from models.anythermal_lotus_model import extract_anythermal_feature_pyramid  # 
 from train_ms2_joint_gt_v3 import (  # noqa: E402
     load_gt_disparity,
     masked_ssi_l1,
+    ssi_grad_matching,
     decode_to_disparity,
 )
 
@@ -133,6 +134,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-lr-ratio", type=float, default=0.05)
 
     parser.add_argument("--gt-loss-weight", type=float, default=5.0)
+    parser.add_argument(
+        "--grad-loss-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight on MiDaS's multi-scale gradient matching term. 0 (the default) "
+            "leaves every existing number untouched. The pointwise data term alone "
+            "lets a model hedge boundaries with a smooth ramp, which AbsRel and RMSE "
+            "reward because they are pointwise too; this term prices that hedge. "
+            "MiDaS pairs alpha 0.5 with a data weight of 1, so 2.5 matches the 5.0 "
+            "default here -- but check the two terms' raw magnitudes first."
+        ),
+    )
     parser.add_argument("--gt-min-depth", type=float, default=0.1)
     parser.add_argument("--gt-max-depth", type=float, default=80.0)
     parser.add_argument("--depth-scale", type=float, default=256.0)
@@ -1065,7 +1079,7 @@ def main() -> None:
         permutation = list(range(len(train_rows)))
         random.Random(args.seed + epoch).shuffle(permutation)
         epoch_started = time.time()
-        running = {"gt_ssi_l1": 0.0, "gt_abs_rel": 0.0}
+        running = {"gt_ssi_l1": 0.0, "gt_abs_rel": 0.0, "grad_match": 0.0}
         # The epoch-cumulative mean stops moving once a few thousand samples are
         # in, which makes a live run look frozen. Keep a short window for the
         # console; the epoch record still uses the full-epoch mean.
@@ -1091,11 +1105,17 @@ def main() -> None:
                 )[0, 0]
             gt_loss, gt_abs_rel, _ = masked_ssi_l1(prediction[None], gt_disparity, valid_mask)
             loss = args.gt_loss_weight * gt_loss
+            grad_term = 0.0
+            if args.grad_loss_weight > 0:
+                grad_loss = ssi_grad_matching(prediction[None], gt_disparity, valid_mask)
+                loss = loss + args.grad_loss_weight * grad_loss
+                grad_term = float(grad_loss.detach())
             (loss / args.gradient_accumulation_steps).backward()
 
             step_loss = float(gt_loss.detach())
             running["gt_ssi_l1"] += step_loss
             running["gt_abs_rel"] += float(gt_abs_rel.detach())
+            running["grad_match"] += grad_term
             window.append(step_loss)
             seen += 1
 
@@ -1121,7 +1141,12 @@ def main() -> None:
                         f"gt_ssi_l1 {sum(window) / len(window):.5f} "
                         f"(epoch {running['gt_ssi_l1'] / max(1, seen):.5f}) "
                         f"abs_rel {running['gt_abs_rel'] / max(1, seen):.4f} "
-                        f"lr x{factor:.3f} grad {float(grad_norm):.3f}",
+                        + (
+                            f"gmatch {running['grad_match'] / max(1, seen):.5f} "
+                            if args.grad_loss_weight > 0
+                            else ""
+                        )
+                        + f"lr x{factor:.3f} grad {float(grad_norm):.3f}",
                         flush=True,
                     )
                     # Step-level record so a long run is inspectable while it

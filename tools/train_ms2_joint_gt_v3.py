@@ -260,6 +260,61 @@ def masked_ssi_l1(prediction, gt_disparity, valid_mask):
     return loss, abs_rel, count
 
 
+def ssi_grad_matching(prediction, gt_disparity, valid_mask, scales: int = 4):
+    """MiDaS's multi-scale gradient matching term, the companion to the data term.
+
+    `masked_ssi_l1` scores values pointwise, which leaves blur unpunished: where
+    the teacher and the input disagree -- object boundaries, above all -- a
+    smooth ramp is a lower-risk answer than a sharp step in a slightly wrong
+    place. AbsRel and RMSE, being pointwise averages themselves, reward that
+    same hedge. This term scores the *changes*: the residual's spatial gradient
+    is exactly what blur creates, so the ramp stops being free.
+
+    Uses the same closed-form detached affine fit as `masked_ssi_l1`, so the two
+    terms share one alignment convention and can be summed. Keep them adjacent;
+    they must not drift apart.
+
+    Gradients are taken only where both neighbours are valid -- across the edge
+    of the valid mask, "value to no value" would otherwise read as a depth step.
+    Downsampling subsamples rather than averages, which keeps the mask exact.
+    """
+    mask = valid_mask > 0.5
+    count = int(mask.sum())
+    if count < MIN_VALID_PIXELS:
+        raise RuntimeError(f"GT valid pixels {count} below minimum {MIN_VALID_PIXELS}.")
+    with torch.no_grad():
+        pred_v, gt_v = prediction[mask], gt_disparity[mask]
+        design = torch.stack([pred_v, torch.ones_like(pred_v)], dim=1)
+        solution = torch.linalg.lstsq(design, gt_v[:, None]).solution.squeeze(1)
+        scale, shift = solution[0], solution[1]
+        if not bool(torch.isfinite(scale)) or not bool(torch.isfinite(shift)):
+            raise RuntimeError("Non-finite scale/shift in GT alignment.")
+
+    residual = (scale * prediction + shift) - gt_disparity
+    residual = residual * mask
+
+    total = residual.new_zeros(())
+    pairs = 0
+    level_residual, level_mask = residual, mask
+    for _ in range(max(1, scales)):
+        if level_residual.shape[-1] < 2 or level_residual.shape[-2] < 2:
+            break
+        mask_x = level_mask[..., :, :-1] & level_mask[..., :, 1:]
+        mask_y = level_mask[..., :-1, :] & level_mask[..., 1:, :]
+        grad_x = (level_residual[..., :, :-1] - level_residual[..., :, 1:]).abs()
+        grad_y = (level_residual[..., :-1, :] - level_residual[..., 1:, :]).abs()
+        here = int(mask_x.sum()) + int(mask_y.sum())
+        if here:
+            total = total + grad_x[mask_x].sum() + grad_y[mask_y].sum()
+            pairs += here
+        level_residual = level_residual[..., ::2, ::2]
+        level_mask = level_mask[..., ::2, ::2]
+
+    if not pairs:
+        return residual.new_zeros(())
+    return total / pairs
+
+
 def decode_to_disparity(lotus, x0, device, gt_vae=None):
     """Mirror the official evaluator: decode x0, denormalize, channel-mean."""
     if gt_vae is not None:
