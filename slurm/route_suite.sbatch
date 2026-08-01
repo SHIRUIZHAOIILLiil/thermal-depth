@@ -24,6 +24,8 @@
 #   INIT_FROM        跨 route 搬权重（任务 1b 阶段二用 c1 的 best）
 #   FREEZE_ADAPTER=1 冻结 adapter 只训 U-Net，必须配 INIT_FROM
 #   LOCAL_FILES_ONLY 默认 1 —— 权重缺失立即报错，而不是并发去写同一个 HF 缓存目录
+#   GRAD_WEIGHT      MiDaS 多尺度梯度匹配项的权重；不设＝关闭。数据项系数 5.0 时
+#                    对应 MiDaS α=0.5 的平衡点是 2.5
 #   RUN_TAG          覆盖输出目录名
 #
 # ── 用法 ────────────────────────────────────────────────────────────
@@ -83,6 +85,11 @@ ARGS=(
 
 # 预取完成后权重都在 $HF_HOME；缺失就立即失败，而不是六个作业并发重下 4 GB
 [[ "${LOCAL_FILES_ONLY:-1}" == "1" ]] && ARGS+=(--local-files-only)
+
+# MiDaS 的多尺度梯度匹配项。不设＝关闭，与既有全部结果同口径。
+# 逐点 L1 让"边界抹平"比"锐利但错位"便宜（合成阶跃上 0.0385 vs 0.0729），
+# 而 AbsRel/RMSE 同为逐点平均，会奖励同一种投机 —— 这一项给它标价。
+[[ -n "${GRAD_WEIGHT:-}" ]] && ARGS+=(--grad-loss-weight "$GRAD_WEIGHT")
 
 if [[ "${CAPTION:-0}" == "1" ]]; then
   echo "=== caption 臂：train 与 val 都用 correct ==="
