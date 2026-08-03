@@ -247,6 +247,21 @@ def parse_args() -> argparse.Namespace:
         help="Evaluate this checkpoint instead of training. Use --val-stride 1 for the full val set.",
     )
     parser.add_argument(
+        "--shuffle-condition",
+        choices=("none", "all", "anythermal"),
+        default="none",
+        help=(
+            "Evaluation-only falsification control. A route can look trained while "
+            "its condition branch contributes nothing -- the U-Net alone would carry "
+            "it, and no loss curve would show the difference. Feeding a donor frame's "
+            "condition breaks the image-condition correspondence: if the metric barely "
+            "moves, the branch is decorative. 'all' swaps the whole condition; "
+            "'anythermal' swaps only the AnyThermal feature pyramid and keeps the "
+            "correct thermal tensor, which isolates that branch from the adapter's "
+            "own image input. Donors are drawn uniformly at random."
+        ),
+    )
+    parser.add_argument(
         "--save-raw-pred",
         action="store_true",
         help=(
@@ -593,28 +608,58 @@ class RouteModel:
             latent = posterior.mode() * self.lotus.vae.config.scaling_factor
         return latent.float()
 
-    def condition(self, row: dict, image_tensor: torch.Tensor) -> torch.Tensor:
+    def condition(
+        self,
+        row: dict,
+        image_tensor: torch.Tensor,
+        donor_row: dict | None = None,
+        donor_tensor: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Build the U-Net's condition. A donor, when given, replaces the source
+        the shuffle mode names -- see --shuffle-condition."""
+        mode = getattr(self.args, "shuffle_condition", "none")
+        if donor_row is None:
+            mode = "none"
+
         if self.condition_kind in ("vae", "vae_adapter"):
-            latent = self.vae_latent(image_tensor)
+            if mode == "anythermal":
+                raise SystemExit(
+                    "--shuffle-condition anythermal needs a route with an AnyThermal "
+                    f"branch; {self.args.route} has none. Use 'all'."
+                )
+            source = donor_tensor if mode == "all" else image_tensor
+            latent = self.vae_latent(source)
             if self.condition_kind == "vae_adapter":
                 return self.adapter(latent)
             return latent
 
+        # AnyThermal branch: 'all' swaps both the feature source and the adapter's
+        # thermal input; 'anythermal' swaps only the features, so a null result
+        # cannot be blamed on the adapter losing its image.
+        feature_row = donor_row if mode in ("all", "anythermal") else row
         features, _, diagnostics = extract_anythermal_feature_pyramid(
-            self.anythermal, row["image_path"], enable_grad=False
+            self.anythermal, feature_row["image_path"], enable_grad=False
         )
         if diagnostics["converted_uint8_std"] <= 0:
             raise RuntimeError(f"Constant AnyThermal conversion: {row['id']}")
         features = [feature.detach().float().to(self.device) for feature in features]
         # target latent grid = whatever the frozen VAE would have produced
         target_size = (image_tensor.shape[-2] // 8, image_tensor.shape[-1] // 8)
-        thermal = image_tensor.to(device=self.device, dtype=torch.float32)
+        thermal_source = donor_tensor if mode == "all" else image_tensor
+        thermal = thermal_source.to(device=self.device, dtype=torch.float32)
         return self.adapter(features, thermal, target_size)
 
     # -- forward ---------------------------------------------------------- #
 
-    def predict_disparity(self, row: dict, image_tensor: torch.Tensor, prompt: torch.Tensor):
-        condition = self.condition(row, image_tensor)
+    def predict_disparity(
+        self,
+        row: dict,
+        image_tensor: torch.Tensor,
+        prompt: torch.Tensor,
+        donor_row: dict | None = None,
+        donor_tensor: torch.Tensor | None = None,
+    ):
+        condition = self.condition(row, image_tensor, donor_row, donor_tensor)
         noise = seeded_noise(
             (1, *condition.shape[1:]),
             seed=self.args.seed + int(row["manifest_index"]),
@@ -749,6 +794,7 @@ def run_validation(
     args,
     per_sample: list | None = None,
     raw_dir: Path | None = None,
+    donors: dict | None = None,
 ) -> dict:
     model.set_train(False)
     accumulator: dict[str, float] = {}
@@ -760,7 +806,11 @@ def run_validation(
         else:
             # 'shuffled' rows already carry the donor caption (see rotate_captions)
             prompt = model.encode_prompt(row["caption"])
-        prediction = model.predict_disparity(row, image_tensor, prompt)
+        donor_row = donor_tensor = None
+        if donors is not None:
+            donor_row = donors[row["id"]]
+            donor_tensor, _ = load_input_tensor(donor_row, model.modality, args)
+        prediction = model.predict_disparity(row, image_tensor, prompt, donor_row, donor_tensor)
         if raw_dir is not None:
             # Native resolution, before the resize to GT below: that is what
             # run_ms2_lotus_*_official.py --save-raw-pred writes, and
@@ -833,6 +883,23 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
             flush=True,
         )
 
+    donors = None
+    if args.shuffle_condition != "none":
+        # Uniform random donor, self-assignments swapped away -- same construction
+        # as permute_captions, so the two controls are read on the same footing.
+        order = np.random.default_rng(args.seed).permutation(len(val_rows))
+        for index in range(len(val_rows)):
+            if order[index] == index:
+                partner = (index + 1) % len(val_rows)
+                order[index], order[partner] = order[partner], order[index]
+        donors = {row["id"]: val_rows[int(order[i])] for i, row in enumerate(val_rows)}
+        self_hits = sum(1 for r in val_rows if donors[r["id"]]["id"] == r["id"])
+        print(
+            f"[eval] shuffle-condition {args.shuffle_condition}: uniform random donors "
+            f"(seed {args.seed}), {self_hits} self-assignments",
+            flush=True,
+        )
+
     raw_dir = None
     if args.save_raw_pred:
         raw_dir = output / "raw_predictions"
@@ -841,13 +908,16 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
 
     per_sample: list[dict] = []
     started = time.time()
-    metrics = run_validation(model, val_rows, prompts, args, per_sample=per_sample, raw_dir=raw_dir)
+    metrics = run_validation(
+        model, val_rows, prompts, args, per_sample=per_sample, raw_dir=raw_dir, donors=donors
+    )
     metrics.update(
         {
             "route": args.route,
             "checkpoint": str(args.eval_checkpoint),
             "checkpoint_epoch": checkpoint.get("epoch"),
             "raw_predictions_saved": bool(args.save_raw_pred),
+            "shuffle_condition": args.shuffle_condition,
             "val_manifest": str(args.val_manifest),
             "val_stride": args.val_stride,
             "val_caption_mode": args.val_caption_mode,

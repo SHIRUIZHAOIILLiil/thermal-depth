@@ -20,6 +20,7 @@
 #                 —— 必须与该 checkpoint 训练时的输入模式一致，否则是在它没训过的
 #                    模式下打分
 #   VAL_STRIDE    默认 1（全量）
+#   SHUFFLE_COND  证伪对照：all | anythermal。不设＝关闭
 #
 # ── 用法 ────────────────────────────────────────────────────────────
 #   跨机器标定（§12.6，投六线之前必做）：
@@ -65,6 +66,10 @@ ARGS=(
 # 任务 3 的可视化和九分层都吃 raw_predictions/<id>.npy。
 # 每帧约 0.5 MB + 1 个 inode，所以默认关，要用时显式 SAVE_RAW=1。
 [[ "${SAVE_RAW:-0}" == "1" ]] && ARGS+=(--save-raw-pred)
+
+# 证伪对照：把 condition 换成随机 donor 帧的。指标几乎不动 = 该分支没在起作用。
+# all = 换整个 condition；anythermal = 只换 AnyThermal 特征、保留正确的热像张量。
+[[ -n "${SHUFFLE_COND:-}" ]] && ARGS+=(--shuffle-condition "$SHUFFLE_COND")
 
 echo "=== 评估 $CKPT ==="
 echo "=== python tools/train_route_suite.py ${ARGS[*]} ==="
