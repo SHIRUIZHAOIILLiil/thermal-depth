@@ -42,7 +42,7 @@
 | **a** RGB+U-Net | RGB | 冻结 VAE latent | 867.57 M | 0.0791 | **0.0844** | 3.827 | 0.9269 |
 | **b** Thermal+U-Net | Thermal | 冻结 VAE latent | 867.57 M | **0.0775** | 0.0884 | 3.956 | 0.9071 |
 | **c1** VAE-adapter | Thermal | VAE latent + Adapter | 7.11 M | 0.1127 | 0.1217 | 5.465 | 0.8365 |
-| **c2** VAE-adapter+U-Net | Thermal | VAE latent + Adapter | 874.67 M | 0.0932 | 0.1013 | 4.418 | 0.8826 |
+| **c2** VAE-adapter→U-Net | Thermal | VAE latent + **冻结** Adapter | 867.57 M | 0.0932 | 0.1013 | 4.418 | 0.8826 |
 | **d1** AnyTh-adapter | Thermal | AnyThermal 特征 + Adapter | 9.41 M | 0.0860 | 0.0973 | 4.432 | 0.8883 |
 | **d2** AnyTh-adapter+U-Net | Thermal | AnyThermal 特征 + Adapter | 876.98 M | 0.0815 | 0.0903 | 3.855 | 0.9086 |
 
@@ -53,6 +53,9 @@
 - **d 系全面压过 c 系**：d1 > c1（0.0973 vs 0.1217）、d2 > c2（0.0903 vs 0.1013）。
   **AnyThermal 特征作为 condition 优于 VAE latent，两个参数量级上都成立。**
 - **d1 用 9.41 M（1%）参数达到 0.0973**，逼近 867 M 的 b。
+- ⚠️ **c2 的可训练参数是 867.57 M，不是路线定义里的 874.67 M。** 它是任务 1b 的阶段二，
+  实跑带 `--freeze-adapter --init-from c1_stage1/best_weights.pt`，Adapter 继承自 c1 且不拿梯度。
+  `ROUTE_ARCHITECTURES_20EPOCH.md` 按路线**定义**导出，不反映这个开关。
 
 ---
 
@@ -108,9 +111,15 @@
 
 - **d2 是唯一在远端改善的线**：0.1524 vs b 的 0.1680（**−9.3%**），退化倍数也最小。
   它用一点整体精度换来了远端的实质改善 —— 正是任务关心的区域。
-- **受控归因**：c2 与 d2 结构完全相同，唯一差别是 condition 来源。
-  `c2 far 0.1817 → d2 far 0.1524`，**−16%**。远端改善可归因到 AnyThermal 特征本身，
-  不是 adapter 架构。
+- ⚠️ **归因没有原先写的那么干净（2026-08-03 更正）**：c2 **不是** d2 的等价对照。
+  训练日志显示两条 c2 臂都用了 `--freeze-adapter --init-from c1_stage1/best_weights.pt`
+  —— 任务 1b 的两阶段做法，Adapter 继承自 c1 并冻结、只训 U-Net（可训练 **867.57 M**，
+  不是路线定义里的 874.67 M）；而 d2 没有 `--freeze-adapter`，是 Adapter 与 U-Net 联合训练。
+  所以 `c2 far 0.1817 → d2 far 0.1524` 的 −16% 里混着**两个**变量：condition 来源，
+  以及 Adapter 怎么训。
+  **干净的一对是 c1 vs d1**（都只训 Adapter、U-Net 冻结，test 0.1217 vs 0.0973），
+  但 §10 的 raw 预测清单里没有 `c1_raw`，c1 的分层数字从未算过。补一个
+  `SAVE_RAW=1` 的 c1 评估 + 一次分层就能把归因坐实。
 - **任务 1b 的答案：没修好。** c2（先训 adapter 再训 U-Net）远端 0.1817、row/top 0.1858，
   都是所有线里最差。
 - **锐利度全线一致**（1.25–1.27）。caption 不改变锐利度，adapter 也不改变。

@@ -439,7 +439,8 @@ def overview(prs):
          "注入效应：同权重同帧，仅 prompt 不同，无懈可击\n权重效应：单 seed"],
         ["2",
          "远端误差可以归因到 condition 的来源，而不是 adapter 架构：\n"
-         "c2 与 d2 结构完全相同，只换 condition，远端 0.1817 → 0.1524（−16%）。",
+         "c2 与 d2 的远端 0.1817 → 0.1524（−16%）；但两者除 condition 来源外，"
+         "Adapter 的训练方式也不同（c2 冻结、d2 联合训练），归因只能到「二者之一」。",
          "受控对照 + donor-swap 证伪（误差翻 3.3 倍）"],
         ["3",
          "远端退化不是热像深度的通病：原版 AnyThermal 用同一份稀疏 LiDAR 监督，"
@@ -493,7 +494,7 @@ def main_table(prs):
         ["a  RGB+U-Net", "RGB", "冻结 VAE latent", "867.57 M", "0.0791", ("0.0844", {"bold": True}), "3.827", "0.9269"],
         ["b  Thermal+U-Net", "Thermal", "冻结 VAE latent", "867.57 M", ("0.0775", {"bold": True}), "0.0884", "3.956", "0.9071"],
         ["c1  VAE-adapter", "Thermal", "VAE latent + Adapter", "7.11 M", "0.1127", "0.1217", "5.465", "0.8365"],
-        ["c2  VAE-adapter+U-Net", "Thermal", "VAE latent + Adapter", "874.67 M", "0.0932", "0.1013", "4.418", "0.8826"],
+        ["c2  VAE-adapter→U-Net", "Thermal", "VAE latent + 冻结 Adapter", "867.57 M", "0.0932", "0.1013", "4.418", "0.8826"],
         ["d1  AnyTh-adapter", "Thermal", "AnyThermal 特征 + Adapter", "9.41 M", "0.0860", "0.0973", "4.432", "0.8883"],
         ["d2  AnyTh-adapter+U-Net", "Thermal", "AnyThermal 特征 + Adapter", "876.98 M", "0.0815", "0.0903", "3.855", "0.9086"],
     ]
@@ -571,13 +572,14 @@ ROUTES = [
      "note": "Adapter 是 latent 上的残差 CNN，零初始化 ⇒ 未训练时是恒等映射，"
              "所以起点恰好是「冻结直推」。全链路只有 0.5% 的参数拿梯度。",
      "conclusion": "只训 7.11 M 的 Adapter，U-Net 冻结。test 0.1217 —— 六线里最差。"},
-    {"key": "c2", "kicker": "ROUTE C2 · DATA FLOW",
-     "title": "c2 线：Thermal → 冻结 VAE → 可训练 Adapter + 可训练 U-Net",
-     "nodes": [IN_THR, VAE_ENC, Z_X, adapter("vae"), Z_C, CONCAT, unet(True), X0,
-               VAE_DEC, None],
-     "note": "结构与 d2 完全相同，唯一差别是 Adapter 吃的是 VAE latent 而不是 AnyThermal 特征 —— "
-             "这正是把远端改善归因到 condition 来源的那组受控对照。",
-     "conclusion": "Adapter + U-Net 联合训练，874.67 M。test 0.1013，远端 0.1817（全线最差）。"},
+    {"key": "c2", "kicker": "ROUTE C2 · DATA FLOW（任务 1b 阶段二）",
+     "title": "c2 线：先训 Adapter（= c1），再冻结它、只训 U-Net",
+     "nodes": [IN_THR, VAE_ENC, Z_X, adapter("vae", trained=False), Z_C, CONCAT,
+               unet(True), X0, VAE_DEC, None],
+     "note": "这是导师要的「先训 Adapter 再训后面的 U-Net」：阶段一就是已完成的 c1，"
+             "阶段二用 --init-from 载入它、--freeze-adapter 冻住，只让 U-Net 拿梯度。"
+             "所以可训练参数与 b 线相同，唯一差别是 condition 先过了一层 c1 训出来的 Adapter。",
+     "conclusion": "只训 U-Net，867.57 M（Adapter 继承自 c1、冻结）。test 0.1013，远端 0.1817（全线最差）。"},
     {"key": "d1", "kicker": "ROUTE D1 · DATA FLOW",
      "title": "d1 线：Thermal → 冻结 AnyThermal → 可训练 Adapter → 冻结 U-Net",
      "nodes": [IN_THR, ANY_ENC, FEAT, adapter("any"), Z_C, CONCAT, unet(False), X0,
@@ -741,11 +743,13 @@ def far_field(prs):
           size=11.5, align=align)
 
     write(textbox(slide, 8.40, 1.62, 4.33, 3.60), [
-        ("受控归因", {"bold": True, "size": 13}),
-        "c2 与 d2 结构完全相同，可训练参数几乎一样，"
-        "唯一差别是 condition 来自哪里。",
-        ("far  0.1817 → 0.1524，−16%", {"bold": True, "colour": GOOD, "size": 13}),
-        "所以远端改善可以归因到 AnyThermal 特征本身，不是 adapter 架构。",
+        ("归因：比原先说的弱一档", {"bold": True, "size": 13}),
+        ("far  c2 0.1817 → d2 0.1524，−16%", {"bold": True, "colour": GOOD, "size": 12.5}),
+        ("但 c2 与 d2 不止差一件事：", {"colour": BAD}),
+        "c2 是两阶段（Adapter 继承自 c1 并冻结，只训 U-Net），d2 是 Adapter 与 U-Net 联合训练。"
+        "所以这 −16% 里混着「condition 来源」和「Adapter 怎么训」两个变量。",
+        "干净的一对是 c1 vs d1（都只训 Adapter、U-Net 冻结）：test 0.1217 vs 0.0973。"
+        "但 c1 没出过 raw 预测，分层数字缺，补一个评估作业即可。",
         "",
         "d2 是唯一在远端改善的线（vs b 的 0.1680，−9.3%），退化倍数也最小。"
         "它用一点整体精度换来了远端的实质改善 —— 正是任务关心的区域。",
