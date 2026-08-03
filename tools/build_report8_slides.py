@@ -13,10 +13,17 @@ Storyline (the supervisor-facing spine, in this order):
 Rain and gradient matching are supplements, not spine: the first is a condition
 boundary on the caption finding, the second is a clean negative result.
 
-Two slides carry placeholders on purpose -- the zero-shot direct run and the
-qualitative comparison are cluster jobs that had not returned when the deck was
-built (docs §11).  They are marked in the deck itself, not silently omitted, so
-an unfilled box is visible rather than forgotten.
+Each of the six routes gets a data-flow slide, drawn with the shape vocabulary
+report 7 established for its route-B figure (same trapezoids, cubes, badges and
+palette) so the two decks read as one series.  The rule the legend states:
+SHAPE says what a block is, COLOUR says whether it takes gradients.  Module
+names and parameter counts come from docs/ROUTE_ARCHITECTURES_20EPOCH.md, which
+tools/dump_route_architecture.py generates from the models themselves.
+
+One slide carries a placeholder on purpose -- the qualitative comparison is a
+cluster job that had not returned when the deck was built (docs §11).  It is
+marked in the deck itself, not silently omitted, so an unfilled box is visible
+rather than forgotten.
 
     python tools/build_report8_slides.py --output "E:/.../8-thermal_depth_report_8.pptx"
 """
@@ -30,7 +37,7 @@ from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
-from pptx.util import Inches, Pt
+from pptx.util import Emu, Inches, Pt
 
 INK = RGBColor(0x1F, 0x2A, 0x44)      # deep charcoal blue -- titles, dark bars
 ICE = RGBColor(0xCA, 0xDC, 0xFC)      # ice blue -- kickers on dark, accents
@@ -47,6 +54,25 @@ DATE = "2026-08-03"
 W, H = 13.333, 7.5
 MARGIN, BODY_W = 0.60, 12.13
 BAR_TOP, BAR_H = 6.62, 0.66
+
+# ── data-flow diagram palette ───────────────────────────────────────────────
+# Report 7's route-B figure established these; reused verbatim so the two decks
+# read as one series.  The rule the legend states: SHAPE says what a block is,
+# COLOUR says whether it takes gradients.
+VAE_FILL, VAE_LINE = RGBColor(0xC7, 0xDC, 0xF0), RGBColor(0x6E, 0x9C, 0xC4)
+TXT_FILL, TXT_LINE = RGBColor(0xD6, 0xE8, 0xCE), RGBColor(0x8F, 0xB0, 0x7F)
+ANY_FILL, ANY_LINE = RGBColor(0xE2, 0xDC, 0xF2), RGBColor(0x91, 0x87, 0xC4)
+HOT_FILL, HOT_LINE = RGBColor(0xE8, 0x8B, 0x2F), RGBColor(0xC0, 0x6E, 0x18)
+COLD_FILL, COLD_LINE = RGBColor(0xD8, 0xDE, 0xE8), RGBColor(0x8A, 0x96, 0xAA)
+CUBE_FILL, CUBE_LINE = RGBColor(0xEC, 0xE6, 0xD6), RGBColor(0xB6, 0xAC, 0x96)
+WIRE = RGBColor(0x7C, 0x89, 0x9E)
+BADGE_COLD, BADGE_HOT = RGBColor(0x8A, 0x96, 0xAA), RGBColor(0xC0, 0x6E, 0x18)
+PROMPT_FILL, PROMPT_LINE = RGBColor(0xFD, 0xF3, 0xDD), RGBColor(0xD8, 0xB6, 0x6A)
+
+FIGDIR = Path(__file__).resolve().parents[1] / "docs" / "figures" / "routeflow"
+
+ROW_Y, TEXT_Y = 2.86, 4.86      # centre lines of the main path and the text branch
+GAP = 0.30                      # horizontal gap between consecutive nodes
 
 
 # ── primitives ──────────────────────────────────────────────────────────────
@@ -162,6 +188,180 @@ def placeholder(slide, left, top, width, height, lines):
     write(frame, lines, size=12, colour=GREY)
 
 
+# ── data-flow diagram ───────────────────────────────────────────────────────
+
+def _shape(slide, kind, cx, cy, vw, vh, *, rot=0, fill=None, line=None, lw=1.25):
+    """Place `kind` by its VISUAL centre and visual width/height.
+
+    PowerPoint rotates about the centre and leaves left/top/width/height
+    describing the UNROTATED box, so a 90-degree trapezoid needs its w/h
+    swapped before placing.  Doing that here keeps every call site in visual
+    coordinates, which is the only way the layout arithmetic stays readable.
+    """
+    bw, bh = (vh, vw) if rot in (90, 270) else (vw, vh)
+    shape = slide.shapes.add_shape(kind, Inches(cx - bw / 2), Inches(cy - bh / 2),
+                                   Inches(bw), Inches(bh))
+    shape.rotation = rot
+    shape.shadow.inherit = False
+    if fill is None:
+        shape.fill.background()
+    else:
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = fill
+    if line is None:
+        shape.line.fill.background()
+    else:
+        shape.line.color.rgb = line
+        shape.line.width = Pt(lw)
+    return shape
+
+
+def _centred(slide, cx, cy, width, lines, *, size, colour=INK):
+    frame = textbox(slide, cx - width / 2, cy, width, 0.5)
+    write(frame, lines, size=size, colour=colour, space_after=0)
+    for para in frame.paragraphs:
+        para.alignment = PP_ALIGN.CENTER
+    return frame
+
+
+def _badge(slide, cx, top, trained):
+    box = _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, cx, top + 0.105, 0.46, 0.21,
+                 fill=BADGE_HOT if trained else BADGE_COLD, line=None)
+    frame = box.text_frame
+    frame.margin_left = frame.margin_right = 0
+    frame.margin_top = frame.margin_bottom = 0
+    frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    para = frame.paragraphs[0]
+    para.alignment = PP_ALIGN.CENTER
+    run = para.add_run()
+    run.text = "训练" if trained else "冻结"
+    run.font.name, run.font.size, run.font.bold = FONT, Pt(8), True
+    run.font.color.rgb = WHITE
+
+
+def _wire(slide, x1, y1, x2, y2):
+    connector = slide.shapes.add_connector(1, Inches(x1), Inches(y1), Inches(x2), Inches(y2))
+    connector.line.color.rgb = WIRE
+    connector.line.width = Pt(1.5)
+    return connector
+
+
+def _node(slide, node, cx, cy):
+    """Draw one block; returns its visual width."""
+    kind = node["kind"]
+    vw, vh = node["w"], node.get("h", 1.20)
+    trained = node.get("trained", False)
+
+    if kind == "image":
+        image = FIGDIR / node["file"]
+        picture = slide.shapes.add_picture(str(image), 0, 0, width=Inches(vw))
+        # picture.height is already EMU; Inches() would read it as a count of
+        # inches and throw the picture hundreds of feet off the slide
+        drawn_h = Emu(picture.height).inches
+        picture.left = Inches(cx - vw / 2)
+        picture.top = Inches(cy - drawn_h / 2)
+        _centred(slide, cx, cy + drawn_h / 2 + 0.06, vw + 0.9,
+                 [node["label"], (node["sub"], {"size": 7.5})], size=9.5, colour=GREY)
+        return vw
+
+    if kind == "cube":
+        _shape(slide, MSO_SHAPE.CUBE, cx, cy, vw, vh, fill=CUBE_FILL, line=CUBE_LINE, lw=1.0)
+        _centred(slide, cx, cy + vh / 2 + 0.02, 1.60,
+                 [node["label"], (node["sub"], {"size": 7.5})], size=9.5)
+        return vw
+
+    if kind in ("enc", "dec"):
+        fill, line = node.get("fill", VAE_FILL), node.get("line", VAE_LINE)
+        _shape(slide, MSO_SHAPE.TRAPEZOID, cx, cy, vw, vh,
+               rot=90 if kind == "enc" else 270, fill=fill, line=line)
+        _centred(slide, cx, cy - 0.26, max(1.75, vw + 0.7),
+                 [node["label"], (node["sub"], {"size": 8})], size=10)
+        _badge(slide, cx - min(0.33, vw / 2 - 0.05), cy - vh / 2 + 0.02, trained)
+        return vw
+
+    if kind == "unet":                      # hourglass = two facing trapezoids
+        fill, line = (HOT_FILL, HOT_LINE) if trained else (COLD_FILL, COLD_LINE)
+        half = vw / 2
+        _shape(slide, MSO_SHAPE.TRAPEZOID, cx - half / 2, cy, half, vh, rot=90,
+               fill=fill, line=line)
+        _shape(slide, MSO_SHAPE.TRAPEZOID, cx + half / 2, cy, half, vh, rot=270,
+               fill=fill, line=line)
+        _centred(slide, cx, cy - 0.26, vw + 0.9,
+                 [node["label"], (node["sub"], {"size": 8})], size=10,
+                 colour=WHITE if trained else INK)
+        _badge(slide, cx - 0.33, cy - vh / 2 + 0.02, trained)
+        return vw
+
+    if kind == "block":                     # adapter: a residual CNN, not an encoder
+        fill, line = (HOT_FILL, HOT_LINE) if trained else (COLD_FILL, COLD_LINE)
+        _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, cx, cy, vw, vh, fill=fill, line=line)
+        _centred(slide, cx, cy - 0.26, max(1.75, vw + 0.6),
+                 [node["label"], (node["sub"], {"size": 8})], size=10,
+                 colour=WHITE if trained else INK)
+        _badge(slide, cx - min(0.33, vw / 2 - 0.05), cy - vh / 2 + 0.02, trained)
+        return vw
+
+    if kind == "concat":
+        _shape(slide, MSO_SHAPE.OVAL, cx, cy, 0.44, 0.44, fill=WHITE, line=WIRE)
+        _centred(slide, cx, cy - 0.16, 0.6, ["⊕"], size=14)
+        _centred(slide, cx, cy - 0.78, 1.6, ["concat → 8 通道"], size=8.5, colour=GREY)
+        return 0.44
+
+    raise ValueError(f"unknown node kind {kind!r}")
+
+
+def flow(slide, nodes, *, loss="掩码 SSI-L1 vs LiDAR 视差", prompt='c = ""（空 prompt）'):
+    """Lay the main path out left to right, then hang the text branch under it."""
+    total = sum(n["w"] for n in nodes) + GAP * (len(nodes) - 1)
+    x = MARGIN + 0.45 + (BODY_W - 0.9 - total) / 2
+    centres = []
+    for node in nodes:
+        cx = x + node["w"] / 2
+        _node(slide, node, cx, ROW_Y)
+        centres.append((cx, node["w"]))
+        x += node["w"] + GAP
+    for (cx, w), (nx, nw) in zip(centres, centres[1:]):
+        _wire(slide, cx + w / 2 + 0.02, ROW_Y, nx - nw / 2 - 0.02, ROW_Y)
+
+    concat_i = next(i for i, n in enumerate(nodes) if n["kind"] == "concat")
+    unet_i = next(i for i, n in enumerate(nodes) if n["kind"] == "unet")
+    concat_x = centres[concat_i][0]
+    unet_x = centres[unet_i][0]
+
+    # text branch: prompt -> CLIP -> cross-attention into the U-Net from below
+    px = MARGIN + 0.75
+    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, px + 0.72, TEXT_Y, 1.45, 0.50,
+           fill=PROMPT_FILL, line=PROMPT_LINE)
+    _centred(slide, px + 0.72, TEXT_Y - 0.10, 2.0, [prompt], size=9.5)
+    clip_x = px + 2.42
+    _shape(slide, MSO_SHAPE.TRAPEZOID, clip_x, TEXT_Y, 0.84, 1.15, rot=90,
+           fill=TXT_FILL, line=TXT_LINE)
+    _centred(slide, clip_x, TEXT_Y - 0.26, 1.75,
+             ["Text Encoder", ("340.39 M", {"size": 8})], size=10)
+    _badge(slide, clip_x - 0.33, TEXT_Y - 0.575 + 0.02, False)
+    _wire(slide, px + 1.47, TEXT_Y, clip_x - 0.44, TEXT_Y)
+    _wire(slide, clip_x + 0.44, TEXT_Y, unet_x, TEXT_Y)
+    _wire(slide, unet_x, TEXT_Y, unet_x, ROW_Y + 0.55)
+    _centred(slide, unet_x + 1.05, TEXT_Y - 0.44, 1.7, ["cross-attention"],
+             size=8.5, colour=GREY)
+
+    # Noise latent joins at the concat. It sits well above the text row: its
+    # caption would otherwise land exactly on the wire running to the U-Net.
+    noise_y = ROW_Y + 1.00
+    _shape(slide, MSO_SHAPE.CUBE, concat_x, noise_y, 0.58, 0.68,
+           fill=CUBE_FILL, line=CUBE_LINE, lw=1.0)
+    _centred(slide, concat_x, noise_y + 0.36, 1.7,
+             ["z_T ~ N(0, I)", ("4 × 32 × 80", {"size": 7.5})], size=9.5)
+    _wire(slide, concat_x, noise_y - 0.34, concat_x, ROW_Y + 0.24)
+
+    # loss box hangs off the decoded output
+    out_x = centres[-1][0]
+    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, out_x, TEXT_Y - 0.10, 2.10, 0.46,
+           fill=INK, line=None)
+    _centred(slide, out_x, TEXT_Y - 0.20, 2.10, [loss], size=9, colour=WHITE)
+    _wire(slide, out_x, ROW_Y + 0.62, out_x, TEXT_Y - 0.33)
+
+
 def picture_or_placeholder(slide, image: Path | None, left, top, width, height, lines):
     if image and image.is_file():
         slide.shapes.add_picture(str(image), Inches(left), Inches(top), width=Inches(width))
@@ -271,6 +471,117 @@ def main_table(prs):
     ], size=12, colour=INK, space_after=4)
     footnote(slide, "外部参照点（原版 AnyThermal，test 0.0821）在任务 4 那一页有完整分层表，此处不重复。")
     conclusion(slide, "六线的排序稳定：condition 用什么，比在 condition 上挂多少参数更要紧。")
+
+
+IN_RGB = {"kind": "image", "file": "in_rgb.png", "w": 1.30,
+          "label": "RGB x", "sub": "3 × 256 × 640"}
+IN_THR = {"kind": "image", "file": "in_thermal.png", "w": 1.30,
+          "label": "热像 x", "sub": "3 × 256 × 640"}
+OUT_DISP = {"kind": "image", "file": "out_disparity.png", "w": 1.30,
+            "label": "视差 ŷ", "sub": "256 × 640"}
+VAE_ENC = {"kind": "enc", "w": 1.05, "label": "Variational Encoder", "sub": "34.16 M"}
+VAE_DEC = {"kind": "dec", "w": 1.05, "label": "Variational Decoder", "sub": "49.49 M · fp32"}
+CONCAT = {"kind": "concat", "w": 0.44}
+Z_X = {"kind": "cube", "w": 0.58, "h": 0.68, "label": "z_x", "sub": "4 × 32 × 80"}
+Z_C = {"kind": "cube", "w": 0.58, "h": 0.68, "label": "z_c", "sub": "4 × 32 × 80"}
+X0 = {"kind": "cube", "w": 0.58, "h": 0.68, "label": "x̂₀", "sub": "4 × 32 × 80"}
+FEAT = {"kind": "cube", "w": 0.58, "h": 0.68, "label": "特征金字塔", "sub": "ViT-B/14 tokens"}
+ANY_ENC = {"kind": "enc", "w": 1.05, "label": "AnyThermal Encoder", "sub": "86.58 M · DINOv2",
+           "fill": ANY_FILL, "line": ANY_LINE}
+
+
+def unet(trained):
+    return {"kind": "unet", "w": 1.70, "h": 1.04, "trained": trained,
+            "label": "Lotus U-Net", "sub": "867.57 M · 单步"}
+
+
+def adapter(kind, trained=True):
+    if kind == "vae":
+        return {"kind": "block", "w": 0.90, "h": 1.00, "trained": trained,
+                "label": "Adapter", "sub": "7.11 M · 残差"}
+    return {"kind": "block", "w": 0.90, "h": 1.00, "trained": trained,
+            "label": "Adapter", "sub": "9.41 M · V2.3"}
+
+
+ROUTES = [
+    {"key": "a", "kicker": "ROUTE A · DATA FLOW",
+     "title": "a 线：RGB → 冻结 VAE → 可训练 U-Net",
+     "nodes": [IN_RGB, VAE_ENC, Z_X, CONCAT, unet(True), X0, VAE_DEC, OUT_DISP],
+     "note": "与 b 线逐位相同，唯一变量是输入模态。它是「热像离 RGB 还有多远」的对照，"
+             "也是唯一按 RGB 视角 GT 评分的线。",
+     "conclusion": "唯一拿梯度的是 867.57 M 的 U-Net；VAE 与文本通路全部冻结。test 0.0844。"},
+    {"key": "b", "kicker": "ROUTE B · DATA FLOW",
+     "title": "b 线：Thermal → 冻结 VAE → 可训练 U-Net",
+     "nodes": [IN_THR, VAE_ENC, Z_X, CONCAT, unet(True), X0, VAE_DEC, OUT_DISP],
+     "note": "热像被当成三通道图直接喂进为 RGB 训练的 VAE。这条线是本项目最好的热像成绩"
+             "（val 0.0775），也是其余各线的比较基准。",
+     "conclusion": "与 a 线同一套可训练参数；condition 换成热像的 VAE latent。test 0.0884。"},
+    {"key": "c1", "kicker": "ROUTE C1 · DATA FLOW",
+     "title": "c1 线：Thermal → 冻结 VAE → 可训练 Adapter → 冻结 U-Net",
+     "nodes": [IN_THR, VAE_ENC, Z_X, adapter("vae"), Z_C, CONCAT, unet(False), X0,
+               VAE_DEC, OUT_DISP],
+     "note": "Adapter 是 latent 上的残差 CNN，零初始化 ⇒ 未训练时是恒等映射，"
+             "所以起点恰好是「冻结直推」。全链路只有 0.5% 的参数拿梯度。",
+     "conclusion": "只训 7.11 M 的 Adapter，U-Net 冻结。test 0.1217 —— 六线里最差。"},
+    {"key": "c2", "kicker": "ROUTE C2 · DATA FLOW",
+     "title": "c2 线：Thermal → 冻结 VAE → 可训练 Adapter + 可训练 U-Net",
+     "nodes": [IN_THR, VAE_ENC, Z_X, adapter("vae"), Z_C, CONCAT, unet(True), X0,
+               VAE_DEC, OUT_DISP],
+     "note": "结构与 d2 完全相同，唯一差别是 Adapter 吃的是 VAE latent 而不是 AnyThermal 特征 —— "
+             "这正是把远端改善归因到 condition 来源的那组受控对照。",
+     "conclusion": "Adapter + U-Net 联合训练，874.67 M。test 0.1013，远端 0.1817（全线最差）。"},
+    {"key": "d1", "kicker": "ROUTE D1 · DATA FLOW",
+     "title": "d1 线：Thermal → 冻结 AnyThermal → 可训练 Adapter → 冻结 U-Net",
+     "nodes": [IN_THR, ANY_ENC, FEAT, adapter("any"), Z_C, CONCAT, unet(False), X0,
+               VAE_DEC, OUT_DISP],
+     "note": "注意 VAE encoder 整条不在了 —— condition 改由 AnyThermal 的 DINOv2 特征经 Adapter 生成。"
+             "VAE 只剩解码端。",
+     "conclusion": "9.41 M（全链路 0.7%）达到 test 0.0973，逼近 867 M 的 b 线。"},
+    {"key": "d2", "kicker": "ROUTE D2 · DATA FLOW",
+     "title": "d2 线：Thermal → 冻结 AnyThermal → 可训练 Adapter + 可训练 U-Net",
+     "nodes": [IN_THR, ANY_ENC, FEAT, adapter("any"), Z_C, CONCAT, unet(True), X0,
+               VAE_DEC, OUT_DISP],
+     "note": "本轮远端表现最好的线。§7 的 donor-swap 证明这条特征通路真的在承载信号："
+             "推理时把它换成随机 donor 帧的，误差从 0.0903 翻到 0.2971。",
+     "conclusion": "876.98 M。test 0.0903，但远端 0.1524 —— 六线里唯一在远端改善的。"},
+]
+
+
+def legend(slide, y):
+    """Shape says what a block is; colour says whether it takes gradients."""
+    items = [
+        ("enc", VAE_FILL, VAE_LINE, "VAE 编解码"),
+        ("enc", ANY_FILL, ANY_LINE, "AnyThermal"),
+        ("enc", TXT_FILL, TXT_LINE, "文本编码"),
+        ("unet_hot", HOT_FILL, HOT_LINE, "拿梯度"),
+        ("unet_cold", COLD_FILL, COLD_LINE, "冻结"),
+        ("cube", CUBE_FILL, CUBE_LINE, "张量"),
+    ]
+    x = MARGIN + 0.30
+    for kind, fill, line, label in items:
+        if kind == "cube":
+            _shape(slide, MSO_SHAPE.CUBE, x, y, 0.26, 0.30, fill=fill, line=line, lw=1.0)
+        elif kind == "enc":
+            _shape(slide, MSO_SHAPE.TRAPEZOID, x, y, 0.30, 0.34, rot=90, fill=fill, line=line, lw=1.0)
+        else:
+            _shape(slide, MSO_SHAPE.TRAPEZOID, x - 0.08, y, 0.16, 0.34, rot=90, fill=fill, line=line, lw=1.0)
+            _shape(slide, MSO_SHAPE.TRAPEZOID, x + 0.08, y, 0.16, 0.34, rot=270, fill=fill, line=line, lw=1.0)
+        write(textbox(slide, x + 0.22, y - 0.11, 1.5, 0.24), [label], size=9.5, colour=GREY)
+        x += 1.62
+
+
+def route_flow(prs, spec):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    header(slide, spec["kicker"], spec["title"])
+    flow(slide, spec["nodes"])
+    legend(slide, 5.86)
+    write(textbox(slide, MARGIN, 6.14, BODY_W, 0.40), [spec["note"]], size=9.5, colour=GREY)
+    conclusion(slide, spec["conclusion"])
+
+
+def route_flows(prs):
+    for spec in ROUTES:
+        route_flow(prs, spec)
 
 
 def caption_effects(prs):
@@ -619,6 +930,7 @@ def build(output: Path, figure: Path | None) -> None:
     overview(prs)
     protocol(prs)
     main_table(prs)
+    route_flows(prs)
     caption_effects(prs)
     caption_strength(prs)
     far_field(prs)
