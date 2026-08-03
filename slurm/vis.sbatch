@@ -27,7 +27,10 @@
 #   FRAMES     默认 5；MIN_SEP 默认 30（避免挑到同一瞬间的连续帧）
 #   INPUTS     thermal（默认）| rgb | thermal,rgb
 #   GT_VIEW    thermal（默认）| rgb —— 一张图只能一个视角，混视角是禁止的
-#   LANG       zh（默认）| en；FONT 指到一个 CJK ttf，没有就自动降级成英文
+#   FIG_LANG   zh（默认）| en；FONT 指到一个 CJK ttf，没有就自动降级成英文
+#              ⚠️ 不能叫 LANG —— 那是 POSIX 的 locale 变量，登录环境里本来就是
+#                 en_US.UTF-8 之类，--export=ALL 会把它带进来顶掉默认值，
+#                 于是拼出 `--lang en_US.UTF-8`，argparse 直接退出码 2
 #   STRIDE     扫描步长，默认 1（挑帧只能从扫过的帧里挑）
 #
 # ── 用法 ────────────────────────────────────────────────────────────
@@ -54,6 +57,13 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
 [[ -f "$MANIFEST" ]] || { echo "!! 找不到 manifest: $MANIFEST"; exit 1; }
 
+# 带 choices 的参数在这里先验一遍：直接喂给 argparse 的话，报错埋在 .err 里、
+# 退出码只有一个 2，在批处理作业里很难看出是哪个变量被环境顶掉了
+case "${FIG_LANG:-zh}" in
+  zh|en) ;;
+  *) echo "!! FIG_LANG 只能是 zh 或 en，收到 '${FIG_LANG}'"; exit 1 ;;
+esac
+
 OUT="$IRIS_RUNS/vis/$TAG"
 mkdir -p "$OUT"
 
@@ -71,7 +81,7 @@ ARGS=(
   --frames "${FRAMES:-5}"
   --min-separation "${MIN_SEP:-30}"
   --stride "${STRIDE:-1}"
-  --lang "${LANG:-zh}"
+  --lang "${FIG_LANG:-zh}"
 )
 
 # 逗号拆成多个 --predictions，顺便确认目录里真有 .npy。
