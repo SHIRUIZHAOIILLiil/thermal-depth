@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -363,10 +364,22 @@ def flow(slide, nodes, *, loss="掩码 SSI-L1 vs LiDAR 视差", prompt='c = ""�
 
 
 def picture_or_placeholder(slide, image: Path | None, left, top, width, height, lines):
-    if image and image.is_file():
-        slide.shapes.add_picture(str(image), Inches(left), Inches(top), width=Inches(width))
-    else:
+    """Fit the picture inside the box and centre it, rather than forcing width.
+
+    The comparison strip is about 2.1:1; setting only the width would make it
+    5.7in tall in a 4.5in slot and push it through the conclusion bar.
+    """
+    if not (image and image.is_file()):
         placeholder(slide, left, top, width, height, lines)
+        return
+    with Image.open(image) as probe:
+        aspect = probe.size[0] / probe.size[1]
+    draw_w = min(width, height * aspect)
+    draw_h = draw_w / aspect
+    slide.shapes.add_picture(str(image),
+                             Inches(left + (width - draw_w) / 2),
+                             Inches(top + (height - draw_h) / 2),
+                             width=Inches(draw_w))
 
 
 # ── slides ──────────────────────────────────────────────────────────────────
@@ -771,26 +784,25 @@ def external_reference(prs):
 
 def qualitative(prs, figure: Path | None):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    header(slide, "QUALITATIVE · SAME FRAMES, THREE ROUTES", "对比可视化：b / c2 / d2")
+    header(slide, "QUALITATIVE · WHERE THE ERROR ACTUALLY LIVES",
+           "定性对比：三条线的形状都对，错的是上半张图")
     picture_or_placeholder(
-        slide, figure, MARGIN, 1.55, BODY_W, 3.55,
+        slide, figure, MARGIN, 1.46, BODY_W, 4.05,
         ["【待填：tools/export_qualitative.py 的输出 PNG】",
          "",
          "与报告 7 那张定性图同一个工具、同一套参数：着色直接调用 Iris 官方的 "
          "lotus/utils/image_utils.py::colorize_depth_map，对视差上色并 reverse_color=True"
-         "（红=近、蓝=远），与论文插图同一函数同一参数。",
-         "稀疏 LiDAR GT 经 --gt-dilate 膨胀后再上色，栏首标注该帧实际密度。",
-         "挑帧用 --frame-ids 指定：000703 / 001245 / 001445 / 001958 / 002403，"
-         "是官方协议逐帧算出的、d2 在 depth/far >30m 上领先 b 最多的五帧。"])
-    write(textbox(slide, MARGIN, 5.24, BODY_W, 1.20), [
-        ("⚠️ 这五帧是极值，不是随机样本。", {"bold": True, "colour": BAD}),
-        "挑帧判据是「d2 比 b 在 depth/far >30m 上领先最多」，所以图上 d2 把 b 打出 2.5–3 倍"
-        "（如帧 001245：b 0.2652 / d2 0.0918）。",
-        ("全集上这个差距是 0.1680 → 0.1524，只有 9.3%。", {"bold": True}),
-        "图是用来看清差别长什么样的，测量差别大小的是上一页的分层表。",
-        "同理，图上 d2 在个别帧反超原版 AnyThermal，不能当成结论 —— 挑帧判据里根本没有 AnyThermal。",
-    ], size=11.5, colour=INK, space_after=3)
-    conclusion(slide, "图上每一格都由 raw 预测按各自对齐空间现算，AbsRel 与分层数字同源；但选帧有偏，量级以表为准。")
+         "（红=近、蓝=远），与论文插图同一函数同一参数。"])
+    write(textbox(slide, MARGIN, 5.62, BODY_W, 0.95), [
+        "· 三条线的整体结构都跟真值对得上；差别在细节，而且比表上的数字差异更难用肉眼分辨。",
+        "· 共用色标下（颜色跨列可比），三条线的上三分之一全部压成红色＝近处。"
+        "上带预测深度中位：b 12.0 m / c2 10.3 m / d2 10.7 m，而该带有回波像素的真值中位是 14.8 m。",
+        ("⚠️ 这五帧是按「d2 在远端领先 b 最多」挑的极值，不是随机样本；"
+         "全集上那个差距只有 9.3%（0.1680 → 0.1524）。图看形状，量级看分层表。",
+         {"colour": BAD}),
+    ], size=11, colour=INK, space_after=3)
+    conclusion(slide, "着色用 Iris 官方 colorize_depth_map，与论文插图同一函数同一参数；"
+                      "天空判近三条线都有，不是某一条的毛病。")
 
 
 def rain(prs):
@@ -891,8 +903,8 @@ def limits(prs):
         ["3", "a + caption 未跑（第一周任务 4 缺口，67 小时）。", "RGB 线上的 caption 效应无数据"],
         ["4", "对比可视化尚未回来（第二周任务 3 的后半）。", "可视化页"],
         ["5", "雨天两因素模型在 d2 上未复现。", "「效应跟着 caption 信息量走」只在 b 上成立"],
-        ["6", "现有工具无法测量真正的天空区域；需要不依赖 GT 的判据"
-              "（如「无回波区域被预测为近处的比例」），该工具尚未实现。",
+        ["6", "AbsRel/RMSE/所有分层都测不到天空。不依赖 GT 的判据已有"
+              "（export_qualitative.py 的上带中位深度），但只在 5 帧上跑过，尚未全量。",
          "「它没有天空问题」这类表述只能说到「有回波的上三分之一」"],
     ]
     table(slide, rows, MARGIN, 1.66, BODY_W, 4.40, [0.4, 7.0, 4.0], size=11)
@@ -906,18 +918,17 @@ def next_steps(prs):
         ["", "做什么", "为什么", "成本"],
         ["1", "d2 + caption 第二个 seed",
          "把权重效应 ① 从单次观测升级为可复现观测 —— 这是本轮最软的一环", "约 27 小时"],
-        ["2", "对比可视化",
-         "补上任务 3 的图（工具与作业已就绪，只差跑）", "一个 CPU 作业"],
+        ["2", "上带深度判据跑全量",
+         "工具已有（export_qualitative.py），现在只在 5 帧上跑过；换成全部 2,543 帧就能"
+         "把「天空判成近处」从佐证变成结论 —— 这是局限 1 唯一能被绕开的部分", "一个 GPU 作业"],
         ["3", "夜间 21-58-13 第四个数据点",
          "雨天两因素模型的可证伪预测：词表低于重雨、注入税大于 +0.0005", "一个评估作业"],
         ["4", "a + caption",
          "补齐第一周任务 4 的缺口，看 caption 双效应在 RGB 线上是否同构", "约 67 小时"],
-        ["5", "不依赖 GT 的天空判据工具",
-         "堵上局限 1 那个窟窿 —— 现在没有任何指标能测天空", "约 60 行"],
     ]
-    table(slide, rows, MARGIN, 1.70, BODY_W, 3.60, [0.4, 3.3, 6.4, 1.7], size=11.5)
-    write(textbox(slide, MARGIN, 5.50, BODY_W, 0.80), [
-        "1 和 2 决定这一轮结论能讲多硬，优先做；3–5 是扩展。"
+    table(slide, rows, MARGIN, 1.70, BODY_W, 3.10, [0.4, 3.3, 6.4, 1.7], size=11.5)
+    write(textbox(slide, MARGIN, 5.10, BODY_W, 1.10), [
+        "1 和 2 决定这一轮结论能讲多硬，优先做；3、4 是扩展。"
         "集群上的产物路径、自查工具与全部原始数字见 docs/AIRE_RESULTS_20260802.md。",
     ], size=12, colour=GREY)
     conclusion(slide, "先补 ① 的第二 seed 和零训练参照点，再谈扩展。")
