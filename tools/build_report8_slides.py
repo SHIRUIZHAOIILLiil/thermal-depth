@@ -470,12 +470,15 @@ def qualitative(prs, figure: Path | None):
          "挑 d2 在远端领先 b 最多的帧；--pick flip 挑逐帧排序与全集排序相反的帧。",
          "每列下方标注它自己用的对齐空间 —— 原版 AnyThermal 是 ssi，六线是 ssi_disparity，"
          "混用会得到几倍大的数（见口径页）。"])
-    write(textbox(slide, MARGIN, 5.30, BODY_W, 0.90), [
-        "两种上色都出：官方显示函数（每格用自己的量程归一化）与共用色标（全行按该帧真值量程）。"
-        "前者是仓库的显示助手，不是 BMSD 协议的一部分；它会把预测量程更宽的模型压缩得更狠，"
-        "所以两种并排给出，读者不必凭信任接受其中一种。",
-    ], size=11.5, colour=GREY)
-    conclusion(slide, "图上的每一格都由 raw 预测按各自对齐空间现算，AbsRel 与分层数字同源。")
+    write(textbox(slide, MARGIN, 5.24, BODY_W, 1.20), [
+        ("⚠️ 这五帧是极值，不是随机样本。", {"bold": True, "colour": BAD}),
+        "挑帧判据是「d2 比 b 在 depth/far >30m 上领先最多」，所以图上 d2 把 b 打出 2.5–3 倍"
+        "（如帧 001245：b 0.2652 / d2 0.0918）。",
+        ("全集上这个差距是 0.1680 → 0.1524，只有 9.3%。", {"bold": True}),
+        "图是用来看清差别长什么样的，测量差别大小的是上一页的分层表。",
+        "同理，图上 d2 在个别帧反超原版 AnyThermal，不能当成结论 —— 挑帧判据里根本没有 AnyThermal。",
+    ], size=11.5, colour=INK, space_after=3)
+    conclusion(slide, "图上每一格都由 raw 预测按各自对齐空间现算，AbsRel 与分层数字同源；但选帧有偏，量级以表为准。")
 
 
 def rain(prs):
