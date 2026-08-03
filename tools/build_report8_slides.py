@@ -255,6 +255,16 @@ def _node(slide, node, cx, cy):
 
     if kind == "image":
         image = FIGDIR / node["file"]
+        if not image.is_file():
+            # A route whose prediction panel has not been exported yet: show the gap
+            # rather than borrowing another route's output, which would silently put
+            # the wrong scene next to the right input.
+            _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, cx, cy, vw, vw * 0.4,
+                   fill=BAND, line=RULE, lw=1.0)
+            _centred(slide, cx, cy - 0.10, vw, [f"待填\n{node['file']}"], size=8.5, colour=GREY)
+            _centred(slide, cx, cy + vw * 0.2 + 0.06, vw + 0.9,
+                     [node["label"], (node["sub"], {"size": 7.5})], size=9.5, colour=GREY)
+            return vw
         picture = slide.shapes.add_picture(str(image), 0, 0, width=Inches(vw))
         # picture.height is already EMU; Inches() would read it as a count of
         # inches and throw the picture hundreds of feet off the slide
@@ -311,8 +321,14 @@ def _node(slide, node, cx, cy):
     raise ValueError(f"unknown node kind {kind!r}")
 
 
-def flow(slide, nodes, *, loss="掩码 SSI-L1 vs LiDAR 视差", prompt='c = ""（空 prompt）'):
-    """Lay the main path out left to right, then hang the text branch under it."""
+def flow(slide, nodes, *, loss="掩码 SSI-L1 vs LiDAR 视差", prompt='c = ""（空 prompt）',
+         prompts=None):
+    """Lay the main path out left to right, then hang the text branch under it.
+
+    `prompts` stacks several alternative prompt boxes into the one text branch.
+    The caption figure needs that: its whole point is that the image path is
+    fixed and only the string entering CLIP changes.
+    """
     total = sum(n["w"] for n in nodes) + GAP * (len(nodes) - 1)
     x = MARGIN + 0.45 + (BODY_W - 0.9 - total) / 2
     centres = []
@@ -331,16 +347,26 @@ def flow(slide, nodes, *, loss="掩码 SSI-L1 vs LiDAR 视差", prompt='c = ""�
 
     # text branch: prompt -> CLIP -> cross-attention into the U-Net from below
     px = MARGIN + 0.75
-    _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, px + 0.72, TEXT_Y, 1.45, 0.50,
-           fill=PROMPT_FILL, line=PROMPT_LINE)
-    _centred(slide, px + 0.72, TEXT_Y - 0.10, 2.0, [prompt], size=9.5)
+    boxes = prompts or [prompt]
+    span = 0.50
+    # the stack sits a little above the branch line so its last box clears the
+    # body text underneath; the wires still converge on the encoder's own centre
+    top = (TEXT_Y - 0.12) - span * (len(boxes) - 1) / 2
+    for index, text in enumerate(boxes):
+        y = top + index * span
+        _shape(slide, MSO_SHAPE.ROUNDED_RECTANGLE, px + 0.72, y, 1.62, 0.40,
+               fill=PROMPT_FILL, line=PROMPT_LINE)
+        _centred(slide, px + 0.72, y - 0.09, 1.72, [text], size=8.5)
+        if len(boxes) > 1:
+            _wire(slide, px + 1.53, y, px + 1.86, TEXT_Y)
     clip_x = px + 2.42
     _shape(slide, MSO_SHAPE.TRAPEZOID, clip_x, TEXT_Y, 0.84, 1.15, rot=90,
            fill=TXT_FILL, line=TXT_LINE)
     _centred(slide, clip_x, TEXT_Y - 0.26, 1.75,
              ["Text Encoder", ("340.39 M", {"size": 8})], size=10)
     _badge(slide, clip_x - 0.33, TEXT_Y - 0.575 + 0.02, False)
-    _wire(slide, px + 1.47, TEXT_Y, clip_x - 0.44, TEXT_Y)
+    _wire(slide, px + 1.86 if len(boxes) > 1 else px + 1.53, TEXT_Y,
+          clip_x - 0.44, TEXT_Y)
     _wire(slide, clip_x + 0.44, TEXT_Y, unet_x, TEXT_Y)
     _wire(slide, unet_x, TEXT_Y, unet_x, ROW_Y + 0.55)
     _centred(slide, unet_x + 1.05, TEXT_Y - 0.44, 1.7, ["cross-attention"],
@@ -490,7 +516,16 @@ IN_RGB = {"kind": "image", "file": "in_rgb.png", "w": 1.30,
           "label": "RGB x", "sub": "3 × 256 × 640"}
 IN_THR = {"kind": "image", "file": "in_thermal.png", "w": 1.30,
           "label": "热像 x", "sub": "3 × 256 × 640"}
-OUT_DISP = {"kind": "image", "file": "out_disparity.png", "w": 1.30,
+def out_disp(key):
+    """That route's own prediction on the same frame as the input panel.
+
+    Both come from frame 002403 of the test sequence: the input straight from
+    sync_data, the output from export_qualitative.py's `<label>_pred_demo.png`,
+    which is `colorize_depth_map(pred, reverse_color=True)` on the last frame it
+    rendered.  Pairing an RGB input with some other scene's thermal output, as
+    the first draft did, makes the figure a lie about what the route consumes.
+    """
+    return {"kind": "image", "file": f"out_{key}.png", "w": 1.30,
             "label": "视差 ŷ", "sub": "256 × 640"}
 VAE_ENC = {"kind": "enc", "w": 1.05, "label": "Variational Encoder", "sub": "34.16 M"}
 VAE_DEC = {"kind": "dec", "w": 1.05, "label": "Variational Decoder", "sub": "49.49 M · fp32"}
@@ -519,41 +554,41 @@ def adapter(kind, trained=True):
 ROUTES = [
     {"key": "a", "kicker": "ROUTE A · DATA FLOW",
      "title": "a 线：RGB → 冻结 VAE → 可训练 U-Net",
-     "nodes": [IN_RGB, VAE_ENC, Z_X, CONCAT, unet(True), X0, VAE_DEC, OUT_DISP],
+     "nodes": [IN_RGB, VAE_ENC, Z_X, CONCAT, unet(True), X0, VAE_DEC, None],
      "note": "与 b 线逐位相同，唯一变量是输入模态。它是「热像离 RGB 还有多远」的对照，"
              "也是唯一按 RGB 视角 GT 评分的线。",
      "conclusion": "唯一拿梯度的是 867.57 M 的 U-Net；VAE 与文本通路全部冻结。test 0.0844。"},
     {"key": "b", "kicker": "ROUTE B · DATA FLOW",
      "title": "b 线：Thermal → 冻结 VAE → 可训练 U-Net",
-     "nodes": [IN_THR, VAE_ENC, Z_X, CONCAT, unet(True), X0, VAE_DEC, OUT_DISP],
+     "nodes": [IN_THR, VAE_ENC, Z_X, CONCAT, unet(True), X0, VAE_DEC, None],
      "note": "热像被当成三通道图直接喂进为 RGB 训练的 VAE。这条线是本项目最好的热像成绩"
              "（val 0.0775），也是其余各线的比较基准。",
      "conclusion": "与 a 线同一套可训练参数；condition 换成热像的 VAE latent。test 0.0884。"},
     {"key": "c1", "kicker": "ROUTE C1 · DATA FLOW",
      "title": "c1 线：Thermal → 冻结 VAE → 可训练 Adapter → 冻结 U-Net",
      "nodes": [IN_THR, VAE_ENC, Z_X, adapter("vae"), Z_C, CONCAT, unet(False), X0,
-               VAE_DEC, OUT_DISP],
+               VAE_DEC, None],
      "note": "Adapter 是 latent 上的残差 CNN，零初始化 ⇒ 未训练时是恒等映射，"
              "所以起点恰好是「冻结直推」。全链路只有 0.5% 的参数拿梯度。",
      "conclusion": "只训 7.11 M 的 Adapter，U-Net 冻结。test 0.1217 —— 六线里最差。"},
     {"key": "c2", "kicker": "ROUTE C2 · DATA FLOW",
      "title": "c2 线：Thermal → 冻结 VAE → 可训练 Adapter + 可训练 U-Net",
      "nodes": [IN_THR, VAE_ENC, Z_X, adapter("vae"), Z_C, CONCAT, unet(True), X0,
-               VAE_DEC, OUT_DISP],
+               VAE_DEC, None],
      "note": "结构与 d2 完全相同，唯一差别是 Adapter 吃的是 VAE latent 而不是 AnyThermal 特征 —— "
              "这正是把远端改善归因到 condition 来源的那组受控对照。",
      "conclusion": "Adapter + U-Net 联合训练，874.67 M。test 0.1013，远端 0.1817（全线最差）。"},
     {"key": "d1", "kicker": "ROUTE D1 · DATA FLOW",
      "title": "d1 线：Thermal → 冻结 AnyThermal → 可训练 Adapter → 冻结 U-Net",
      "nodes": [IN_THR, ANY_ENC, FEAT, adapter("any"), Z_C, CONCAT, unet(False), X0,
-               VAE_DEC, OUT_DISP],
+               VAE_DEC, None],
      "note": "注意 VAE encoder 整条不在了 —— condition 改由 AnyThermal 的 DINOv2 特征经 Adapter 生成。"
              "VAE 只剩解码端。",
      "conclusion": "9.41 M（全链路 0.7%）达到 test 0.0973，逼近 867 M 的 b 线。"},
     {"key": "d2", "kicker": "ROUTE D2 · DATA FLOW",
      "title": "d2 线：Thermal → 冻结 AnyThermal → 可训练 Adapter + 可训练 U-Net",
      "nodes": [IN_THR, ANY_ENC, FEAT, adapter("any"), Z_C, CONCAT, unet(True), X0,
-               VAE_DEC, OUT_DISP],
+               VAE_DEC, None],
      "note": "本轮远端表现最好的线。§7 的 donor-swap 证明这条特征通路真的在承载信号："
              "推理时把它换成随机 donor 帧的，误差从 0.0903 翻到 0.2971。",
      "conclusion": "876.98 M。test 0.0903，但远端 0.1524 —— 六线里唯一在远端改善的。"},
@@ -586,7 +621,10 @@ def legend(slide, y):
 def route_flow(prs, spec):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     header(slide, spec["kicker"], spec["title"])
-    flow(slide, spec["nodes"])
+    # None marks the output panel: it is per-route, so it is resolved here and
+    # every route shows its own prediction on the frame its input panel shows
+    nodes = [n if n is not None else out_disp(spec["key"]) for n in spec["nodes"]]
+    flow(slide, nodes)
     legend(slide, 5.86)
     write(textbox(slide, MARGIN, 6.14, BODY_W, 0.40), [spec["note"]], size=9.5, colour=GREY)
     conclusion(slide, spec["conclusion"])
@@ -595,6 +633,27 @@ def route_flow(prs, spec):
 def route_flows(prs):
     for spec in ROUTES:
         route_flow(prs, spec)
+
+
+def caption_flow(prs):
+    """The caption arm as a picture: same image path, only the string changes."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    header(slide, "CAPTION ARM · WHERE THE TWO EFFECTS ENTER",
+           "caption 是怎么进去的，以及两个效应各自在哪一步")
+    nodes = [IN_THR, VAE_ENC, Z_X, CONCAT, unet(True), X0, VAE_DEC, out_disp("b")]
+    flow(slide, nodes, prompts=['c = ""（空 prompt）', "c = 真 caption",
+                                "c = 打乱的 caption"])
+
+    write(textbox(slide, MARGIN, 5.40, BODY_W, 1.15), [
+        ("① 权重效应 —— 训练时用哪种 prompt。", {"bold": True}),
+        "改变的是 U-Net 学出来的权重，比较的是两次独立训练的 checkpoint，"
+        "所以带 seed 不确定性（本轮单 seed）。",
+        ("② 注入效应 —— 推理时喂哪种 prompt。", {"bold": True}),
+        "同一份权重、同一批帧，除最左边那三个框外图上没有任何东西改变，所以没有混淆变量。",
+        "caption 由 InternVL3-8B 从对应的 RGB 帧生成；「打乱」= 换成别帧的 caption，"
+        "保留文本分布、只打断图文对应，用来区分「起作用的是内容」还是「有文本就行」。",
+    ], size=10.5, colour=INK, space_after=2)
+    conclusion(slide, "图像通路完全不动；两个效应的区别只在于「换的是权重」还是「换的是 prompt」。")
 
 
 def caption_effects(prs):
@@ -943,6 +1002,7 @@ def build(output: Path, figure: Path | None) -> None:
     protocol(prs)
     main_table(prs)
     route_flows(prs)
+    caption_flow(prs)
     caption_effects(prs)
     caption_strength(prs)
     far_field(prs)
