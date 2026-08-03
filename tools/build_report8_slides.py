@@ -430,29 +430,33 @@ def cover(prs):
 
 def overview(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    header(slide, "WHAT THIS ROUND ESTABLISHED", "本轮拿到的三件事")
+    header(slide, "WHAT THIS ROUND ESTABLISHED", "本轮拿到的四件事")
     rows = [
         ["", "发现", "证据强度"],
         ["1",
          "caption 的作用是两个方向相反的效应：训练时用它有益，推理时喂它有害。"
          "全项目最好的热像成绩来自「用 caption 训练、推理给空 prompt」＝ 0.0869。",
-         "注入效应：同权重同帧，仅 prompt 不同，无懈可击\n权重效应：单 seed"],
+         "注入效应：同权重同帧、仅 prompt 不同，无懈可击；权重效应：单 seed"],
         ["2",
-         "远端误差可以归因到 condition 的来源，而不是 adapter 架构：\n"
-         "c2 与 d2 的远端 0.1817 → 0.1524（−16%）；但两者除 condition 来源外，"
-         "Adapter 的训练方式也不同（c2 冻结、d2 联合训练），归因只能到「二者之一」。",
-         "受控对照 + donor-swap 证伪（误差翻 3.3 倍）"],
+         "天空被判成近处，是解冻 U-Net 的代价：只有 U-Net 冻结的 c1 把上带放在 16.1 m"
+         "（真值 14.8 m），解冻的 b / c2 / d2 全掉到 10–12 m。"
+         "而 c1 的整体精度是六线最差 —— 两者在当前设计里对立。",
+         "c1 五帧全胜，机制与外部模型一致；但只有 5 帧，且 d1 只弱支持"],
         ["3",
+         "远端误差与 condition 来源有关：c2 与 d2 的远端 0.1817 → 0.1524（−16%）。"
+         "但两者除 condition 来源外，Adapter 的训练方式也不同，归因只能到「二者之一」。",
+         "donor-swap 证伪通过（误差翻 3.3 倍）；但对照不干净"],
+        ["4",
          "远端退化不是热像深度的通病：原版 AnyThermal 用同一份稀疏 LiDAR 监督，"
          "远端几乎不退化（×1.13 vs 我方 ×1.90）。差别在架构，不在监督。",
          "外部模型，同一考卷，同一分层定义"],
     ]
-    table(slide, rows, MARGIN, 1.70, BODY_W, 3.90, [0.4, 7.2, 3.6], size=12)
-    write(textbox(slide, MARGIN, 5.72, BODY_W, 0.80), [
-        "以往把 caption 当成一个整体来评，结论总是「不显著」——"
-        "两个方向相反的效应叠在一起，正好互相抵消。这解释了此前为什么总测不出效果。",
-    ], size=12.5, colour=GREY)
-    conclusion(slide, "六条线全部完成 20 epoch 并在独立 test 集出数；三件事各有可检验的证据，强度不同，逐条标注。")
+    table(slide, rows, MARGIN, 1.66, BODY_W, 4.20, [0.4, 7.0, 3.8], size=11)
+    write(textbox(slide, MARGIN, 6.02, BODY_W, 0.55), [
+        "1 和 2 是本轮的新东西：前者解释了以往为什么总测不出 caption 的效果"
+        "（两个相反效应叠在一起互相抵消），后者把「天空问题」从现象变成了可归因的设计选择。",
+    ], size=11.5, colour=GREY)
+    conclusion(slide, "六条线全部完成 20 epoch 并在独立 test 集出数；四件事各有可检验的证据，强度不同，逐条标注。")
 
 
 def protocol(prs):
