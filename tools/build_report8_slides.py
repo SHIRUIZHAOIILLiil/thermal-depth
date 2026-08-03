@@ -526,6 +526,100 @@ def all_arms(prs):
                       "而且要靠推理时不喂 caption 才拿得到。")
 
 
+def mechanism(prs):
+    """One mechanism; the rest of the deck is its consequences.
+
+    The findings were being presented as a list of unrelated results, which is
+    unpresentable. They are not unrelated: each follows from where the
+    supervision is and what was left unfrozen.
+    """
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    header(slide, "ONE MECHANISM", "一个机制，其余都是它的推论")
+
+    bar = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(MARGIN), Inches(1.56),
+                                 Inches(BODY_W), Inches(0.82))
+    bar.fill.solid()
+    bar.fill.fore_color.rgb = INK
+    bar.line.fill.background()
+    bar.shadow.inherit = False
+    frame = bar.text_frame
+    frame.word_wrap = True
+    frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    frame.margin_left = frame.margin_right = Inches(0.22)
+    para = frame.paragraphs[0]
+    para.alignment = PP_ALIGN.CENTER
+    run = para.add_run()
+    run.text = ("稀疏 LiDAR 只监督到 26.5% 的像素，且集中在近中景。"
+                "监督覆盖不到的地方，解冻了什么，就在那里漂。")
+    run.font.name, run.font.size, run.font.bold = FONT, Pt(15), True
+    run.font.color.rgb = WHITE
+
+    rows = [
+        ["现象", "为什么", "证据"],
+        ["天空被判成近处",
+         "天空一个 LiDAR 回波都没有 ＝ 完全无监督。解冻的 U-Net 在那里自由漂移。",
+         "上带 <10 m 占比：c1 19% / b 33% / c2·d2 44%"],
+        ["c1 天空最好、整体最差",
+         "同一个原因的两面：它几乎没动 Lotus，所以既没被带偏，也没学会任务。",
+         "上带 16.1 m（真值 14.8）；test 0.1217，六线最差"],
+        ["d2 远端最好",
+         "远端是稀疏监督（有回波但很少）。AnyThermal 的语义特征在监督稀薄处补上结构。",
+         "far 0.1680 → 0.1524（−9.3%），退化 ×1.69"],
+        ["caption 对远端几乎为零",
+         "文本只经 cross-attention 进来，不携带几何。监督缺失的地方它补不上。",
+         "b far 0.1680 → b+cap 0.1679"],
+        [("原版 AnyThermal 反过来验证", {"colour": GOOD}),
+         "它冻结骨干、只训一个头，先验全程保住 —— 正是「不解冻就不漂」。",
+         "far/all ×1.13，我方最好 ×1.69"],
+    ]
+    table(slide, rows, MARGIN, 2.62, BODY_W, 3.20, [2.3, 5.6, 4.2], size=11)
+
+    write(textbox(slide, MARGIN, 6.00, BODY_W, 0.55), [
+        "所以「整体最好（b）／远端最好（d2）／天空最好（c1）」不是三个矛盾，"
+        "而是同一个取舍的三个位置：冻多少。",
+    ], size=11.5, colour=INK, bold=True)
+    conclusion(slide, "这是一个可预测的失效模式，不是若干个 bug —— 后面每一页都是它的一个侧面。")
+
+
+def anythermal_losses(prs):
+    """Why the external model does not have our sky problem."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    header(slide, "WHY ANYTHERMAL HAS NO SKY PROBLEM",
+           "AnyThermal 的两个损失：天空为什么没被带偏")
+    rows = [
+        ["", "阶段一：表征蒸馏", "阶段二：深度头"],
+        ["损失", "CLS token 对比损失，把热像编码器对齐到 DINOv2 的 RGB 表征",
+         "MiDaS：SSI 数据项 + 多尺度梯度匹配项"],
+        ["要标注吗", ("不要 —— 自监督", {"bold": True, "colour": GOOD}),
+         "要 —— MS2 train split 的稀疏 LiDAR"],
+        ["监督覆盖", ("整张图，天空在内", {"bold": True, "colour": GOOD}),
+         ("26.5% 的像素，天空为零", {"colour": BAD})],
+        ["骨干状态", "训练中", ("冻结，只训头", {"bold": True, "colour": GOOD})],
+    ]
+    table(slide, rows, MARGIN, 1.62, BODY_W, 1.95, [1.3, 5.6, 5.2], size=11)
+
+    write(textbox(slide, MARGIN, 3.86, 6.05, 2.30), [
+        ("为什么天空没问题", {"bold": True, "size": 13}),
+        "天空的「知识」是阶段一学的，而阶段一的损失根本不看深度标注 —— "
+        "对它来说天空不是无监督区。",
+        "阶段二虽然只有 26.5% 的监督，但骨干已经冻住，它动不了那份先验，所以漂不起来。",
+        "合起来是一个顺序：先用不需要标注的目标把先验建好，再冻住，"
+        "最后才让稀疏标注去调一个小头。",
+    ], size=11, colour=INK, space_after=3)
+
+    write(textbox(slide, 6.95, 3.86, 5.78, 2.30), [
+        ("对照我方", {"bold": True, "size": 13}),
+        "我们没有阶段一。先验来自 Stable Diffusion 的预训练，"
+        "但阶段二把那 867 M 全解冻了 —— 等于把唯一的先验交给 26.5% 的监督去改写。",
+        ("§8 那个失败现在有了解释：", {"bold": True, "colour": BAD}),
+        "我们借的是它的第二个损失项（多尺度梯度匹配），三条臂单调恶化。"
+        "回头看是借错了 —— 梯度匹配同样只在有效像素上算，天空照样没监督。"
+        "关键不在第二个损失项，在第一个阶段，以及之后的冻结。",
+    ], size=11, colour=INK, space_after=3)
+
+    conclusion(slide, "可借鉴的不是那条损失，是「无标注目标建先验 → 冻住 → 稀疏标注只训小头」这个顺序。")
+
+
 def main_table(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     header(slide, "BASELINE · SIX ROUTES ON THE HELD-OUT TEST SET", "主表：六条路线的 val 与 test")
@@ -1060,19 +1154,23 @@ def next_steps(prs):
     header(slide, "NEXT", "下一步，按优先级")
     rows = [
         ["", "做什么", "为什么", "成本"],
-        ["1", "d2 + caption 第二个 seed",
+        ["1", "在无监督区加约束（而不是换 condition）",
+         "机制页的直接推论：冻结更多，或补一个不依赖 GT 的正则。"
+         "最省的一步是把 c1 的「冻结 U-Net」和 d2 的「语义 condition」合起来试一条线",
+         "一条线一次训练"],
+        ["2", "d2 + caption 第二个 seed",
          "把权重效应 ① 从单次观测升级为可复现观测 —— 这是本轮最软的一环", "约 27 小时"],
-        ["2", "上带深度判据跑全量",
+        ["3", "上带深度判据跑全量",
          "工具已有（export_qualitative.py），现在只在 5 帧上跑过；换成全部 2,543 帧就能"
          "把「天空判成近处」从佐证变成结论 —— 这是局限 1 唯一能被绕开的部分", "一个 GPU 作业"],
-        ["3", "夜间 21-58-13 第四个数据点",
+        ["4", "夜间 21-58-13 第四个数据点",
          "雨天两因素模型的可证伪预测：词表低于重雨、注入税大于 +0.0005", "一个评估作业"],
-        ["4", "a + caption",
+        ["5", "a + caption",
          "补齐第一周任务 4 的缺口，看 caption 双效应在 RGB 线上是否同构", "约 67 小时"],
     ]
     table(slide, rows, MARGIN, 1.70, BODY_W, 3.10, [0.4, 3.3, 6.4, 1.7], size=11.5)
     write(textbox(slide, MARGIN, 5.10, BODY_W, 1.10), [
-        "1 和 2 决定这一轮结论能讲多硬，优先做；3、4 是扩展。"
+        "1 是机制页指出的方向，2 决定 caption 结论能讲多硬；3–5 是扩展。"
         "集群上的产物路径、自查工具与全部原始数字见 docs/AIRE_RESULTS_20260802.md。",
     ], size=12, colour=GREY)
     conclusion(slide, "先补 ① 的第二 seed 和零训练参照点，再谈扩展。")
@@ -1093,6 +1191,7 @@ def build(output: Path, figure: Path | None) -> None:
     protocol(prs)
     main_table(prs)
     all_arms(prs)
+    mechanism(prs)
     route_flows(prs)
     caption_flow(prs)
     caption_visual(prs, FIGCAP_TOP, FIGCAP_BOTTOM)
@@ -1101,6 +1200,7 @@ def build(output: Path, figure: Path | None) -> None:
     far_field(prs)
     donor_swap(prs)
     external_reference(prs)
+    anythermal_losses(prs)
     sky_band(prs, figure or FIG5)
     rain(prs)
     gradient_matching(prs)
