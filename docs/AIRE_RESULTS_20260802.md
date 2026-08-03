@@ -304,34 +304,31 @@ grad_off_raw, grad_on_raw`，各 2,543 个 `.npy`。
   （打乱就塌 3.3 倍），这条证明少了 adapter 这些特征根本用不了。两个方向合起来
   才说明 adapter 不是白挂的参数。已写进汇报。
 
-- **对比可视化**：`tools/build_comparison_figure.py` + `slurm/vis.sbatch`（CPU）。
-  沿用 `build_route_vis_figures.py` 的渲染（同一个 Spectral、同样两种上色、同样
-  「按官方空间对齐 → 转深度 → clip」），替换掉它写死的三处：路线名、数据根目录、等距挑帧。
+- **对比可视化**：用 **`tools/export_qualitative.py`**，报告 7 那张定性对比图就是它出的。
+  别再另写工具 —— 2026-08-03 有人照本节原来的提示新写了一个（吃 `PREDS="目录:标签"`
+  的 CLI），出来的图与论文插图不是一个观感，已删。差别不在代码质量，在上色约定：
 
-  两个关键点：
-  - **每列可以有自己的对齐空间**（`目录:标签@ssi`）。`analyze.sbatch --align` 是一刀切的，
-    所以原版 AnyThermal（`ssi`）和六线（`ssi_disparity`）进不了同一个作业；而图上必须并排。
-    每列下方都印出它用的对齐。
-  - **挑帧由分层扫描驱动**：`--pick gap --gap d2:b --stratum 'depth/far >30m'` 挑 d2 在远端
-    领先 b 最多的帧；`--pick flip` 挑逐帧排序与全集排序相反的帧；`--pick far` 挑该分层
-    误差最大的帧。`--min-separation` 防止排行榜前几名全是同一瞬间的连续帧。
-    扫描复用 `ms2_eval.stratify`（本次从 `analyze_route_regions.py` 抽出来的共享模块），
-    所以图上的「远端」与表里的「远端」是同一个定义，且每帧都与 `evaluate_sample` 对账。
+  | | `export_qualitative.py`（官方） | 另写的那个 |
+  |---|---|---|
+  | 上色函数 | 直接 import `lotus/utils/image_utils.py::colorize_depth_map` | 自己复刻了一份 |
+  | 着色对象 | **视差**，`reverse_color=True` ⇒ 红=近/蓝=远，与 `lotus/infer.py:211` 同一约定 | 深度、不反色 ⇒ 中景全糊成红色 |
+  | 稀疏 GT | `--gt-dilate` 膨胀后再上色，栏首标 `LiDAR GT (X% valid, dilated)` | 原样画，幻灯尺寸下像噪点 |
 
-      PREDS="$SCRATCH/runs/eval/b_e05_raw/raw_predictions:b,\
-      $SCRATCH/runs/eval/c2_raw/raw_predictions:c2,\
-      $SCRATCH/runs/eval/d2_raw/raw_predictions:d2" \
-      MANIFEST=$SCRATCH/manifests/sequence_level_internvl3_8b/ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl \
-      TAG=far_gap PICK=gap GAP=d2:b \
-        sbatch -J vis_far --export=ALL,PREDS,MANIFEST,TAG,PICK,GAP ~/Iris/slurm/vis.sbatch
+  它已有的开关：`--val-manifest` / `--ms2-root` / `--frame-ids` / `--frames` /
+  `--gt-dilate` / `--style official|shared|both` / `--caption-mode`。
 
-  在集群上出图、只把 PNG 拉回来：一次对比要读几个 GB 的 npy，出来的图是几 MB。
-  集群没有中文字体，工具会自动把图上文字降级成英文；要中文就把一个 CJK ttf 放到
-  `$SCRATCH/fonts/msyh.ttc`。
+  **它按 `ROUTE:CHECKPOINT` 跑模型，不吃保存好的 npy**，所以：
+  - 六条线都能当列（集群上有 checkpoint），要 GPU 作业；
+  - **原版 AnyThermal 进不了列** —— 它是 MiDaS 网，不是 `RouteModel`。报告 7 那张图也是
+    只放我方路线（`Route b prediction` / `Route c1 prediction`），沿用即可。
 
-**汇报 slides**：`tools/build_report8_slides.py`（14 页，本文档是它唯一的数字来源）。
-主线 = 六线主表 → caption 双效应 → d2 远端优势（受控归因）→ 任务 4 外部参照 → 局限；
-雨天与梯度匹配作补充。主表最后一行和可视化页留了标注出来的占位，等上面两个作业回来后填。
+  挑帧用 `--frame-ids`。已知远端最能说明问题的五帧（d2 领先 b 最多，官方协议逐帧算的）：
+  `000703 / 001245 / 001445 / 001958 / 002403`，对应 b 的远端 AbsRel
+  0.2564 / 0.2652 / 0.2810 / 0.2964 / 0.3691，d2 为 0.0850 / 0.0918 / 0.1505 / 0.0931 / 0.1188。
+
+**汇报 slides**：`tools/build_report8_slides.py`（20 页，本文档是它唯一的数字来源）。
+主线 = 六线主表 → 六条线各一张数据流图 → caption 双效应 → d2 远端优势（受控归因）
+→ 任务 4 外部参照 → 局限；雨天与梯度匹配作补充。可视化页留了标注出来的占位。
 
 **可选**
 - `a + caption`（67 小时，补齐第一周任务 4）

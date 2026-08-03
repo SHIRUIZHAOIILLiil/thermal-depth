@@ -771,16 +771,17 @@ def external_reference(prs):
 
 def qualitative(prs, figure: Path | None):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    header(slide, "QUALITATIVE · SAME FRAMES, FOUR MODELS", "对比可视化：b / c2 / d2 / 原版 AnyThermal")
+    header(slide, "QUALITATIVE · SAME FRAMES, THREE ROUTES", "对比可视化：b / c2 / d2")
     picture_or_placeholder(
         slide, figure, MARGIN, 1.55, BODY_W, 3.55,
-        ["【待填：集群 vis 作业的输出 PNG】",
+        ["【待填：tools/export_qualitative.py 的输出 PNG】",
          "",
-         "tools/build_comparison_figure.py（新增），经 slurm/vis.sbatch 在集群上出图。",
-         "挑帧按分层结果驱动，不随机：--pick gap --gap d2:b --stratum 'depth/far >30m' "
-         "挑 d2 在远端领先 b 最多的帧；--pick flip 挑逐帧排序与全集排序相反的帧。",
-         "每列下方标注它自己用的对齐空间 —— 原版 AnyThermal 是 ssi，六线是 ssi_disparity，"
-         "混用会得到几倍大的数（见口径页）。"])
+         "与报告 7 那张定性图同一个工具、同一套参数：着色直接调用 Iris 官方的 "
+         "lotus/utils/image_utils.py::colorize_depth_map，对视差上色并 reverse_color=True"
+         "（红=近、蓝=远），与论文插图同一函数同一参数。",
+         "稀疏 LiDAR GT 经 --gt-dilate 膨胀后再上色，栏首标注该帧实际密度。",
+         "挑帧用 --frame-ids 指定：000703 / 001245 / 001445 / 001958 / 002403，"
+         "是官方协议逐帧算出的、d2 在 depth/far >30m 上领先 b 最多的五帧。"])
     write(textbox(slide, MARGIN, 5.24, BODY_W, 1.20), [
         ("⚠️ 这五帧是极值，不是随机样本。", {"bold": True, "colour": BAD}),
         "挑帧判据是「d2 比 b 在 depth/far >30m 上领先最多」，所以图上 d2 把 b 打出 2.5–3 倍"
@@ -951,7 +952,7 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--figure", type=Path, default=None,
-                        help="Comparison PNG from build_comparison_figure.py. "
+                        help="Comparison PNG from tools/export_qualitative.py. "
                              "Omitted -> the qualitative slide keeps its marked placeholder.")
     args = parser.parse_args()
     build(args.output, args.figure)
