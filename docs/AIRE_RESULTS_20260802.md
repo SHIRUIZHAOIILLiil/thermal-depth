@@ -48,7 +48,12 @@
 
 **读点**
 
-- **热像几乎追平 RGB**：a 0.0844 vs b 0.0884，仅差 4.5%。
+- ⚠️ **a 与热像各线不是同一份真值，本表缺 GT 视角列。** `train_route_suite.py:439`：
+  modality=rgb 时取 `rgb_depth_path`，其余取 `thermal_depth_path`。所以 a 的 0.0844
+  是 **rgb 视角**、b–d2 是 **thr 视角**，两者比大小无效。a 在表里的作用是
+  「热像离 RGB 还有多远」的参照，不是竞争者。（`--gt-view` 的帮助文本原话：
+  never mix views in one table without a labelled GT-view column。）
+- **热像几乎追平 RGB**（同上，跨视角，只作量级参照）：a 0.0844 vs b 0.0884。
 - **b 的跨序列泛化更差**：val→test 退化 +0.0109，a 只有 +0.0053。
 - **d 系全面压过 c 系**：d1 > c1（0.0973 vs 0.1217）、d2 > c2（0.0903 vs 0.1013）。
   **AnyThermal 特征作为 condition 优于 VAE latent，两个参数量级上都成立。**
@@ -76,6 +81,21 @@
 | d2 | **−0.00270** [−0.00332, −0.00206] 显著 | **+0.00046** [+0.00037, +0.00056] 显著 |
 
 （负 = 更好。n=2,543 配对，bootstrap 3000 次。）
+
+**全部臂的 test 一览（有无 caption 并排）**
+
+| 线 | 输入 | GT 视角 | 无 caption | cap 训练 / 空 prompt | cap 训练 / 真 caption |
+|---|---|---|---:|---:|---:|
+| a | RGB | **rgb** | 0.0844 | 未训练 | 未训练 |
+| **b** | Thermal | thr | **0.0884** ★不带 caption 最好 | **0.0869** ★全表最好 | 0.0882 |
+| c1 | Thermal | thr | 0.1217 | 未训练 | 未训练 |
+| c2 | Thermal | thr | 0.1013 | 0.1030 | 0.1022 |
+| d1 | Thermal | thr | 0.0973 | 未训练 | 未训练 |
+| d2 | Thermal | thr | 0.0903 | 0.0876 | 0.0881 |
+
+「未训练」= 该线没有 caption 臂：`a + caption` 是第一周任务 4 的缺口（约 67 小时）；
+c1 与 d1 从未训过 caption 臂。**所以 caption 的全部结论只覆盖 b / c2 / d2 三条。**
+a 那行跨视角，不参与「最好」的评比（见 §2 的更正）。
 
 **四条结论**
 

@@ -490,6 +490,42 @@ def protocol(prs):
     conclusion(slide, "治理约束：11-23-45 只用来选 epoch，16-08-46 只在定稿时评一次；本报告所有对外数字都带 test 列。")
 
 
+def all_arms(prs):
+    """Every arm that exists on the test set, caption and no-caption side by side."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    header(slide, "ALL ARMS ON THE HELD-OUT TEST SET",
+           "全部路线 × 有无 caption：test 上的 AbsRel 一览")
+    rows = [
+        ["线", "输入", "GT 视角", "无 caption", "cap 训练 / 空 prompt", "cap 训练 / 真 caption"],
+        ["a", "RGB", ("rgb", {"colour": BAD}), ("0.0844", {"bold": True}), "未训练", "未训练"],
+        ["b", "Thermal", "thr",
+         ("0.0884  ★ 热像最好", {"bold": True, "colour": GOOD}),
+         ("0.0869  ★ 全表最好", {"bold": True, "colour": GOOD}), "0.0882"],
+        ["c1", "Thermal", "thr", "0.1217", "未训练", "未训练"],
+        ["c2", "Thermal", "thr", "0.1013", "0.1030", "0.1022"],
+        ["d1", "Thermal", "thr", "0.0973", "未训练", "未训练"],
+        ["d2", "Thermal", "thr", "0.0903", "0.0876", "0.0881"],
+    ]
+    align = [PP_ALIGN.LEFT, PP_ALIGN.LEFT, PP_ALIGN.LEFT,
+             PP_ALIGN.RIGHT, PP_ALIGN.RIGHT, PP_ALIGN.RIGHT]
+    table(slide, rows, MARGIN, 1.62, BODY_W, 2.70, [0.7, 1.3, 1.0, 2.2, 2.6, 2.6],
+          size=11.5, align=align)
+
+    write(textbox(slide, MARGIN, 4.56, BODY_W, 1.90), [
+        ("★ 不带 caption 的最好是 b 的 0.0884；带 caption 的最好是 b 的 0.0869"
+         "（用 caption 训练、推理给空 prompt），也是全项目最好的热像成绩。", {"bold": True}),
+        ("⚠️ a 的 0.0844 不参与这个比较。", {"bold": True, "colour": BAD}),
+        "它是 RGB 输入、按 RGB 视角 GT 评分（train_route_suite.py:439），"
+        "与热像各线不是同一份真值，混在一起比大小是无效的。它在这里是「热像离 RGB 还有多远」的参照。",
+        "「未训练」= 该线没有 caption 臂：a + caption 是第一周任务 4 的缺口（约 67 小时）；"
+        "c1 与 d1 从未训过 caption 臂。所以 caption 的结论只覆盖 b / c2 / d2 三条。",
+        "同一行内左右比较即为 caption 的效应；三条线的分解见后两页。"
+        "c2 是唯一一条加 caption 反而变差的（0.1013 → 0.1030）。",
+    ], size=11, colour=INK, space_after=3)
+    conclusion(slide, "带 caption 与不带 caption 的最好成绩都在 b 线上；caption 只买到 0.0884 → 0.0869，"
+                      "而且要靠推理时不喂 caption 才拿得到。")
+
+
 def main_table(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     header(slide, "BASELINE · SIX ROUTES ON THE HELD-OUT TEST SET", "主表：六条路线的 val 与 test")
@@ -1056,6 +1092,7 @@ def build(output: Path, figure: Path | None) -> None:
     overview(prs)
     protocol(prs)
     main_table(prs)
+    all_arms(prs)
     route_flows(prs)
     caption_flow(prs)
     caption_visual(prs, FIGCAP_TOP, FIGCAP_BOTTOM)
