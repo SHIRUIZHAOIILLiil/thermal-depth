@@ -845,27 +845,68 @@ def external_reference(prs):
     conclusion(slide, "同一份稀疏 LiDAR 监督，差别在架构 —— 远端退化是我方方法特有的，不是热像深度的通病。")
 
 
-def qualitative(prs, figure: Path | None):
+def sky_band(prs, figure: Path | None):
+    """The sky failure, and the one line that does not have it.
+
+    This replaces an earlier three-route version of the same figure: c1 is the
+    whole point and it was not in it.
+    """
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    header(slide, "QUALITATIVE · WHERE THE ERROR ACTUALLY LIVES",
-           "定性对比：三条线的形状都对，错的是上半张图")
+    header(slide, "SKY · WHAT UNFREEZING THE U-NET COSTS",
+           "天空判近是解冻 U-Net 的代价，不是 condition 的问题")
     picture_or_placeholder(
-        slide, figure, MARGIN, 1.46, BODY_W, 4.05,
-        ["【待填：tools/export_qualitative.py 的输出 PNG】",
-         "",
-         "与报告 7 那张定性图同一个工具、同一套参数：着色直接调用 Iris 官方的 "
-         "lotus/utils/image_utils.py::colorize_depth_map，对视差上色并 reverse_color=True"
-         "（红=近、蓝=远），与论文插图同一函数同一参数。"])
-    write(textbox(slide, MARGIN, 5.62, BODY_W, 0.95), [
-        "· 三条线的整体结构都跟真值对得上；差别在细节，而且比表上的数字差异更难用肉眼分辨。",
-        "· 共用色标下（颜色跨列可比），三条线的上三分之一全部压成红色＝近处。"
-        "上带预测深度中位：b 12.0 m / c2 10.3 m / d2 10.7 m，而该带有回波像素的真值中位是 14.8 m。",
-        ("⚠️ 这五帧是按「d2 在远端领先 b 最多」挑的极值，不是随机样本；"
-         "全集上那个差距只有 9.3%（0.1680 → 0.1524）。图看形状，量级看分层表。",
-         {"colour": BAD}),
+        slide, figure, MARGIN, 1.40, BODY_W, 2.90,
+        ["【待填：五线对比图】"])
+
+    rows = [
+        ["线", "Adapter", "U-Net", "上带预测中位", "test AbsRel"],
+        ["c1", "训练", ("冻结", {"bold": True}),
+         ("16.1 m", {"bold": True, "colour": GOOD}), ("0.1217", {"colour": BAD})],
+        ["d1", "训练", ("冻结", {"bold": True}), "12.1 m", "0.0973"],
+        ["b", "—", "训练", "12.0 m", "0.0884"],
+        ["d2", "训练", "训练", "10.7 m", ("0.0903", {"bold": True})],
+        ["c2", "冻结（继承 c1）", "训练", ("10.3 m", {"colour": BAD}), "0.1013"],
+        [("真值（有回波像素）", {"colour": GREY}), "—", "—",
+         ("14.8 m", {"bold": True}), "—"],
+    ]
+    align = [PP_ALIGN.LEFT, PP_ALIGN.LEFT, PP_ALIGN.LEFT, PP_ALIGN.RIGHT, PP_ALIGN.RIGHT]
+    table(slide, rows, MARGIN, 4.40, 6.60, 2.00, [0.7, 1.9, 1.0, 1.5, 1.2],
+          size=10, align=align)
+
+    write(textbox(slide, 7.45, 4.40, 5.28, 2.05), [
+        ("c1 是唯一一条上带没有压红的线", {"bold": True, "size": 12}),
+        "五帧上全部最高，也是唯一一条上带中位高于真值中位的。"
+        "凡是解冻 U-Net 的线（b / c2 / d2）都掉到 10–12 m。",
+        ("代价写在最后一列：", {"bold": True, "colour": BAD}),
+        "c1 的整体精度是六线最差（0.1217）—— 它保住 Lotus 的天空先验，"
+        "正是因为几乎没动 Lotus，只训了 0.5% 的参数。",
+        ("上带中位 = np.median(aligned[上三分之一])，不带 valid 掩码，天空算在内；"
+         "真值行只统计有回波像素。五帧，按远端挑的。", {"size": 9, "colour": GREY}),
+    ], size=10.5, colour=INK, space_after=3)
+
+    conclusion(slide, "稀疏 LiDAR 在天空没有监督：解冻的 U-Net 在那里自由漂移，冻结的保住了预训练先验 —— "
+                      "与原版 AnyThermal 冻结骨干、远端只退化 ×1.13 同一个机制。")
+
+
+def caption_visual(prs, top: Path | None, bottom: Path | None):
+    """The caption effect is real and invisible; say both."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    header(slide, "CAPTION · SIGNIFICANT AND INVISIBLE",
+           "caption 的效应显著，但肉眼看不见")
+    picture_or_placeholder(slide, top, MARGIN, 1.44, BODY_W, 1.55,
+                           ["【待填：caption 对比图 上半】"])
+    picture_or_placeholder(slide, bottom, MARGIN, 3.06, BODY_W, 1.55,
+                           ["【待填：caption 对比图 下半】"])
+    write(textbox(slide, MARGIN, 4.74, BODY_W, 1.60), [
+        "上排：b 的三种 prompt（空 / 真 caption / 打乱）。下排：c2 与 d2 各三种。"
+        "三条线都是同一份权重、同一批帧，只有喂进 CLIP 的字符串不同。",
+        ("九个格子彼此看不出差别 —— 这正是该有的样子。", {"bold": True}),
+        "注入效应在 test 上是 b +0.00130 / c2 −0.00082 / d2 +0.00046，而整体 AbsRel 是 0.09–0.10，"
+        "也就是千分之一二的量级。统计上显著、可复现、方向明确，但小到画不出来。",
+        ("这一页的作用是防止过度解读：", {"colour": BAD}),
+        "「caption 有帮助」这种说法在图上找不到支撑，能支撑的只有配对检验的区间。",
     ], size=11, colour=INK, space_after=3)
-    conclusion(slide, "着色用 Iris 官方 colorize_depth_map，与论文插图同一函数同一参数；"
-                      "天空判近三条线都有，不是某一条的毛病。")
+    conclusion(slide, "显著 ≠ 可见。caption 的效应要用配对区间讲，不能用图讲。")
 
 
 def rain(prs):
@@ -997,6 +1038,12 @@ def next_steps(prs):
     conclusion(slide, "先补 ① 的第二 seed 和零训练参照点，再谈扩展。")
 
 
+COMPARE = Path(__file__).resolve().parents[1] / "docs" / "figures" / "compare"
+FIG5 = COMPARE / "qual_5routes" / "comparison_strip_shared.png"
+FIGCAP_TOP = COMPARE / "qual_caption" / "strip_b.png"
+FIGCAP_BOTTOM = COMPARE / "qual_caption" / "strip_c2_d2.png"
+
+
 def build(output: Path, figure: Path | None) -> None:
     prs = Presentation()
     prs.slide_width = Inches(W)
@@ -1007,12 +1054,13 @@ def build(output: Path, figure: Path | None) -> None:
     main_table(prs)
     route_flows(prs)
     caption_flow(prs)
+    caption_visual(prs, FIGCAP_TOP, FIGCAP_BOTTOM)
     caption_effects(prs)
     caption_strength(prs)
     far_field(prs)
     donor_swap(prs)
     external_reference(prs)
-    qualitative(prs, figure)
+    sky_band(prs, figure or FIG5)
     rain(prs)
     gradient_matching(prs)
     limits(prs)
