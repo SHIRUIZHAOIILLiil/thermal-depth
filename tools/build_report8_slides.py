@@ -562,9 +562,10 @@ def mechanism(prs):
         ["c1 天空最好、整体最差",
          "同一个原因的两面：它几乎没动 Lotus，所以既没被带偏，也没学会任务。",
          "上带 16.1 m（真值 14.8）；test 0.1217，六线最差"],
-        ["d2 远端最好",
-         "远端是稀疏监督（有回波但很少）。AnyThermal 的语义特征在监督稀薄处补上结构。",
-         "far 0.1680 → 0.1524（−9.3%），退化 ×1.69"],
+        ["condition 只在有监督处帮忙",
+         "AnyThermal 特征全面优于 VAE latent（c1 vs d1 受控，九分层全胜）；"
+         "但改善最小的正是 row/top，无 GT 的天空判据上 c1 反而更好。",
+         "近景 −31.6% / 远端 −23.2% / row-top 仅 −16.1%"],
         ["caption 对远端几乎为零",
          "文本只经 cross-attention 进来，不携带几何。监督缺失的地方它补不上。",
          "b far 0.1680 → b+cap 0.1679"],
@@ -877,20 +878,20 @@ def far_field(prs):
           size=11.5, align=align)
 
     write(textbox(slide, 8.40, 1.62, 4.33, 3.60), [
-        ("归因：比原先说的弱一档", {"bold": True, "size": 13}),
-        ("far  c2 0.1817 → d2 0.1524，−16%", {"bold": True, "colour": GOOD, "size": 12.5}),
-        ("但 c2 与 d2 不止差一件事：", {"colour": BAD}),
-        "c2 是两阶段（Adapter 继承自 c1 并冻结，只训 U-Net），d2 是 Adapter 与 U-Net 联合训练。"
-        "所以这 −16% 里混着「condition 来源」和「Adapter 怎么训」两个变量。",
-        "干净的一对是 c1 vs d1（都只训 Adapter、U-Net 冻结）：test 0.1217 vs 0.0973。"
-        "但 c1 没出过 raw 预测，分层数字缺，补一个评估作业即可。",
+        ("受控归因：c1 vs d1", {"bold": True, "size": 13}),
+        "两条线都只训 Adapter、U-Net 冻结，唯一差别是 condition 来自 VAE latent 还是 "
+        "AnyThermal 特征 —— 没有第二个变量。",
+        ("九个分层全部 d1 胜，全部显著，胜率 69–85%。", {"bold": True, "colour": GOOD}),
+        ("但这是「全面更好」，不是「专治远端」：", {"bold": True, "colour": BAD}),
+        "相对改善 近景 31.6% > 边界 24.8% > 远端 23.2% > 整体 20.0%，"
+        "而 row/top 只有 16.1%，是九项里最低之一。",
         "",
-        "d2 是唯一在远端改善的线（vs b 的 0.1680，−9.3%），退化倍数也最小。"
-        "它用一点整体精度换来了远端的实质改善 —— 正是任务关心的区域。",
+        "d2 vs b 才是拿整体换远端的那一对：d2 整体略差（0.0903 vs 0.0884），"
+        "但远端 0.1524 vs 0.1680（−9.3%），是六线里唯一在远端改善的。",
         "",
         ("任务 1b 的答案：没修好。", {"bold": True, "colour": BAD}),
-        "c2（先训 adapter 再训 U-Net）远端 0.1817、row/top 0.1858，都是所有线里最差。",
-    ], size=11.5, colour=INK, space_after=4)
+        "c2（先训 Adapter 再训 U-Net）远端 0.1817、row/top 0.1858，都是所有线里最差。",
+    ], size=11, colour=INK, space_after=4)
 
     footnote(slide,
              "⚠️ 分层只统计有 GT 的像素。MS2 每帧 valid 平均 26.5%，天空没有 LiDAR 回波 —— "
