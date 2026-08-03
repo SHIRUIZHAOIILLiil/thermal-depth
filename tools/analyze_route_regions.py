@@ -47,6 +47,17 @@ for path in (ROOT, LOTUS_ROOT):
         sys.path.insert(0, str(path))
 
 from ms2_eval.official_protocol import fit_scale_shift, official_valid_mask  # noqa: E402
+# The definitions moved to ms2_eval so the figure tool can share them without
+# dragging in torch and diffusers; re-exported here so this module's API is
+# unchanged and the strata cannot fork between tables and figures.
+from ms2_eval.stratify import (  # noqa: E402,F401
+    BOUNDARY_RATIO,
+    BOUNDARY_WINDOW,
+    DEPTH_BANDS,
+    ROW_BANDS,
+    boundary_mask,
+    strata_for,
+)
 from train_route_suite import (  # noqa: E402
     ROUTES,
     RouteModel,
@@ -54,11 +65,6 @@ from train_route_suite import (  # noqa: E402
     read_manifest,
     rotate_captions,
 )
-
-DEPTH_BANDS = ((0.0, 10.0, "near <10m"), (10.0, 30.0, "mid 10-30m"), (30.0, 80.0, "far >30m"))
-ROW_BANDS = ((0.0, 1 / 3, "top"), (1 / 3, 2 / 3, "middle"), (2 / 3, 1.0, "bottom"))
-BOUNDARY_WINDOW = 9          # neighbourhood side length, pixels
-BOUNDARY_RATIO = 1.25        # local max/min depth ratio that counts as a discontinuity
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,43 +108,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gt-decode-fp32", action="store_true", default=True)
     parser.add_argument("--bootstrap", type=int, default=10000)
     return parser.parse_args()
-
-
-def boundary_mask(depth: np.ndarray, valid: np.ndarray) -> np.ndarray:
-    """Valid pixels sitting on a depth discontinuity.
-
-    Sparse LiDAR makes a gradient operator meaningless, so instead of
-    differentiating we ask a rank question over a window: does the local
-    neighbourhood of valid samples span more than BOUNDARY_RATIO in depth?
-    Implemented with max/min pooling so it costs one pass on the GPU-free path.
-    """
-    filled_high = np.where(valid, depth, -np.inf)
-    filled_low = np.where(valid, depth, np.inf)
-    tensor_high = torch.from_numpy(filled_high)[None, None]
-    tensor_low = torch.from_numpy(filled_low)[None, None]
-    pad = BOUNDARY_WINDOW // 2
-    local_max = F.max_pool2d(tensor_high, BOUNDARY_WINDOW, stride=1, padding=pad)[0, 0].numpy()
-    local_min = -F.max_pool2d(-tensor_low, BOUNDARY_WINDOW, stride=1, padding=pad)[0, 0].numpy()
-    span = np.zeros_like(depth)
-    usable = valid & np.isfinite(local_max) & np.isfinite(local_min) & (local_min > 0)
-    span[usable] = local_max[usable] / np.maximum(local_min[usable], 1e-6)
-    return valid & (span > BOUNDARY_RATIO)
-
-
-def strata_for(gt: np.ndarray, valid: np.ndarray) -> dict[str, np.ndarray]:
-    """name -> boolean mask (already intersected with `valid`)."""
-    height = gt.shape[0]
-    rows = np.arange(height)[:, None] / height
-    strata: dict[str, np.ndarray] = {"all": valid}
-    for low, high, name in DEPTH_BANDS:
-        strata[f"depth/{name}"] = valid & (gt >= low) & (gt < high)
-    for low, high, name in ROW_BANDS:
-        band = (rows >= low) & (rows < high)
-        strata[f"row/{name}"] = valid & np.broadcast_to(band, gt.shape)
-    edge = boundary_mask(gt, valid)
-    strata["structure/boundary"] = edge
-    strata["structure/interior"] = valid & ~edge
-    return strata
 
 
 @torch.no_grad()

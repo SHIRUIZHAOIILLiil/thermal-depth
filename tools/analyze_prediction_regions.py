@@ -43,12 +43,14 @@ from ms2_eval.official_protocol import (  # noqa: E402
     ALIGN_MODES,
     collapse_channels,
     evaluate_sample,
-    fit_scale_shift,
-    median_scale_ratio,
     official_valid_mask,
 )
 from ms2_eval.resize import resize_dense_prediction  # noqa: E402
-from analyze_route_regions import paired_difference, strata_for  # noqa: E402
+# align_prediction and the strata now live in ms2_eval.stratify, shared with
+# tools/build_comparison_figure.py; re-exported here so existing imports of
+# `analyze_prediction_regions.align_prediction` keep working.
+from ms2_eval.stratify import align_prediction, strata_for  # noqa: E402,F401
+from analyze_route_regions import paired_difference  # noqa: E402
 from run_official_ms2_evaluation import ROUTE_DEFAULT_ALIGN, prediction_path  # noqa: E402
 
 
@@ -143,21 +145,6 @@ def load_gt(path: Path, depth_scale: float) -> np.ndarray:
     from PIL import Image
 
     return np.asarray(Image.open(path), dtype=np.float32) / depth_scale
-
-
-def align_prediction(pred: np.ndarray, gt: np.ndarray, valid: np.ndarray, align: str) -> np.ndarray:
-    """Mirror of evaluate_sample's alignment branches, returning the aligned map."""
-    if align == "ssi":
-        scale, shift = fit_scale_shift(pred, gt, valid)
-        return pred.astype(np.float64) * scale + shift
-    if align == "ssi_disparity":
-        gt_disparity = np.zeros_like(gt, np.float64)
-        gt_disparity[valid] = 1.0 / gt[valid].astype(np.float64)
-        scale, shift = fit_scale_shift(pred, gt_disparity.astype(np.float32), valid)
-        return 1.0 / np.clip(pred.astype(np.float64) * scale + shift, 1e-3, None)
-    if align == "median":
-        return pred.astype(np.float64) * median_scale_ratio(pred, gt, valid)
-    return pred.astype(np.float64)
 
 
 def score_predictions(label: str, directory: Path, rows: list[dict], align: str, args) -> dict:

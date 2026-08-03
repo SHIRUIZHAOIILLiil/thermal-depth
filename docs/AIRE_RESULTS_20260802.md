@@ -280,11 +280,44 @@ grad_off_raw, grad_on_raw`，各 2,543 个 `.npy`。
 
 ## 11. 下一步（做 slides 用）
 
-**必做**
-- 零训练直推：`tools/run_ms2_lotus_direct_official.py --save-raw-pred`（一个作业，约 15 分钟）
-- 对比可视化：新写吃 `PREDS="目录:标签,..."` 的 CLI，复用
-  `build_route_vis_figures.py` 的渲染逻辑（该工具写死了 `E:/dataset/ms2` 和旧的 a–f 分类，
-  不能直接用）。**挑帧要按分层结果挑**（远端误差最大 / 各模型排序翻转），不要随机。
+**必做 —— 工具已就绪，只差把作业投出去**
+
+- **零训练直推**：`slurm/direct.sbatch`（GPU，约 15 分钟）。
+  它替 `run_ms2_lotus_direct_official.py` 兜住两个默认值坑：`--max-samples` 默认 8（改成 0
+  ＝全量），以及该脚本内置的 lotus evaluator 不是官方 BMSD 协议（作业出完 raw 预测后
+  一律用 `run_official_ms2_evaluation.py` 重算，主表只引用重算值，并同时跑 `ssi`
+  作对照来自查 §1 那条对齐坑）。
+
+      sbatch -J direct ~/Iris/slurm/direct.sbatch
+
+- **对比可视化**：`tools/build_comparison_figure.py` + `slurm/vis.sbatch`（CPU）。
+  沿用 `build_route_vis_figures.py` 的渲染（同一个 Spectral、同样两种上色、同样
+  「按官方空间对齐 → 转深度 → clip」），替换掉它写死的三处：路线名、数据根目录、等距挑帧。
+
+  两个关键点：
+  - **每列可以有自己的对齐空间**（`目录:标签@ssi`）。`analyze.sbatch --align` 是一刀切的，
+    所以原版 AnyThermal（`ssi`）和六线（`ssi_disparity`）进不了同一个作业；而图上必须并排。
+    每列下方都印出它用的对齐。
+  - **挑帧由分层扫描驱动**：`--pick gap --gap d2:b --stratum 'depth/far >30m'` 挑 d2 在远端
+    领先 b 最多的帧；`--pick flip` 挑逐帧排序与全集排序相反的帧；`--pick far` 挑该分层
+    误差最大的帧。`--min-separation` 防止排行榜前几名全是同一瞬间的连续帧。
+    扫描复用 `ms2_eval.stratify`（本次从 `analyze_route_regions.py` 抽出来的共享模块），
+    所以图上的「远端」与表里的「远端」是同一个定义，且每帧都与 `evaluate_sample` 对账。
+
+      PREDS="$SCRATCH/runs/eval/b_e05_raw/raw_predictions:b,\
+      $SCRATCH/runs/eval/c2_raw/raw_predictions:c2,\
+      $SCRATCH/runs/eval/d2_raw/raw_predictions:d2" \
+      MANIFEST=$SCRATCH/manifests/sequence_level_internvl3_8b/ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl \
+      TAG=far_gap PICK=gap GAP=d2:b \
+        sbatch -J vis_far --export=ALL,PREDS,MANIFEST,TAG,PICK,GAP ~/Iris/slurm/vis.sbatch
+
+  在集群上出图、只把 PNG 拉回来：一次对比要读几个 GB 的 npy，出来的图是几 MB。
+  集群没有中文字体，工具会自动把图上文字降级成英文；要中文就把一个 CJK ttf 放到
+  `$SCRATCH/fonts/msyh.ttc`。
+
+**汇报 slides**：`tools/build_report8_slides.py`（14 页，本文档是它唯一的数字来源）。
+主线 = 六线主表 → caption 双效应 → d2 远端优势（受控归因）→ 任务 4 外部参照 → 局限；
+雨天与梯度匹配作补充。主表最后一行和可视化页留了标注出来的占位，等上面两个作业回来后填。
 
 **可选**
 - `a + caption`（67 小时，补齐第一周任务 4）
