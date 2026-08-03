@@ -258,8 +258,8 @@ def main_table(prs):
         ["d1  AnyTh-adapter", "Thermal", "AnyThermal 特征 + Adapter", "9.41 M", "0.0860", "0.0973", "4.432", "0.8883"],
         ["d2  AnyTh-adapter+U-Net", "Thermal", "AnyThermal 特征 + Adapter", "876.98 M", "0.0815", "0.0903", "3.855", "0.9086"],
         [("零训练直推", {"colour": GREY}), ("Thermal", {"colour": GREY}),
-         ("AnyThermal 特征（零参数 bridge）", {"colour": GREY}), ("0", {"colour": GREY}),
-         ("—", {"colour": GREY}), ("待填", {"colour": BAD, "bold": True}),
+         ("冻结 VAE latent（U-Net 也不训）", {"colour": GREY}), ("0", {"colour": GREY}),
+         ("0.1291", {"colour": GREY}), ("待填", {"colour": BAD, "bold": True}),
          ("待填", {"colour": GREY}), ("待填", {"colour": GREY})],
     ]
     align = [PP_ALIGN.LEFT] + [PP_ALIGN.LEFT] * 2 + [PP_ALIGN.RIGHT] * 5
@@ -273,7 +273,8 @@ def main_table(prs):
         "AnyThermal 特征作为 condition 优于 VAE latent，在两个参数量级上都成立。",
         "· d1 用 9.41 M（1%）参数达到 0.0973，逼近 867 M 的 b。",
     ], size=12, colour=INK, space_after=4)
-    footnote(slide, "最后一行为零训练直推参照点，集群作业约 15 分钟，回来后填入（docs §11）。")
+    footnote(slide, "零训练直推 = b 线但 U-Net 也不训，是「训 U-Net 买来了什么」的受控对照；"
+                    "val 0.1291 为历史值，test 待集群作业回填。")
     conclusion(slide, "六线的排序稳定：condition 用什么，比在 condition 上挂多少参数更要紧。")
 
 
@@ -410,11 +411,18 @@ def donor_swap(prs):
         "崩塌幅度与 b 打乱 VAE latent 相当（0.2945）。",
     ], size=11.5, colour=INK, space_after=5)
 
-    write(textbox(slide, MARGIN, 4.45, 7.30, 1.60), [
+    write(textbox(slide, MARGIN, 4.42, 7.30, 0.60), [
         "anythermal 模式只换特征、保留正确的热像张量，"
         "所以零结果不能推给「adapter 丢了图像」—— 这是该检验的设计关键。",
     ], size=11.5, colour=GREY)
-    conclusion(slide, "代码正确：上一页的归因不是在解释一个空转的分支。")
+
+    write(textbox(slide, MARGIN, 5.16, BODY_W, 1.00), [
+        ("反过来的一半：adapter 也是必需的", {"bold": True, "size": 12.5}),
+        "把 AnyThermal 特征经零参数 bridge 直接塞给冻结的 Lotus-G（不经 adapter、不训练），"
+        "test AbsRel = 0.4697 —— 比上表「打乱 condition」的 0.2971 还差。"
+        "特征金字塔的格式是冻结 U-Net 从没见过的，「乱但同分布」好过「不同分布」。",
+    ], size=11.5, colour=INK, space_after=3)
+    conclusion(slide, "两个方向都验了：adapter 在用 AnyThermal 特征（打乱就塌），而少了 adapter 这些特征也用不了。")
 
 
 def external_reference(prs):

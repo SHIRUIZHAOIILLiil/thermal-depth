@@ -283,12 +283,30 @@ grad_off_raw, grad_on_raw`，各 2,543 个 `.npy`。
 **必做 —— 工具已就绪，只差把作业投出去**
 
 - **零训练直推**：`slurm/direct.sbatch`（GPU，约 15 分钟）。
-  它替 `run_ms2_lotus_direct_official.py` 兜住两个默认值坑：`--max-samples` 默认 8（改成 0
-  ＝全量），以及该脚本内置的 lotus evaluator 不是官方 BMSD 协议（作业出完 raw 预测后
-  一律用 `run_official_ms2_evaluation.py` 重算，主表只引用重算值，并同时跑 `ssi`
-  作对照来自查 §1 那条对齐坑）。
 
-      sbatch -J direct ~/Iris/slurm/direct.sbatch
+  ⚠️ **「零训练直推」有两条，本节原先只点名了其中一条，而那条不是主表要的那个。**
+  两者差在 condition 塞的是什么，数字差 3 倍：
+
+  | `KIND` | 条件通路 | 脚本 | 答的问题 | 数 |
+  |---|---|---|---|---|
+  | `thermal_vae`（默认） | 热像 → **VAE 编码器** → 冻结 Lotus-G | `run_ms2_lotus_thermal_vae_official.py` | b 线「U-Net 也不训」的受控对照 → **主表那一行** | val 0.1291（历史） |
+  | `anythermal` | AnyThermal 特征 → **零参数 bridge** → 冻结 Lotus-G | `run_ms2_lotus_direct_official.py` | 不经 adapter 用 AnyThermal 特征能到哪 | **test 0.4697** |
+
+  冻结的 Lotus-G 训练时见到的 condition 是 VAE latent，所以 `thermal_vae` 是它的分布内
+  输入（0.129），`anythermal` 把特征金字塔直接怼进条件通道则是分布外（0.4697）——
+  **比 §7 把 condition 打乱的 0.2971 还差**，「乱但同分布」好过「不同分布」。
+
+  所以 `anythermal` 那条不是主表的参照点，而是 **d 系的辅证**：AnyThermal 特征不经
+  adapter 就用不了，与 §7 的 donor-swap 正好互补（donor-swap 证明 adapter 在用这些特征，
+  这条证明少了 adapter 这些特征没用）。
+
+  作业还兜住两个默认值坑：`--max-samples` 默认 8（改成 0 ＝全量），以及两个脚本内置的
+  lotus evaluator 走的是上游 `least_square_disparity`（出完 raw 预测后一律用
+  `run_official_ms2_evaluation.py` 重算，主表只引用重算值，并同时跑 `ssi` 作对照
+  来自查 §1 那条对齐坑）。实测这两条路径在 `anythermal` 上给出相同的 0.4697。
+
+      sbatch -J direct ~/Iris/slurm/direct.sbatch                                  # thermal_vae，主表
+      KIND=anythermal sbatch -J direct_at --export=ALL,KIND ~/Iris/slurm/direct.sbatch   # 已跑，0.4697
 
 - **对比可视化**：`tools/build_comparison_figure.py` + `slurm/vis.sbatch`（CPU）。
   沿用 `build_route_vis_figures.py` 的渲染（同一个 Spectral、同样两种上色、同样

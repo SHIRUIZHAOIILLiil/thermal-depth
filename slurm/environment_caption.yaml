@@ -1,0 +1,20 @@
+name: caption
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch==2.3.1
+      - torchvision==0.18.1
+      # ⚠️ 与 iris 环境的冲突点：InternVL3-8B 要 transformers>=4.49，
+      # 而 iris 钉在 4.40.1（diffusers 0.28.0 / Lotus 管线的要求）。
+      # 升级 iris 会打断六线训练，所以 caption 生成单独一套环境。
+      - transformers>=4.49,<5
+      - accelerate
+      - einops
+      - sentencepiece
+      - timm
+      - pillow
+      - tqdm
