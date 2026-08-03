@@ -250,7 +250,8 @@ MiDaS 的损失有第二项（梯度匹配），我方只有数据项。
    RMSE 逃不出这个问题（同一个 valid mask），它只是单位可读。
 2. **权重效应（①）单 seed**，注入效应（②）无此问题。
 3. **`a + caption` 未跑**（第一周任务 4 缺口，67 小时）。
-4. **零训练直推未跑**、对比图未做（第二周任务 3）。
+4. **对比图未做**（第二周任务 3 的后半；前半「与 AnyThermal 对比」用的就是 §5 那份
+   已有的预测，无需另跑 —— 见 §11 那条作废记录）。
 5. 雨天两因素模型在 d2 上未复现（见 §6）。
 6. 分层的 `row/top` 是"上三分之一有回波的像素"，**不是天空**，措辞不能混。
 
@@ -282,31 +283,26 @@ grad_off_raw, grad_on_raw`，各 2,543 个 `.npy`。
 
 **必做 —— 工具已就绪，只差把作业投出去**
 
-- **零训练直推**：`slurm/direct.sbatch`（GPU，约 15 分钟）。
+- ~~**零训练直推**~~ —— **这一项作废了，本节原来的写法把人带沟里。**
 
-  ⚠️ **「零训练直推」有两条，本节原先只点名了其中一条，而那条不是主表要的那个。**
-  两者差在 condition 塞的是什么，数字差 3 倍：
+  「与 AnyThermal 的对比」和「零训练直推」在任务表里并列，读起来像两个东西，
+  于是有人（2026-08-03）去跑了两条 Lotus 路线，都不是要的：
 
-  | `KIND` | 条件通路 | 脚本 | 答的问题 | 数 |
-  |---|---|---|---|---|
-  | `thermal_vae`（默认） | 热像 → **VAE 编码器** → 冻结 Lotus-G | `run_ms2_lotus_thermal_vae_official.py` | b 线「U-Net 也不训」的受控对照 → **主表那一行** | val 0.1291（历史） |
-  | `anythermal` | AnyThermal 特征 → **零参数 bridge** → 冻结 Lotus-G | `run_ms2_lotus_direct_official.py` | 不经 adapter 用 AnyThermal 特征能到哪 | **test 0.4697** |
+  | 试过的 | 条件通路 | 数 | 为什么不是 |
+  |---|---|---|---|
+  | `run_ms2_lotus_direct_official.py` | AnyThermal 特征 → 零参数 bridge → 冻结 Lotus-G | test **0.4697** | 冻结 U-Net 训练时见的 condition 是 VAE latent，特征金字塔对它是分布外输入 —— **比 §7 打乱 condition 的 0.2971 还差**，「乱但同分布」好过「不同分布」 |
+  | `run_ms2_lotus_thermal_vae_official.py` | 热像 → VAE 编码器 → 冻结 Lotus-G | val 0.1291（历史） | 这是旧冻结文档里「零训练基线」的定义（`LOTUS_LINE_V2_..._FREEZE_20260705.md` §18/§40），但不是这次任务问的东西 |
 
-  冻结的 Lotus-G 训练时见到的 condition 是 VAE latent，所以 `thermal_vae` 是它的分布内
-  输入（0.129），`anythermal` 把特征金字塔直接怼进条件通道则是分布外（0.4697）——
-  **比 §7 把 condition 打乱的 0.2971 还差**，「乱但同分布」好过「不同分布」。
+  **要的其实是 §5 的原版 AnyThermal**：AnyThermal 自己的 MiDaS/DPT 深度网直接出深度，
+  全程不碰 Lotus。它**早就跑完了** —— `$SCRATCH/runs/anythermal/Midas_anythermal/`，
+  test 2,543 帧 **0.0821**（`ssi` 对齐）。所以这一项没有任何东西要跑，
+  主表也不再单列「零训练直推」那一行（任务 4 那页已有完整分层表，重复无意义）。
 
-  所以 `anythermal` 那条不是主表的参照点，而是 **d 系的辅证**：AnyThermal 特征不经
-  adapter 就用不了，与 §7 的 donor-swap 正好互补（donor-swap 证明 adapter 在用这些特征，
-  这条证明少了 adapter 这些特征没用）。
-
-  作业还兜住两个默认值坑：`--max-samples` 默认 8（改成 0 ＝全量），以及两个脚本内置的
-  lotus evaluator 走的是上游 `least_square_disparity`（出完 raw 预测后一律用
-  `run_official_ms2_evaluation.py` 重算，主表只引用重算值，并同时跑 `ssi` 作对照
-  来自查 §1 那条对齐坑）。实测这两条路径在 `anythermal` 上给出相同的 0.4697。
-
-      sbatch -J direct ~/Iris/slurm/direct.sbatch                                  # thermal_vae，主表
-      KIND=anythermal sbatch -J direct_at --export=ALL,KIND ~/Iris/slurm/direct.sbatch   # 已跑，0.4697
+  留下的东西：`slurm/direct.sbatch`（`KIND=thermal_vae|anythermal`）两条都还能跑，
+  以后要拿零训练基线时不必重新考古。而 `anythermal` 那条的 0.4697 **有独立价值** ——
+  它是 §7 donor-swap 的另一半：donor-swap 证明 adapter 在用 AnyThermal 特征
+  （打乱就塌 3.3 倍），这条证明少了 adapter 这些特征根本用不了。两个方向合起来
+  才说明 adapter 不是白挂的参数。已写进汇报。
 
 - **对比可视化**：`tools/build_comparison_figure.py` + `slurm/vis.sbatch`（CPU）。
   沿用 `build_route_vis_figures.py` 的渲染（同一个 Spectral、同样两种上色、同样

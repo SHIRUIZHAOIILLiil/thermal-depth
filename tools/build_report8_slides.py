@@ -257,10 +257,6 @@ def main_table(prs):
         ["c2  VAE-adapter+U-Net", "Thermal", "VAE latent + Adapter", "874.67 M", "0.0932", "0.1013", "4.418", "0.8826"],
         ["d1  AnyTh-adapter", "Thermal", "AnyThermal 特征 + Adapter", "9.41 M", "0.0860", "0.0973", "4.432", "0.8883"],
         ["d2  AnyTh-adapter+U-Net", "Thermal", "AnyThermal 特征 + Adapter", "876.98 M", "0.0815", "0.0903", "3.855", "0.9086"],
-        [("零训练直推", {"colour": GREY}), ("Thermal", {"colour": GREY}),
-         ("冻结 VAE latent（U-Net 也不训）", {"colour": GREY}), ("0", {"colour": GREY}),
-         ("0.1291", {"colour": GREY}), ("待填", {"colour": BAD, "bold": True}),
-         ("待填", {"colour": GREY}), ("待填", {"colour": GREY})],
     ]
     align = [PP_ALIGN.LEFT] + [PP_ALIGN.LEFT] * 2 + [PP_ALIGN.RIGHT] * 5
     table(slide, rows, MARGIN, 1.62, BODY_W, 3.10, [2.5, 1.0, 2.9, 1.5, 1.0, 1.0, 1.0, 1.0],
@@ -273,8 +269,7 @@ def main_table(prs):
         "AnyThermal 特征作为 condition 优于 VAE latent，在两个参数量级上都成立。",
         "· d1 用 9.41 M（1%）参数达到 0.0973，逼近 867 M 的 b。",
     ], size=12, colour=INK, space_after=4)
-    footnote(slide, "零训练直推 = b 线但 U-Net 也不训，是「训 U-Net 买来了什么」的受控对照；"
-                    "val 0.1291 为历史值，test 待集群作业回填。")
+    footnote(slide, "外部参照点（原版 AnyThermal，test 0.0821）在任务 4 那一页有完整分层表，此处不重复。")
     conclusion(slide, "六线的排序稳定：condition 用什么，比在 condition 上挂多少参数更要紧。")
 
 
@@ -465,7 +460,7 @@ def external_reference(prs):
 
 def qualitative(prs, figure: Path | None):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    header(slide, "QUALITATIVE · SAME FRAMES, THREE REFERENCE POINTS", "对比可视化：零训练 / 我方 / 原版")
+    header(slide, "QUALITATIVE · SAME FRAMES, FOUR MODELS", "对比可视化：b / c2 / d2 / 原版 AnyThermal")
     picture_or_placeholder(
         slide, figure, MARGIN, 1.55, BODY_W, 3.55,
         ["【待填：集群 vis 作业的输出 PNG】",
@@ -579,7 +574,7 @@ def limits(prs):
          "所有「天空」措辞。分层里的 row/top 是「上三分之一有回波的像素」，不是天空"],
         ["2", "权重效应（①）单 seed；注入效应（②）无此问题。", "caption 结论的前半句"],
         ["3", "a + caption 未跑（第一周任务 4 缺口，67 小时）。", "RGB 线上的 caption 效应无数据"],
-        ["4", "零训练直推、对比可视化尚未回来（第二周任务 3）。", "主表最后一行、可视化页"],
+        ["4", "对比可视化尚未回来（第二周任务 3 的后半）。", "可视化页"],
         ["5", "雨天两因素模型在 d2 上未复现。", "「效应跟着 caption 信息量走」只在 b 上成立"],
         ["6", "现有工具无法测量真正的天空区域；需要不依赖 GT 的判据"
               "（如「无回波区域被预测为近处的比例」），该工具尚未实现。",
@@ -596,8 +591,8 @@ def next_steps(prs):
         ["", "做什么", "为什么", "成本"],
         ["1", "d2 + caption 第二个 seed",
          "把权重效应 ① 从单次观测升级为可复现观测 —— 这是本轮最软的一环", "约 27 小时"],
-        ["2", "零训练直推 + 对比可视化",
-         "补上主表的参照点与任务 3 的图（作业与工具已就绪）", "约 15 分钟 + CPU 作业"],
+        ["2", "对比可视化",
+         "补上任务 3 的图（工具与作业已就绪，只差跑）", "一个 CPU 作业"],
         ["3", "夜间 21-58-13 第四个数据点",
          "雨天两因素模型的可证伪预测：词表低于重雨、注入税大于 +0.0005", "一个评估作业"],
         ["4", "a + caption",

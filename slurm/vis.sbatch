@@ -42,12 +42,13 @@
 #     TAG=far_gap PICK=gap GAP=d2:b \
 #       sbatch -J vis_far --export=ALL,PREDS,MANIFEST,TAG,PICK,GAP ~/Iris/slurm/vis.sbatch
 #
-#   三方参照：零训练直推 / 我方最好 / 原版 AnyThermal（注意最后一列的 @ssi）
-#     PREDS="$SCRATCH/runs/direct/direct_fp32_empty/raw_predictions:zero_shot,\
-#$SCRATCH/runs/eval/b_e05_raw/raw_predictions:b_thermal,\
+#   跟原版 AnyThermal 并排（注意最后一列的 @ssi —— 它跟我方六线不是同一个对齐空间，
+#   这也是 analyze.sbatch 做不了这张图的原因）
+#     PREDS="$SCRATCH/runs/eval/b_e05_raw/raw_predictions:b_thermal,\
+#$SCRATCH/runs/eval/d2_raw/raw_predictions:d2,\
 #$SCRATCH/runs/anythermal/Midas_anythermal/raw_predictions:anythermal_orig@ssi" \
-#     MANIFEST=... TAG=three_way PICK=far \
-#       sbatch -J vis_3 --export=ALL,PREDS,MANIFEST,TAG,PICK ~/Iris/slurm/vis.sbatch
+#     MANIFEST=... TAG=vs_anythermal PICK=far \
+#       sbatch -J vis_at --export=ALL,PREDS,MANIFEST,TAG,PICK ~/Iris/slurm/vis.sbatch
 
 source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
