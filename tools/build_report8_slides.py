@@ -1022,24 +1022,37 @@ def sky_band(prs, figure: Path | None):
                       "与原版 AnyThermal 冻结骨干、远端只退化 ×1.13 同一个机制。")
 
 
-def caption_visual(prs, top: Path | None, bottom: Path | None):
-    """The caption effect is real and invisible; say both."""
+def caption_visual(prs, strips: dict[str, Path]):
+    """The caption effect is real and invisible; say both.
+
+    One strip per route rather than one nine-column block: at eleven columns the
+    header of each panel overran its neighbour and nothing was readable.
+    """
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     header(slide, "CAPTION · SIGNIFICANT AND INVISIBLE",
            "caption 的效应显著，但肉眼看不见")
-    picture_or_placeholder(slide, top, MARGIN, 1.44, BODY_W, 1.55,
-                           ["【待填：caption 对比图 上半】"])
-    picture_or_placeholder(slide, bottom, MARGIN, 3.06, BODY_W, 1.55,
-                           ["【待填：caption 对比图 下半】"])
-    write(textbox(slide, MARGIN, 4.74, BODY_W, 1.60), [
-        "上排：b 的三种 prompt（空 / 真 caption / 打乱）。下排：c2 与 d2 各三种。"
-        "三条线都是同一份权重、同一批帧，只有喂进 CLIP 的字符串不同。",
-        ("九个格子彼此看不出差别 —— 这正是该有的样子。", {"bold": True}),
-        "注入效应在 test 上是 b +0.00130 / c2 −0.00082 / d2 +0.00046，而整体 AbsRel 是 0.09–0.10，"
-        "也就是千分之一二的量级。统计上显著、可复现、方向明确，但小到画不出来。",
-        ("这一页的作用是防止过度解读：", {"colour": BAD}),
-        "「caption 有帮助」这种说法在图上找不到支撑，能支撑的只有配对检验的区间。",
-    ], size=11, colour=INK, space_after=3)
+
+    strip_w = 7.55
+    for index, key in enumerate(("b", "c2", "d2")):
+        top = 1.50 + index * 1.62
+        picture_or_placeholder(slide, strips.get(key), MARGIN, top, strip_w, 1.44,
+                               [f"【待填：{key} 线的 caption 对比图】"])
+
+    write(textbox(slide, 8.42, 1.50, 4.31, 4.70), [
+        ("三条线，每条三种 prompt", {"bold": True, "size": 12.5}),
+        "上到下：b / c2 / d2。每条线的三格是同一份权重、同一批帧，"
+        "只有喂进 CLIP 的字符串不同：空 prompt、真 caption、打乱的 caption。",
+        ("看不出差别 —— 这正是该有的样子。", {"bold": True}),
+        "换 prompt 让上带深度中位最多只动 0.54 m（9–14 m 的量级上，约 3–5%），"
+        "多数不到 0.3 m。栏首那三个 median 常常连整数都一样。",
+        "注入效应在 test 上是 b +0.00130 / c2 −0.00082 / d2 +0.00046，"
+        "而整体 AbsRel 是 0.09–0.10 —— 千分之一二的量级，统计上显著、方向明确，但小到画不出来。",
+        ("这一页的作用是防止过度解读：", {"bold": True, "colour": BAD}),
+        "「caption 有帮助」在图上找不到支撑，能支撑它的只有配对检验的区间。",
+        ("第三格「打乱的 caption」是关键对照：", {"size": 10.5}),
+        ("它保留文本分布、只打断图文对应。与第二格无差别 ⇒ 起作用的是「有文本」而非内容。",
+         {"size": 10.5, "colour": GREY}),
+    ], size=10.5, colour=INK, space_after=3)
     conclusion(slide, "显著 ≠ 可见。caption 的效应要用配对区间讲，不能用图讲。")
 
 
@@ -1178,8 +1191,8 @@ def next_steps(prs):
 
 COMPARE = Path(__file__).resolve().parents[1] / "docs" / "figures" / "compare"
 FIG5 = COMPARE / "qual_5routes" / "comparison_strip_shared.png"
-FIGCAP_TOP = COMPARE / "qual_caption" / "strip_b.png"
-FIGCAP_BOTTOM = COMPARE / "qual_caption" / "strip_c2_d2.png"
+FIGCAP = {k: COMPARE / f"qual_cap_{k}" / "comparison_strip.png"
+          for k in ("b", "c2", "d2")}
 
 
 def build(output: Path, figure: Path | None) -> None:
@@ -1194,7 +1207,7 @@ def build(output: Path, figure: Path | None) -> None:
     mechanism(prs)
     route_flows(prs)
     caption_flow(prs)
-    caption_visual(prs, FIGCAP_TOP, FIGCAP_BOTTOM)
+    caption_visual(prs, FIGCAP)
     caption_effects(prs)
     caption_strength(prs)
     far_field(prs)
