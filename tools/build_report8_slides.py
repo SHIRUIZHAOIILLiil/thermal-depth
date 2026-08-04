@@ -497,14 +497,14 @@ def all_arms(prs):
            "全部路线 × 有无 caption：test 上的 AbsRel 一览")
     rows = [
         ["线", "输入", "GT 视角", "无 caption", "cap 训练 / 空 prompt", "cap 训练 / 真 caption"],
-        ["a", "RGB", ("rgb", {"colour": BAD}), ("0.0844", {"bold": True}), "未训练", "未训练"],
+        ["a", "RGB", ("rgb", {"colour": BAD}), ("0.0844  (e14)", {"bold": True}), "未训练", "未训练"],
         ["b", "Thermal", "thr",
-         ("0.0884  ★ 热像最好", {"bold": True, "colour": GOOD}),
-         ("0.0869  ★ 全表最好", {"bold": True, "colour": GOOD}), "0.0882"],
-        ["c1", "Thermal", "thr", "0.1217", "未训练", "未训练"],
-        ["c2", "Thermal", "thr", "0.1013", "0.1030", "0.1022"],
-        ["d1", "Thermal", "thr", "0.0973", "未训练", "未训练"],
-        ["d2", "Thermal", "thr", "0.0903", "0.0876", "0.0881"],
+         ("0.0884  (e5)  ★ 热像最好", {"bold": True, "colour": GOOD}),
+         ("0.0869  (e3)  ★ 全表最好", {"bold": True, "colour": GOOD}), "0.0882  (e3)"],
+        ["c1", "Thermal", "thr", "0.1217  (e16)", "未训练", "未训练"],
+        ["c2", "Thermal", "thr", "0.1013  (e3)", "0.1030  (e3)", "0.1022  (e3)"],
+        ["d1", "Thermal", "thr", "0.0973  (e9)", "未训练", "未训练"],
+        ["d2", "Thermal", "thr", "0.0903  (e12)", "0.0876  (e3)", "0.0881  (e3)"],
     ]
     align = [PP_ALIGN.LEFT, PP_ALIGN.LEFT, PP_ALIGN.LEFT,
              PP_ALIGN.RIGHT, PP_ALIGN.RIGHT, PP_ALIGN.RIGHT]
@@ -521,6 +521,9 @@ def all_arms(prs):
         "c1 与 d1 从未训过 caption 臂。所以 caption 的结论只覆盖 b / c2 / d2 三条。",
         "同一行内左右比较即为 caption 的效应；三条线的分解见后两页。"
         "c2 是唯一一条加 caption 反而变差的（0.1013 → 0.1030）。",
+        ("括号里是按 val 选出的 epoch。三条 caption 臂全部停在 e3，无一例外 —— "
+         "而它们的无 caption 对应线是 e5 / e3 / e12。用 caption 训练收敛得明显更早。",
+         {"bold": True}),
     ], size=11, colour=INK, space_after=3)
     conclusion(slide, "带 caption 与不带 caption 的最好成绩都在 b 线上；caption 只买到 0.0884 → 0.0869，"
                       "而且要靠推理时不喂 caption 才拿得到。")
@@ -625,17 +628,17 @@ def main_table(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     header(slide, "BASELINE · SIX ROUTES ON THE HELD-OUT TEST SET", "主表：六条路线的 val 与 test")
     rows = [
-        ["线", "输入", "Condition", "可训练参数", "val", "test", "rmse", "a1"],
-        ["a  RGB+U-Net", "RGB", "冻结 VAE latent", "867.57 M", "0.0791", ("0.0844", {"bold": True}), "3.827", "0.9269"],
-        ["b  Thermal+U-Net", "Thermal", "冻结 VAE latent", "867.57 M", ("0.0775", {"bold": True}), "0.0884", "3.956", "0.9071"],
-        ["c1  VAE-adapter", "Thermal", "VAE latent + Adapter", "7.11 M", "0.1127", "0.1217", "5.465", "0.8365"],
-        ["c2  VAE-adapter→U-Net", "Thermal", "VAE latent + 冻结 Adapter", "867.57 M", "0.0932", "0.1013", "4.418", "0.8826"],
-        ["d1  AnyTh-adapter", "Thermal", "AnyThermal 特征 + Adapter", "9.41 M", "0.0860", "0.0973", "4.432", "0.8883"],
-        ["d2  AnyTh-adapter+U-Net", "Thermal", "AnyThermal 特征 + Adapter", "876.98 M", "0.0815", "0.0903", "3.855", "0.9086"],
+        ["线", "输入", "Condition", "可训练参数", "best ep", "val", "test", "rmse", "a1"],
+        ["a  RGB+U-Net", "RGB", "冻结 VAE latent", "867.57 M", "14", "0.0791", ("0.0844", {"bold": True}), "3.827", "0.9269"],
+        ["b  Thermal+U-Net", "Thermal", "冻结 VAE latent", "867.57 M", "5", ("0.0775", {"bold": True}), "0.0884", "3.956", "0.9071"],
+        ["c1  VAE-adapter", "Thermal", "VAE latent + Adapter", "7.11 M", ("16", {"bold": True}), "0.1127", "0.1217", "5.465", "0.8365"],
+        ["c2  VAE-adapter→U-Net", "Thermal", "VAE latent + 冻结 Adapter", "867.57 M", ("3", {"colour": BAD}), "0.0932", "0.1013", "4.418", "0.8826"],
+        ["d1  AnyTh-adapter", "Thermal", "AnyThermal 特征 + Adapter", "9.41 M", "9", "0.0860", "0.0973", "4.432", "0.8883"],
+        ["d2  AnyTh-adapter+U-Net", "Thermal", "AnyThermal 特征 + Adapter", "876.98 M", "12", "0.0815", "0.0903", "3.855", "0.9086"],
     ]
-    align = [PP_ALIGN.LEFT] + [PP_ALIGN.LEFT] * 2 + [PP_ALIGN.RIGHT] * 5
-    table(slide, rows, MARGIN, 1.62, BODY_W, 3.10, [2.5, 1.0, 2.9, 1.5, 1.0, 1.0, 1.0, 1.0],
-          size=11.5, align=align)
+    align = [PP_ALIGN.LEFT] + [PP_ALIGN.LEFT] * 2 + [PP_ALIGN.RIGHT] * 6
+    table(slide, rows, MARGIN, 1.62, BODY_W, 3.10, [2.3, 0.9, 2.6, 1.3, 0.8, 0.9, 0.9, 0.9, 0.9],
+          size=11, align=align)
 
     write(textbox(slide, MARGIN, 4.92, BODY_W, 1.30), [
         "· 热像几乎追平 RGB：a 0.0844 vs b 0.0884，仅差 4.5%。但 b 的跨序列泛化更差 —— "
@@ -643,6 +646,8 @@ def main_table(prs):
         "· d 系全面压过 c 系（d1 0.0973 vs c1 0.1217；d2 0.0903 vs c2 0.1013）："
         "AnyThermal 特征作为 condition 优于 VAE latent，在两个参数量级上都成立。",
         "· d1 用 9.41 M（1%）参数达到 0.0973，逼近 867 M 的 b。",
+        "· best ep 是按 val 选出来的那一轮。没有一条线用得上 20 个 epoch（最晚 c1 的 16），"
+        "下一轮预算可砍一半；c2 只到第 3 轮，后面 17 轮全是白跑。",
     ], size=12, colour=INK, space_after=4)
     footnote(slide, "外部参照点（原版 AnyThermal，test 0.0821）在任务 4 那一页有完整分层表，此处不重复。")
     conclusion(slide, "六线的排序稳定：condition 用什么，比在 condition 上挂多少参数更要紧。")
