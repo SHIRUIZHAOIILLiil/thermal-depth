@@ -458,6 +458,61 @@ MiDaS 的损失有第二项（梯度匹配），我方只有数据项。
 
 ---
 
+## 9.5 待议：我们把 Lotus-G 的迭代去噪关掉了（2026-08-04 记录，未讨论完）
+
+**Lotus-G 本来是迭代去噪的，单步是我们自己的实现选择，不是模型的限制。**
+`lotus/pipeline.py:1166` 的类注释写着「不是一步预测，而是从一个随机 latent 开始，一步步去噪」，
+1307 行的循环显式分支：
+
+```python
+for i, t in enumerate(timesteps):
+    x0_pred = self.unet(..., class_labels=task_emb)[0]
+    if len(timesteps) > 1:
+        latents = self.scheduler.step(x0_pred, t, latents, ...)[0]   # 真迭代
+    else:
+        latents = x0_pred                                            # 单步直接取
+```
+
+而我方三个入口**全部绕过 pipeline、直接调 unet，单次前向、timestep 固定 999**：
+
+| 文件 | 行 |
+|---|---|
+| `tools/train_route_suite.py` | 670–675（`--timestep` 默认 999） |
+| `tools/run_ms2_lotus_thermal_vae_official.py` | 198–214 |
+| `tools/run_ms2_lotus_direct_official.py` | 120–136 |
+
+**三个工具都没有 `num_inference_steps` 参数**，要跑多步得先改代码。
+
+### 为什么这条重要
+
+报告里「没能复现 Iris 那条（带 caption 训练+推理优于不带）」列了五条原因，
+第一条原是「我们的管线是单步的，文本只有一次机会 + 只占 2.95% 参数」。
+**这条的定性要改**：不是「用了个单步模型」，而是「我们把迭代关了」——
+前者是选型局限，后者是一个没试过的旋钮。
+
+### 障碍
+
+**六条线是在单步、固定 t=999 下训练的。** 推理改成多步等于喂给 U-Net 一堆它微调期间
+从没见过的 timestep，属于分布外使用，不是「恢复迭代」。要公平比较得按多步重训。
+
+**零训练那条不受此限** —— 用的是原作者权重，本来就在多步范式下训练。
+
+### 提议的实验（未执行）
+
+零训练路线（热像 → 冻结 VAE → 冻结 Lotus-G），扫
+`num_inference_steps ∈ {1, 10, 50}` × `caption ∈ {空, 真}`，看
+**「真 caption − 空 prompt」这个差随步数怎么变**：
+
+- 差**随步数变大** ⇒ 文本确实需要多步才起作用，没复现 Iris 是因为关了迭代 →
+  下一步是按多步重训一条线
+- 差**始终 ≈ 0** ⇒ 排除这条原因，锅在 caption 跨模态（RGB 生成、热像输入）
+  与图像条件过于完整这两条上
+
+全程冻结、不需训练；50 步比 1 步慢 50 倍，抽 200 帧看趋势即可。
+**前置：三个工具都要加 `--num-inference-steps`，需要改代码。**
+
+---
+
 ## 10. 集群上的产物（路径）
 
 ```
