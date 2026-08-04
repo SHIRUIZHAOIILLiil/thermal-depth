@@ -980,6 +980,42 @@ def external_reference(prs):
     conclusion(slide, "同一份稀疏 LiDAR 监督，差别在架构 —— 远端退化是我方方法特有的，不是热像深度的通病。")
 
 
+def sky_zero_vs_trained(prs, figure: Path | None):
+    """Training is what breaks the sky -- the frozen pipeline had it right.
+
+    This figure predates the Aire run (2026-07-29) and was never in a deck. It
+    is the cleanest statement of the mechanism there is: before any training the
+    top band sits at the correct distance, and training on sparse LiDAR drags it
+    down.
+    """
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    header(slide, "SKY · TRAINING IS WHAT BREAKS IT",
+           "零训练时天空是对的；是训练把它拉近的")
+    picture_or_placeholder(slide, figure, MARGIN, 1.40, BODY_W, 3.55,
+                           ["【待填：零训练 vs 训练 的天空带对照】"])
+    rows = [
+        ["", "上带预测中位（5 帧）", "顶部颜色"],
+        ["零训练（热像 → 冻结 VAE → 冻结 Lotus）",
+         ("39.2 m", {"bold": True, "colour": GOOD}), "蓝 ＝ 远，正确"],
+        ["b 线，训 U-Net，无 caption（e5）", "12.2 m", "出现深红带"],
+        ["b 线，训 U-Net，caption（e3）", ("8.3 m", {"colour": BAD}), "红带更宽更深"],
+        [("该帧真值（有回波像素）", {"colour": GREY}), ("17.3 m", {"bold": True}), "—"],
+    ]
+    align = [PP_ALIGN.LEFT, PP_ALIGN.RIGHT, PP_ALIGN.LEFT]
+    table(slide, rows, MARGIN, 5.06, 7.90, 1.30, [3.9, 1.9, 1.7], size=10.5, align=align)
+
+    write(textbox(slide, 8.70, 5.06, 4.03, 1.40), [
+        ("上带的 LiDAR 覆盖率只有 1.5%", {"bold": True, "colour": BAD, "size": 12}),
+        "不是全图平均的 26.5%。损失和 AbsRel 都统计不到这块 —— "
+        "所以这整个变化在任何官方指标上都是隐形的。",
+    ], size=10.5, colour=INK, space_after=3)
+
+    footnote(slide, "val 序列 11-23-45，5 帧（本图早于 Aire 那批，考卷不同，只作机制演示）。"
+                    "caption 那一列是 e3、无 caption 是 e5，epoch 不同，所以第三行只能读方向不能读幅度。",
+             top=6.30)
+    conclusion(slide, "冻结的整条链路本来就知道天空在远处；是稀疏 LiDAR 上的训练把它拉近的。")
+
+
 def sky_band(prs, figure: Path | None):
     """The sky failure, and the one line that does not have it.
 
@@ -1194,6 +1230,7 @@ def next_steps(prs):
 
 COMPARE = Path(__file__).resolve().parents[1] / "docs" / "figures" / "compare"
 FIG5 = COMPARE / "qual_5routes" / "comparison_strip_shared.png"
+FIGZERO = COMPARE / "sky_zero_vs_trained.png"
 FIGCAP = {k: COMPARE / f"qual_cap_{k}" / "comparison_strip.png"
           for k in ("b", "c2", "d2")}
 
@@ -1217,6 +1254,7 @@ def build(output: Path, figure: Path | None) -> None:
     donor_swap(prs)
     external_reference(prs)
     anythermal_losses(prs)
+    sky_zero_vs_trained(prs, FIGZERO)
     sky_band(prs, figure or FIG5)
     rain(prs)
     gradient_matching(prs)
