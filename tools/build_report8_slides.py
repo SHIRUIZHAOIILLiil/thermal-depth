@@ -487,6 +487,11 @@ def protocol(prs):
         "本地与集群结果可以并进同一张表。",
     ], size=12, colour=INK, space_after=3)
 
+    write(textbox(slide, MARGIN, 6.06, BODY_W, 0.50), [
+        ("⚠️ 命名是反的：我们的 val 是 MS2 官方的 test_day split，我们的 test 是官方的 val split。",
+         {"bold": True, "colour": BAD}),
+        "官方 train 已用于训练，剩下两个 split 由我们重新分配角色 —— 一个当选择集、一个当封存集。",
+    ], size=10.5, colour=INK, space_after=2)
     conclusion(slide, "治理约束：11-23-45 只用来选 epoch，16-08-46 只在定稿时评一次；本报告所有对外数字都带 test 列。")
 
 
@@ -1100,6 +1105,30 @@ def caption_visual(prs, strips: dict[str, Path]):
     conclusion(slide, "显著 ≠ 可见。caption 的效应要用配对区间讲，不能用图讲。")
 
 
+def rgb_sky(prs, figure: Path | None):
+    """Swapping the modality does not fix the sky, and RGB makes that unarguable."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    header(slide, "SKY · IT IS NOT ABOUT THE MODALITY",
+           "换成 RGB 也一样：a 线把天空判成全图最近")
+    picture_or_placeholder(slide, figure, MARGIN, 1.45, 7.10, 4.60,
+                           ["【待填：a 线 RGB 输入与预测】"])
+    write(textbox(slide, 8.05, 1.60, 4.68, 4.40), [
+        ("上：RGB 输入。下：a 线的预测（红＝近，蓝＝远）。虚线是上 1/3。",
+         {"colour": GREY, "size": 10}),
+        ("红块的形状精确描出了天空的开口，", {"bold": True, "size": 12.5}),
+        "包括从树冠之间往下、直插到消失点那栋楼上方的那个尖。天空被判成全图最近的东西。",
+        ("而路边的树被判成远（蓝紫）。远近整个反过来了。", {"bold": True, "colour": BAD}),
+        "",
+        "a 与 b 的训练配方逐位相同，唯一差别是输入 RGB 还是热像。"
+        "RGB 里天空是一片过曝的白，信息再充分不过 —— 结果照样判近。",
+        ("所以问题不在「看不看得见天空」，在「天空那块没有梯度」。", {"bold": True}),
+        "",
+        ("口径：单帧（002403），a 按 RGB 视角 GT 评分，不与热像线比数值 —— "
+         "这一页的证据是形状对应，不是数字。", {"size": 9.5, "colour": GREY}),
+    ], size=10.5, colour=INK, space_after=3)
+    conclusion(slide, "换模态不管用、换 condition 帮不到上带、加 caption 动不了 0.54 m —— 只有冻结动得了它。")
+
+
 def rain(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     header(slide, "SUPPLEMENT · WHEN DOES INJECTION HELP", "补充一：雨天 —— 注入效应的条件边界")
@@ -1234,9 +1263,10 @@ def next_steps(prs):
 
 
 COMPARE = Path(__file__).resolve().parents[1] / "docs" / "figures" / "compare"
-FIG5 = COMPARE / "qual_5routes" / "comparison_strip_shared.png"
+FIG5 = COMPARE / "qual_5routes" / "comparison_strip_shared_marked.png"
 FIGZERO = COMPARE / "sky_zero_vs_trained.png"
-FIGCAP = {k: COMPARE / f"qual_cap_{k}" / "comparison_strip.png"
+FIGRGB = COMPARE / "rgb_sky_evidence.png"
+FIGCAP = {k: COMPARE / f"qual_cap_{k}" / "comparison_strip_marked.png"
           for k in ("b", "c2", "d2")}
 
 
@@ -1261,6 +1291,7 @@ def build(output: Path, figure: Path | None) -> None:
     anythermal_losses(prs)
     sky_zero_vs_trained(prs, FIGZERO)
     sky_band(prs, figure or FIG5)
+    rgb_sky(prs, FIGRGB)
     rain(prs)
     gradient_matching(prs)
     limits(prs)
