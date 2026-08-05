@@ -25,6 +25,13 @@
 #     它不是主表那一行，而是 d 系的辅证：AnyThermal 特征不经 adapter 用不了，
 #     与 §7 的 donor-swap 互补（donor-swap 证明 adapter 在用特征，这条证明少了它不行）。
 #
+#   KIND=rgb （第三周任务 1）
+#     RGB → 冻结 VAE 编码器 → 冻结 Lotus-G，即 **a 线的零训练对照**：
+#     原版 Lotus 按它自己的设计（RGB 进、RGB 上预训练的权重）直推，一个参数没训。
+#     a 线的 test 0.0844 减去它 ＝ 在 MS2 上微调买来的东西。
+#     ⚠️ 它按 **RGB 视角 GT** 评（脚本强制 manifest 的 rgb_depth_path，重算这里也
+#     自动切 `--gt-view rgb`），所以只能与 a 线并排，**不能与热像各线比大小**。
+#
 # ⚠️ 另外两个必须显式覆盖的默认值：
 #   1. 脚本自身 `--max-samples` 默认 **8**（调试值），这里默认传 0 ＝ 全量。
 #   2. 脚本内置的 lotus evaluator 走的是上游 `least_square_disparity`，
@@ -36,15 +43,21 @@
 # 这是 §1 那条坑的自查（用错空间会得到几倍大的数），CPU 上几十秒，白拿。
 #
 # ── 环境变量 ────────────────────────────────────────────────────────
-#   KIND          thermal_vae（默认）| anythermal —— 见上面那段，选错差 3 倍
+#   KIND          thermal_vae（默认）| anythermal | rgb —— 见上面那段，选错差 3 倍
 #   MANIFEST      考卷；默认独立 test 集 16-08-46
-#   TAG           输出目录名；默认 direct_<kind>_<dtype>_<caption>
+#   TAG           输出目录名；默认 direct_<kind>_<dtype>_<caption>[_s<steps>]
 #   DTYPE         fp32（默认）| fp16
 #                 直推没有训练过的权重去吸收量化误差，历史上 fp16 解码明显更差
 #                 （本地 V1 线的 "fp32dec" 就是为此而来），所以基线取 fp32；
 #                 要和六线的 fp16 推理精度严格对齐时再跑一遍 fp16 臂。
 #   CAPTION_MODE  empty（默认）| correct
 #   MAX_SAMPLES   默认 0 ＝ 全量
+#   STEPS         去噪步数，默认 1 ＝ 历史口径（单次前向、t=999，与上游
+#                 lotus/infer.py 的默认一致）。>1 走 DDIM 真迭代，仅
+#                 thermal_vae / rgb 两条支持（anythermal 那条工具没改）。
+#                 ⚠️ 只有**全程冻结**的直推可以这样扫：六条训练线是在
+#                 单步固定 t 下微调的，改多步等于喂它没见过的 timestep。
+#   TIMESTEP      STEPS=1 时的固定 t，默认 999
 #
 # ── 用法 ────────────────────────────────────────────────────────────
 #   主臂（主表那一行）：
@@ -56,6 +69,17 @@
 #   fp16 对照臂：
 #     DTYPE=fp16 sbatch -J direct16 --export=ALL,DTYPE ~/Iris/slurm/direct.sbatch
 #
+#   任务 1（RGB 零训练基线，a 线的对照）：
+#     KIND=rgb sbatch -J direct_rgb --export=ALL,KIND ~/Iris/slurm/direct.sbatch
+#
+#   任务 2（去噪步数 × caption，六个臂；抽 200 帧看趋势，50 步慢 50 倍）：
+#     for s in 1 10 50; do for c in empty correct; do
+#       KIND=thermal_vae STEPS=$s CAPTION_MODE=$c MAX_SAMPLES=200 \
+#       TAG=steps_${s}_${c} sbatch -J st${s}${c} \
+#         --export=ALL,KIND,STEPS,CAPTION_MODE,MAX_SAMPLES,TAG ~/Iris/slurm/direct.sbatch
+#     done; done
+#     （MAX_SAMPLES 走 choose_uniform 均匀抽帧，六个臂拿到的是同一批帧，可逐帧配对。）
+#
 #   出完之后接分层（CPU 作业）：
 #     PREDS="$SCRATCH/runs/direct/direct_thermal_vae_fp32_empty/raw_predictions:direct" \
 #     MANIFEST=$SCRATCH/manifests/sequence_level_internvl3_8b/ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl \
@@ -65,17 +89,31 @@
 source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
 KIND="${KIND:-thermal_vae}"
+GT_VIEW=thermal
 case "$KIND" in
   thermal_vae) SCRIPT=tools/run_ms2_lotus_thermal_vae_official.py ;;
   anythermal)  SCRIPT=tools/run_ms2_lotus_direct_official.py ;;
-  *) echo "!! KIND 只能是 thermal_vae 或 anythermal，收到 '$KIND'"; exit 1 ;;
+  rgb)         SCRIPT=tools/run_ms2_lotus_rgb_official.py; GT_VIEW=rgb ;;
+  *) echo "!! KIND 只能是 thermal_vae / anythermal / rgb，收到 '$KIND'"; exit 1 ;;
 esac
 
 DTYPE="${DTYPE:-fp32}"
 CAPTION_MODE="${CAPTION_MODE:-empty}"
+STEPS="${STEPS:-1}"
+TIMESTEP="${TIMESTEP:-999}"
 MANIFEST="${MANIFEST:-$IRIS_MANIFEST_DIR/ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl}"
-TAG="${TAG:-direct_${KIND}_${DTYPE}_${CAPTION_MODE}}"
+DEFAULT_TAG="direct_${KIND}_${DTYPE}_${CAPTION_MODE}"
+[[ "$STEPS" == "1" ]] || DEFAULT_TAG="${DEFAULT_TAG}_s${STEPS}"
+TAG="${TAG:-$DEFAULT_TAG}"
 OUT="$IRIS_RUNS/direct/$TAG"
+
+# 步数旋钮只加在了两条工具上；anythermal 那条本来就是废臂，不值得改。
+STEP_FLAGS=""
+if [[ "$KIND" == "anythermal" ]]; then
+  [[ "$STEPS" == "1" ]] || { echo "!! KIND=anythermal 不支持 STEPS>1"; exit 1; }
+else
+  STEP_FLAGS="--num-inference-steps $STEPS --timestep $TIMESTEP"
+fi
 
 # 计算节点没有外网，权重必须走 $HF_HOME 里预取好的那份（prefetch_models.sbatch）
 LFO_FLAG=""
@@ -92,7 +130,7 @@ mkdir -p "$OUT"
 
 cd "$IRIS_REPO"
 
-echo "=== 第一步：出预测（KIND=$KIND / $DTYPE / caption=$CAPTION_MODE） ==="
+echo "=== 第一步：出预测（KIND=$KIND / $DTYPE / caption=$CAPTION_MODE / steps=$STEPS） ==="
 echo "===   $SCRIPT ==="
 python "$SCRIPT" \
   --manifest "$MANIFEST" \
@@ -101,6 +139,7 @@ python "$SCRIPT" \
   --max-samples "${MAX_SAMPLES:-0}" \
   --dtype "$DTYPE" \
   --caption-mode "$CAPTION_MODE" \
+  $STEP_FLAGS \
   --save-raw-pred \
   $LFO_FLAG \
   || { echo "=== 出预测失败 ==="; exit 1; }
@@ -121,7 +160,7 @@ for align in ssi_disparity ssi; do
     --prediction-dir "$OUT/raw_predictions" \
     --route iris-lotus \
     --align "$align" \
-    --gt-view thermal \
+    --gt-view "$GT_VIEW" \
     --output-dir "$OUT/official_$align" \
     || echo "!! align=$align 重算失败（另一个空间的结果仍然有效）"
 done

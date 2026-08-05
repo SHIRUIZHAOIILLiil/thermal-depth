@@ -21,6 +21,12 @@
 #                    模式下打分
 #   VAL_STRIDE    默认 1（全量）
 #   SHUFFLE_COND  证伪对照：all | anythermal。不设＝关闭
+#   STEPS         去噪步数，默认 1 ＝ 历史口径（单次前向、t=999）。
+#                 ⚠️ >1 是**双重分布外**：这条线在固定 t=999 下微调，它出发的
+#                 Lotus-G 权重也只在 t=999 上训过（`lotus/train_iris_g.py:1073`
+#                 是常数，不是 randint）。多步臂只能当「排除单步这条借口」读，
+#                 不能当「恢复模型本来的能力」读。
+#                 慢 N 倍，先用 VAL_STRIDE 抽帧，别一上来跑全量。
 #
 # ── 用法 ────────────────────────────────────────────────────────────
 #   跨机器标定（§12.6，投六线之前必做）：
@@ -36,6 +42,17 @@
 #     VAL_MANIFEST=$SCRATCH/manifests/sequence_level_internvl3_8b/ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl \
 #       sbatch -J eval_b_test --export=ALL,ROUTE,TAG,CKPT,CAPTION_MODE,VAL_MANIFEST \
 #       ~/Iris/slurm/eval.sbatch
+#
+#   去噪步数扫描（第三周任务 2；b+caption 权重，只换 prompt 与步数）：
+#     for s in 1 4 10; do for c in empty correct; do
+#       ROUTE=b_thermal_unet STEPS=$s CAPTION_MODE=$c VAL_STRIDE=13 TAG=b_s${s}_${c} \
+#       CKPT=$SCRATCH/runs/route_suite/b_thermal_unet_caption/epoch03_weights.pt \
+#       VAL_MANIFEST=$SCRATCH/manifests/sequence_level_internvl3_8b/ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl \
+#         sbatch -J bs${s}${c} --time=02:00:00 \
+#         --export=ALL,ROUTE,STEPS,CAPTION_MODE,VAL_STRIDE,TAG,CKPT,VAL_MANIFEST ~/Iris/slurm/eval.sbatch
+#     done; done
+#     # VAL_STRIDE=13 -> 196 帧，六臂同一批（stride 是确定性的），可逐帧配对。
+#     # 先看 empty 臂随步数怎么走：崩了就说明多步是分布外，caption 差不必再解释。
 
 source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
@@ -60,6 +77,7 @@ ARGS=(
   --eval-checkpoint "$CKPT"
   --val-stride "${VAL_STRIDE:-1}"
   --val-caption-mode "${CAPTION_MODE:-empty}"
+  --num-inference-steps "${STEPS:-1}"
 )
 [[ -n "${VAL_MANIFEST:-}" ]] && ARGS+=(--val-manifest "$VAL_MANIFEST")
 [[ "${LOCAL_FILES_ONLY:-1}" == "1" ]] && ARGS+=(--local-files-only)

@@ -68,6 +68,30 @@ def parse_args():
             "rgbdt500 reads the single registered depth_path instead."
         ),
     )
+    parser.add_argument(
+        "--timestep",
+        type=int,
+        default=999,
+        help=(
+            "Timestep for the single-step path, matching upstream lotus/infer.py "
+            "(--timestep 999, num_inference_steps=1). Ignored when "
+            "--num-inference-steps > 1, where the scheduler picks the schedule."
+        ),
+    )
+    parser.add_argument(
+        "--num-inference-steps",
+        type=int,
+        default=1,
+        help=(
+            "Denoising steps. 1 (default) keeps the historical single forward at "
+            "--timestep, so every published number is reproduced bit for bit. "
+            ">1 runs LotusGPipeline's real DDIM loop (prediction_type='sample', "
+            "so the U-Net's x0 goes straight into scheduler.step). "
+            "NOTE the scheduler's own 1-step schedule would be t=1, not 999 -- "
+            "the two single-step conventions are not the same experiment, which "
+            "is why 1 keeps the fixed-timestep path instead of set_timesteps(1)."
+        ),
+    )
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument(
         "--save-raw-pred",
@@ -154,6 +178,8 @@ class RGBPipelineBundle:
     seeds: dict[str, int]
     prompts: dict[str, str]
     condition_posterior: str
+    timestep: int = 999
+    num_inference_steps: int = 1
 
 
 def generate_rgb_prediction(input_rgb, bundle, image_path=None, dataset_name=None):
@@ -185,29 +211,47 @@ def generate_rgb_prediction(input_rgb, bundle, image_path=None, dataset_name=Non
         device=device,
         dtype=dtype,
     ) * lotus.scheduler.init_noise_sigma
-    timestep = torch.tensor(999, device=device, dtype=torch.long)
     prompt, _ = lotus.encode_prompt(
         prompt=bundle.prompts.get(image_path, ""),
         device=device,
         num_images_per_prompt=1,
         do_classifier_free_guidance=None,
     )
-    latent_input = lotus.scheduler.scale_model_input(noise, timestep)
-    unet_input = torch.cat([condition, latent_input], dim=1)
+    steps = max(1, int(bundle.num_inference_steps))
+    if steps == 1:
+        # The historical path, and upstream's own default: one forward at a fixed
+        # timestep, x0 taken as the answer. Kept byte-identical so the frozen
+        # baselines do not move when this file grows a scheduler.
+        timesteps = [torch.tensor(bundle.timestep, device=device, dtype=torch.long)]
+    else:
+        lotus.scheduler.set_timesteps(steps, device=device)
+        timesteps = list(lotus.scheduler.timesteps)
     with torch.inference_mode(), torch.autocast(
         device_type=device.type,
         dtype=dtype,
         enabled=device.type == "cuda",
     ):
-        x0 = lotus.unet(
-            unet_input,
-            timestep,
-            encoder_hidden_states=prompt.to(dtype=dtype),
-            class_labels=task_embedding(device, dtype),
-            return_dict=False,
-        )[0]
+        latents = noise
+        for timestep in timesteps:
+            latent_input = lotus.scheduler.scale_model_input(latents, timestep)
+            x0 = lotus.unet(
+                torch.cat([condition, latent_input], dim=1),
+                timestep,
+                encoder_hidden_states=prompt.to(dtype=dtype),
+                class_labels=task_embedding(device, dtype),
+                return_dict=False,
+            )[0]
+            # Mirrors LotusGPipeline.__call__: with more than one timestep the
+            # scheduler walks x_t -> x_t-1 (the checkpoint's DDIM config declares
+            # prediction_type='sample', so x0 is the right thing to hand it);
+            # with one, x0 *is* the latent.
+            latents = (
+                lotus.scheduler.step(x0, timestep, latents, return_dict=False)[0]
+                if len(timesteps) > 1
+                else x0
+            )
         decoded = lotus.vae.decode(
-            x0 / lotus.vae.config.scaling_factor,
+            latents / lotus.vae.config.scaling_factor,
             return_dict=False,
         )[0]
         image = lotus.image_processor.postprocess(
@@ -294,7 +338,15 @@ def main():
         prompts = {row["rgb_path"]: row["caption"] for row in selected}
     else:
         prompts = {row["rgb_path"]: "" for row in selected}
-    bundle = RGBPipelineBundle(lotus, ms2_root, seeds, prompts, args.condition_posterior)
+    bundle = RGBPipelineBundle(
+        lotus,
+        ms2_root,
+        seeds,
+        prompts,
+        args.condition_posterior,
+        timestep=args.timestep,
+        num_inference_steps=args.num_inference_steps,
+    )
 
     gen_prediction = generate_rgb_prediction
     if args.save_raw_pred:
@@ -344,6 +396,13 @@ def main():
         ),
         "metric_scope": "official upstream Lotus depth-quality metrics",
         "caption_mode": args.caption_mode,
+        "num_inference_steps": args.num_inference_steps,
+        "timestep": args.timestep if args.num_inference_steps == 1 else None,
+        "denoising": (
+            f"single forward at t={args.timestep} (upstream lotus/infer.py default)"
+            if args.num_inference_steps == 1
+            else f"DDIM loop, {args.num_inference_steps} steps, scheduler schedule"
+        ),
         "manifest": str(manifest),
         "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
         "sample_count": len(selected),

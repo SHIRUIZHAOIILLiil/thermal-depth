@@ -208,6 +208,22 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated epochs to persist weights for, on top of best/end (e.g. 1,2,5,10).",
     )
     parser.add_argument("--timestep", type=int, default=999)
+    parser.add_argument(
+        "--num-inference-steps",
+        type=int,
+        default=1,
+        help=(
+            "Evaluation-only (--eval-checkpoint). 1 (default) is the historical "
+            "path: one forward at --timestep, x0 taken as the answer -- bit for "
+            "bit what every published number used. >1 unrolls LotusGPipeline's "
+            "DDIM loop. THAT IS OUT OF DISTRIBUTION TWICE OVER: this route was "
+            "fine-tuned at t=999 only, and so was the Lotus-G checkpoint it "
+            "started from (lotus/train_iris_g.py:1073 repeats one constant "
+            "timestep instead of sampling). Read a multi-step arm as a "
+            "falsification of 'single-step is why text does not help', not as "
+            "restoring an ability the model has."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=20260703)
     parser.add_argument("--log-interval", type=int, default=25)
     parser.add_argument("--device", default="cuda")
@@ -319,6 +335,15 @@ def validate_args(args: argparse.Namespace) -> None:
             )
     if args.resume is not None and args.init_from is not None:
         raise ValueError("--resume continues a run; --init-from starts a new one. Pick one.")
+    if args.num_inference_steps != 1 and args.eval_checkpoint is None:
+        # Every route was fine-tuned at one fixed timestep (--timestep, 999), the
+        # same recipe upstream trains Lotus-G with (lotus/train_iris_g.py:1073).
+        # A multi-step *training* run would need the timestep sampled, not just
+        # the loop unrolled, so this stays an evaluation-only knob.
+        raise ValueError(
+            "--num-inference-steps > 1 is an evaluation-only knob (--eval-checkpoint). "
+            "Training runs one forward at --timestep."
+        )
     if args.val_caption_mode in ("shuffled", "permuted") and args.eval_checkpoint is None:
         # The donor reassignment happens in run_evaluation, not in the per-epoch
         # run_validation, so a training run would silently score with each frame's
@@ -667,17 +692,32 @@ class RouteModel:
             dtype=torch.float32,
             scale=float(self.lotus.scheduler.init_noise_sigma),
         )
-        timestep = torch.full((1,), self.args.timestep, device=self.device, dtype=torch.long)
-        latent_input = self.lotus.scheduler.scale_model_input(noise, timestep).detach()
+        steps = max(1, int(getattr(self.args, "num_inference_steps", 1)))
+        if steps == 1:
+            timesteps = [torch.full((1,), self.args.timestep, device=self.device, dtype=torch.long)]
+        else:
+            # Evaluation only -- validate_args refuses this during training.
+            self.lotus.scheduler.set_timesteps(steps, device=self.device)
+            timesteps = list(self.lotus.scheduler.timesteps)
         unet_dtype = next(self.unet.parameters()).dtype
-        x0 = self.unet(
-            torch.cat([condition, latent_input], dim=1).to(unet_dtype),
-            timestep,
-            encoder_hidden_states=prompt.to(unet_dtype),
-            class_labels=task_embedding(1, self.device, unet_dtype),
-            return_dict=False,
-        )[0]
-        return decode_to_disparity(self.lotus, x0.float(), self.device, gt_vae=self.gt_vae)
+        latents = noise
+        for timestep in timesteps:
+            latent_input = self.lotus.scheduler.scale_model_input(latents, timestep).detach()
+            x0 = self.unet(
+                torch.cat([condition, latent_input], dim=1).to(unet_dtype),
+                timestep,
+                encoder_hidden_states=prompt.to(unet_dtype),
+                class_labels=task_embedding(1, self.device, unet_dtype),
+                return_dict=False,
+            )[0]
+            # Same branch as LotusGPipeline.__call__: the checkpoint's DDIM config
+            # declares prediction_type='sample', so x0 goes straight into step().
+            latents = (
+                self.lotus.scheduler.step(x0.float(), timestep, latents, return_dict=False)[0]
+                if len(timesteps) > 1
+                else x0
+            )
+        return decode_to_disparity(self.lotus, latents.float(), self.device, gt_vae=self.gt_vae)
 
     def trainable_modules(self) -> dict:
         modules = {}
@@ -922,6 +962,8 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
             "val_stride": args.val_stride,
             "val_caption_mode": args.val_caption_mode,
             "caption_rotation": rotation,
+            "num_inference_steps": args.num_inference_steps,
+            "timestep": args.timestep if args.num_inference_steps == 1 else None,
             "environment": environment_fingerprint(model.device),
             "elapsed_seconds": time.time() - started,
             "protocol": "official BMSD ssi_disparity, min_depth 1e-3, max_depth 80",
