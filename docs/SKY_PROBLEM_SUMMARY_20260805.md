@@ -71,17 +71,41 @@
 ⚠️ 不要过度解读：模型学到的是**全数据集**上带标签的均值，**不是逐帧跟着该帧的标签走**
 （三帧实测 GT 15.9 / 5.3 / 9.5 m 对预测 6.6 / 8.7 / 7.3 m，逐帧不相关）。
 
-## 5 待做的决定性实验
+## 5 决定性实验（开关已实现，待跑）
 
 两种解释对同一个操作给出**相反**的预测：
 
 | 解释 | 机制 | 把上带标签从损失里删掉之后 |
 |---|---|---|
 | 旧：无监督区自由漂移 | 那里没梯度，参数一动就漂 | **天空照样塌** |
-| 新（本文）：上带标签系统性偏近 | 唯一的信号是"近"，模型照学 | 没信号可学 → **天空保持在 39 m 附近** |
+| 新（本文）：上带标签系统性偏近 | 唯一的信号是"近"，模型照学 | 没信号可学 → **天空保持在 40 m 附近** |
 
-一个 `--loss-exclude-top-rows 32` 开关（只改 `valid_mask`）+ b 线 5 epoch ≈ 5.5 GPU·小时。
-判据看**上带中位**，不看 AbsRel —— 少了 ~1.5% 的监督像素，AbsRel 本来就会略降。
+`train_route_suite.py --loss-exclude-top-rows N`（只削**训练**的 `valid_mask`；
+验证自己重读 GT、走官方协议全图，曲线与历史可比）。
+
+```bash
+ROUTE=b_thermal_unet EXCLUDE_TOP_ROWS=32 EPOCHS=5 SNAPSHOT_EPOCHS=1,3,5 \
+RUN_TAG=b_skyexcl32 sbatch -J sky32 --time=08:00:00 \
+  --export=ALL,ROUTE,EXCLUDE_TOP_ROWS,EPOCHS,SNAPSHOT_EPOCHS,RUN_TAG ~/Iris/slurm/route_suite.sbatch
+```
+
+**这个实验干净在于代价极小**：最上 32 行只占全部监督像素的 **0.67%（10-59-33）/
+0.96%（11-37-46）**，约 300 px/帧。
+
+- 拿掉 <1% 的标签，如果天空从 7 m 回到 40 m ⇒ **那 1% 就是元凶**，证据压倒性；
+- AbsRel 几乎不该动（<1% 的监督像素），**动了反而要查**；
+- **判据是上带中位，不是 AbsRel。**
+
+读数（训练完，与现有 b/e5 并排跑同一批帧）：
+
+```bash
+python tools/export_qualitative.py \
+  --models b_thermal_unet:$SCRATCH/runs/route_suite/b_thermal_unet/epoch05_weights.pt:b_e5 \
+           b_thermal_unet:$SCRATCH/runs/route_suite/b_skyexcl32/epoch05_weights.pt:b_skyexcl \
+  --frame-ids 001100 001600 003900 004100 005100 \
+  --output-dir $SCRATCH/runs/vis/sky_excl
+# 看输出里的 sky_band_depths.json -> top_third_pred_median_m
+```
 
 ---
 

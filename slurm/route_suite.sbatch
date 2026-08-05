@@ -26,6 +26,7 @@
 #   LOCAL_FILES_ONLY 默认 1 —— 权重缺失立即报错，而不是并发去写同一个 HF 缓存目录
 #   GRAD_WEIGHT      MiDaS 多尺度梯度匹配项的权重；不设＝关闭。数据项系数 5.0 时
 #                    对应 MiDaS α=0.5 的平衡点是 2.5
+#   EXCLUDE_TOP_ROWS 天空实验：最上 N 行不进**训练损失**（验证不变）。不设＝关闭
 #   RUN_TAG          覆盖输出目录名
 #
 # ── 用法 ────────────────────────────────────────────────────────────
@@ -43,6 +44,15 @@
 #   caption 臂：
 #     ROUTE=b_thermal_unet CAPTION=1 sbatch -J route_b_cap --time=2-00:00:00 \
 #       --export=ALL,ROUTE,CAPTION ~/Iris/slurm/route_suite.sbatch
+#
+#   天空实验（b 线，最上 32 行不进损失，5 个 epoch 就够 —— b 的最佳点在 e5）：
+#     ROUTE=b_thermal_unet EXCLUDE_TOP_ROWS=32 EPOCHS=5 SNAPSHOT_EPOCHS=1,3,5 \
+#     RUN_TAG=b_skyexcl32 sbatch -J sky32 --time=08:00:00 \
+#       --export=ALL,ROUTE,EXCLUDE_TOP_ROWS,EPOCHS,SNAPSHOT_EPOCHS,RUN_TAG \
+#       ~/Iris/slurm/route_suite.sbatch
+#     # 先冒烟确认掩码真的被削了（日志里会打印掉了多少监督像素）：
+#     # ROUTE=b_thermal_unet EXCLUDE_TOP_ROWS=32 SMOKE=1 sbatch -J sky_smoke \
+#     #   --time=00:30:00 --export=ALL,ROUTE,EXCLUDE_TOP_ROWS,SMOKE ~/Iris/slurm/route_suite.sbatch
 #
 #   任务 1b 阶段二（冻结 c1 的 adapter，只训 U-Net）：
 #     ROUTE=c2_vae_adapter_unet FREEZE_ADAPTER=1 \
@@ -90,6 +100,15 @@ ARGS=(
 # 逐点 L1 让"边界抹平"比"锐利但错位"便宜（合成阶跃上 0.0385 vs 0.0729），
 # 而 AbsRel/RMSE 同为逐点平均，会奖励同一种投机 —— 这一项给它标价。
 [[ -n "${GRAD_WEIGHT:-}" ]] && ARGS+=(--grad-loss-weight "$GRAD_WEIGHT")
+
+# 天空实验：把最上 N 行从**训练损失**里拿掉（验证不受影响，仍走官方协议全图，
+# 所以曲线与历史可比）。那 N 行里 97-98% 的像素没有回波，剩下 2-3% 全是近处物体
+# （GT 中位 8-11 m，>89% 在 15 m 内），损失在那里携带的唯一信号就是"近"。
+# 删掉它 = 让两种解释各自兑现预测：
+#   无监督区自由漂移 ⇒ 天空照样塌；标签系统性偏近 ⇒ 天空保持在 40 m 附近。
+# 只拿掉全部监督像素的 0.7-1.0%，AbsRel 基本不该动 —— 判据看**上带中位**。
+# 详见 docs/SKY_PROBLEM_SUMMARY_20260805.md §5。
+[[ -n "${EXCLUDE_TOP_ROWS:-}" ]] && ARGS+=(--loss-exclude-top-rows "$EXCLUDE_TOP_ROWS")
 
 if [[ "${CAPTION:-0}" == "1" ]]; then
   echo "=== caption 臂：train 与 val 都用 correct ==="

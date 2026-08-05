@@ -207,6 +207,23 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Comma-separated epochs to persist weights for, on top of best/end (e.g. 1,2,5,10).",
     )
+    parser.add_argument(
+        "--loss-exclude-top-rows",
+        type=int,
+        default=0,
+        help=(
+            "Drop the top N image rows from the TRAINING loss mask (validation is "
+            "untouched -- it re-reads the GT and scores the official protocol, so "
+            "the curve stays comparable). This is the sky experiment: in those rows "
+            "97-98%% of pixels have no lidar return at all, and the 2-3%% that do "
+            "are near structure (median 8-11 m, >89%% under 15 m), so the only "
+            "signal the loss carries up there is 'close'. Removing it separates "
+            "two explanations for the sky collapsing from 41 m to 7 m during "
+            "fine-tuning: unsupervised drift predicts it still collapses, "
+            "near-biased labels predict it stays far. See "
+            "docs/SKY_PROBLEM_SUMMARY_20260805.md."
+        ),
+    )
     parser.add_argument("--timestep", type=int, default=999)
     parser.add_argument(
         "--num-inference-steps",
@@ -528,6 +545,15 @@ def load_sample(row: dict, modality: str, args: argparse.Namespace):
         row["depth_path"], args.gt_min_depth, args.gt_max_depth, args.depth_scale
     )
     diagnostics.update({"id": row["id"], "gt_valid_pixels": int(valid_mask.sum())})
+    rows_out = int(getattr(args, "loss_exclude_top_rows", 0))
+    if rows_out > 0:
+        # Only the training loss loses these rows. run_validation reads the GT
+        # PNG itself and scores the official protocol untouched, so the curve
+        # stays comparable with every other run.
+        dropped = int(valid_mask[..., :rows_out, :].sum())
+        valid_mask[..., :rows_out, :] = 0.0
+        diagnostics["gt_pixels_dropped_top_rows"] = dropped
+        diagnostics["gt_valid_pixels_after_exclusion"] = int(valid_mask.sum())
     return tensor, gt_disparity, valid_mask, diagnostics
 
 
@@ -1060,6 +1086,19 @@ def main() -> None:
     print(f"[data] train {len(train_rows)} frames from {args.train_manifest.name}", flush=True)
     if val_rows:
         print(f"[data] val   {len(val_rows)} frames (stride {args.val_stride})", flush=True)
+    if args.loss_exclude_top_rows > 0:
+        # Measure the bite on a sample rather than assert it: a run whose log does
+        # not show pixels leaving has not actually run the experiment.
+        probe = [load_sample(row, modality, args)[3] for row in train_rows[:: max(1, len(train_rows) // 20)][:20]]
+        kept = sum(d["gt_valid_pixels_after_exclusion"] for d in probe)
+        before = sum(d["gt_valid_pixels"] for d in probe)
+        print(
+            f"[data] loss excludes the top {args.loss_exclude_top_rows} rows: "
+            f"{before - kept} of {before} supervised pixels dropped "
+            f"({(before - kept) / max(before, 1) * 100:.2f}%, {len(probe)}-frame probe). "
+            f"Validation is NOT affected.",
+            flush=True,
+        )
 
     model = RouteModel(args, device, frozen_dtype)
     prompts = {"empty": model.encode_prompt("")}
@@ -1128,6 +1167,7 @@ def main() -> None:
         "format": CHECKPOINT_FORMAT,
         "route": args.route,
         "objective": "pure masked SSI-L1 vs LiDAR disparity; no teacher of any kind",
+        "loss_exclude_top_rows": args.loss_exclude_top_rows,
         "modality": modality,
         "condition": ROUTES[args.route][1],
         "trains_adapter": model.trains_adapter,
