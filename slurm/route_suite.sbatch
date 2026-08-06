@@ -21,6 +21,12 @@
 #                    这是权重效应从来没有过的内容对照：注入效应已证与内容无关
 #                    （shuffled−correct −0.00006、胜率 49.5%），但「训练时用 caption
 #                    有益」究竟是内容还是正则化，没人测过。val 跟着 train 走。
+#   RANK_W           caption 对比损失的 λ：L = w_gt·L_correct + λ·relu(m + L_c − L_w)。
+#                    不设＝关闭（连第二次前向都不做，与历史逐位一致）。要配 CAPTION=1。
+#                    ⚠️ λ 乘的是**未加权**的排序项，数据项带 --gt-loss-weight 5.0，
+#                    所以 λ=0.5 才相当于数据项的十分之一。
+#   RANK_M           margin，默认 0（"正确 caption 至少不能输"，无需标定量纲）
+#   RANK_DETACH=1    错误分支只作参照、不回传 —— 防退化解的备用开关
 #   SMOKE=1          5 个 update 即退出
 #   OVERFIT=1        300 步 / 32 样本自检
 #   EPOCHS           默认 20
@@ -115,6 +121,16 @@ ARGS=(
 # 逐点 L1 让"边界抹平"比"锐利但错位"便宜（合成阶跃上 0.0385 vs 0.0729），
 # 而 AbsRel/RMSE 同为逐点平均，会奖励同一种投机 —— 这一项给它标价。
 [[ -n "${GRAD_WEIGHT:-}" ]] && ARGS+=(--grad-loss-weight "$GRAD_WEIGHT")
+
+# caption 对比约束：同一张热像、同一份种子噪声、同一个 timestep、同一张 valid mask，
+# 只换 prompt 跑两次前向，要求「自己的 caption 不能输给随机另一帧的 caption」。
+# 现在的损失里，忽略文本是零代价的 —— 这一项给它标价。
+# 探针依据：文本进得去（Δ 1.132）、内容分得清（0.279）、传得到输出（0.293），
+# 缺的只是方向监督。⚠️ 先知上界只有 +0.0018，别指望数量级变化。
+if [[ -n "${RANK_W:-}" ]]; then
+  ARGS+=(--caption-rank-weight "$RANK_W" --caption-rank-margin "${RANK_M:-0}")
+  [[ "${RANK_DETACH:-0}" == "1" ]] && ARGS+=(--caption-rank-detach-wrong)
+fi
 
 # 天空实验：把最上 N 行从**训练损失**里拿掉（验证不受影响，仍走官方协议全图，
 # 所以曲线与历史可比）。那 N 行里 97-98% 的像素没有回波，剩下 2-3% 全是近处物体

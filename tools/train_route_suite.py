@@ -179,6 +179,45 @@ def parse_args() -> argparse.Namespace:
             "probe frames: tunnels, canopy, tall buildings) -- not an error."
         ),
     )
+    parser.add_argument(
+        "--caption-rank-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Lambda on a margin ranking loss between the correct caption and a wrong "
+            "one: L = w_gt*L_correct + lambda*relu(margin + L_correct - L_wrong). "
+            "0 (the default) skips the second forward entirely, so training is "
+            "bit-identical to every published run. Motivation: the cross-attention "
+            "probe shows text reaches the features (delta 1.132), that its content is "
+            "distinguishable (content fraction 0.279) and that this survives to the "
+            "output (0.293) -- but the direction is unrelated to the truth, because "
+            "masked_ssi_l1 never prices ignoring the text. This term does. "
+            "NOTE lambda multiplies the RAW ranking term while the data term carries "
+            "--gt-loss-weight (5.0), so lambda=0.5 gives the ranking term a tenth of "
+            "the data term's weight. Requires --caption-mode correct."
+        ),
+    )
+    parser.add_argument(
+        "--caption-rank-margin",
+        type=float,
+        default=0.0,
+        help=(
+            "m in relu(m + L_correct - L_wrong). 0 means 'the correct caption must "
+            "merely not lose', which needs no calibration against the loss scale."
+        ),
+    )
+    parser.add_argument(
+        "--caption-rank-detach-wrong",
+        action="store_true",
+        help=(
+            "Take the wrong-caption branch as a constant reference. Off by default, "
+            "matching the plain ranking loss. Turn it on if the logs show the "
+            "degenerate solution -- satisfying the margin by making the WRONG branch "
+            "worse instead of the correct one better, which leaves depth accuracy "
+            "untouched. `rank_correct` and `rank_wrong` are logged separately so that "
+            "is visible rather than inferred."
+        ),
+    )
     parser.add_argument("--gt-min-depth", type=float, default=0.1)
     parser.add_argument("--gt-max-depth", type=float, default=80.0)
     parser.add_argument("--depth-scale", type=float, default=256.0)
@@ -397,6 +436,12 @@ def validate_args(args: argparse.Namespace) -> None:
             )
     if args.resume is not None and args.init_from is not None:
         raise ValueError("--resume continues a run; --init-from starts a new one. Pick one.")
+    if args.caption_rank_weight > 0 and args.caption_mode != "correct":
+        raise ValueError(
+            "--caption-rank-weight needs --caption-mode correct: the term compares the "
+            f"frame's own caption against a wrong one, and mode '{args.caption_mode}' "
+            "does not feed the frame its own caption."
+        )
     if args.num_inference_steps != 1 and args.eval_checkpoint is None:
         # Every route was fine-tuned at one fixed timestep (--timestep, 999), the
         # same recipe upstream trains Lotus-G with (lotus/train_iris_g.py:1073).
@@ -1239,6 +1284,9 @@ def main() -> None:
         "objective": "pure masked SSI-L1 vs LiDAR disparity; no teacher of any kind",
         "loss_exclude_top_rows": args.loss_exclude_top_rows,
         "caption_permutation": caption_permutation,
+        "caption_rank_weight": args.caption_rank_weight,
+        "caption_rank_margin": args.caption_rank_margin,
+        "caption_rank_detach_wrong": args.caption_rank_detach_wrong,
         "modality": modality,
         "condition": ROUTES[args.route][1],
         "trains_adapter": model.trains_adapter,
@@ -1299,11 +1347,13 @@ def main() -> None:
     is_gate_run = args.smoke_updates is not None or args.overfit_steps is not None
 
     for epoch in range(start_epoch, args.epochs):
+        rank_rng = np.random.default_rng(args.seed + 20260806 + epoch)
         permutation = list(range(len(train_rows)))
         random.Random(args.seed + epoch).shuffle(permutation)
         epoch_started = time.time()
         running = {"gt_ssi_l1": 0.0, "gt_abs_rel": 0.0, "grad_match": 0.0,
-                   "sky": 0.0, "sky_pixels": 0.0}
+                   "sky": 0.0, "sky_pixels": 0.0,
+                   "rank": 0.0, "rank_correct": 0.0, "rank_wrong": 0.0}
         # The epoch-cumulative mean stops moving once a few thousand samples are
         # in, which makes a live run look frozen. Keep a short window for the
         # console; the epoch record still uses the full-epoch mean.
@@ -1319,7 +1369,11 @@ def main() -> None:
             if sky_mask is not None:
                 sky_mask = sky_mask.to(device)
 
-            if args.caption_mode in ("correct", "permuted") and caption_rng.random() >= args.caption_dropout:
+            used_own_caption = (
+                args.caption_mode in ("correct", "permuted")
+                and caption_rng.random() >= args.caption_dropout
+            )
+            if used_own_caption:
                 prompt = model.encode_prompt(row["caption"])
             else:
                 prompt = prompts["empty"]
@@ -1336,6 +1390,36 @@ def main() -> None:
                 grad_loss = ssi_grad_matching(prediction[None], gt_disparity, valid_mask)
                 loss = loss + args.grad_loss_weight * grad_loss
                 grad_term = float(grad_loss.detach())
+            # Margin ranking: the frame's own caption must not lose to a wrong one.
+            # Same row, so predict_disparity draws the same seeded noise and the same
+            # fixed timestep, and the mask is the same -- only the prompt differs.
+            # Skipped on caption-dropout steps, where the "correct" branch saw no
+            # caption at all and the comparison would be meaningless.
+            rank_term, rank_correct, rank_wrong = 0.0, 0.0, 0.0
+            if args.caption_rank_weight > 0 and used_own_caption:
+                donor = row
+                while donor["id"] == row["id"] and len(train_rows) > 1:
+                    donor = train_rows[int(rank_rng.integers(len(train_rows)))]
+                wrong_prompt = model.encode_prompt(donor["caption"])
+                if args.caption_rank_detach_wrong:
+                    with torch.no_grad():
+                        wrong_prediction = model.predict_disparity(row, image_tensor, wrong_prompt)
+                else:
+                    wrong_prediction = model.predict_disparity(row, image_tensor, wrong_prompt)
+                if wrong_prediction.shape != gt_disparity.shape[-2:]:
+                    wrong_prediction = F.interpolate(
+                        wrong_prediction[None, None], gt_disparity.shape[-2:],
+                        mode="bilinear", align_corners=False,
+                    )[0, 0]
+                wrong_loss, _, _ = masked_ssi_l1(wrong_prediction[None], gt_disparity, valid_mask)
+                if args.caption_rank_detach_wrong:
+                    wrong_loss = wrong_loss.detach()
+                rank_loss = torch.clamp(args.caption_rank_margin + gt_loss - wrong_loss, min=0.0)
+                loss = loss + args.caption_rank_weight * rank_loss
+                rank_term = float(rank_loss.detach())
+                rank_correct = float(gt_loss.detach())
+                rank_wrong = float(wrong_loss.detach())
+
             sky_term, sky_pixels = 0.0, 0
             if args.sky_loss_weight > 0 and sky_mask is not None:
                 sky_loss, sky_pixels = ssi_sky_loss(
@@ -1350,6 +1434,9 @@ def main() -> None:
             running["gt_ssi_l1"] += step_loss
             running["gt_abs_rel"] += float(gt_abs_rel.detach())
             running["grad_match"] += grad_term
+            running["rank"] += rank_term
+            running["rank_correct"] += rank_correct
+            running["rank_wrong"] += rank_wrong
             running["sky"] += sky_term
             running["sky_pixels"] += sky_pixels
             window.append(step_loss)
@@ -1388,6 +1475,16 @@ def main() -> None:
                             f"sky {running['sky'] / max(1, seen):.5f} "
                             f"skypx {running['sky_pixels'] / max(1, seen):.0f} "
                             if args.sky_loss_weight > 0
+                            else ""
+                        )
+                        + (
+                            # correct and wrong side by side: if the margin is being
+                            # met by the wrong branch getting worse rather than the
+                            # correct one getting better, it shows here.
+                            f"rank {running['rank'] / max(1, seen):.5f} "
+                            f"(c {running['rank_correct'] / max(1, seen):.5f} "
+                            f"w {running['rank_wrong'] / max(1, seen):.5f}) "
+                            if args.caption_rank_weight > 0
                             else ""
                         )
                         + f"lr x{factor:.3f} grad {float(grad_norm):.3f}",
@@ -1430,6 +1527,9 @@ def main() -> None:
             "train_gt_abs_rel": running["gt_abs_rel"] / max(1, seen),
             # 权重 0 时恒为 0；开启时用来核对两项量级是否失衡
             "train_grad_match": running["grad_match"] / max(1, seen),
+            "train_rank": running["rank"] / max(1, seen),
+            "train_rank_correct": running["rank_correct"] / max(1, seen),
+            "train_rank_wrong": running["rank_wrong"] / max(1, seen),
             "train_sky": running["sky"] / max(1, seen),
             "train_sky_pixels": running["sky_pixels"] / max(1, seen),
             "epoch_seconds": time.time() - epoch_started,
