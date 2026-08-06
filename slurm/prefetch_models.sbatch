@@ -25,6 +25,9 @@ from huggingface_hub import snapshot_download
 REPOS = [
     "jingheya/lotus-depth-g-v2-1-disparity",  # 六条线都要
     "theairlabcmu/AnyThermal",                # 只有 d1 / d2 要
+    # 天空掩码（Jasmine 附录 C.3 的 sky loss 要它）。取 Cityscapes 版：
+    # 它的标签集里有 sky，域也是行车场景。约 1.6 GB。
+    "facebook/mask2former-swin-large-cityscapes-semantic",
 ]
 
 for repo in REPOS:
