@@ -15,6 +15,12 @@
 #   CAPTION=1        caption 臂：同时给 --caption-mode / --val-caption-mode correct
 #                    （只给前者会用空 prompt 给 caption 模型选 best，等于用它没训过的
 #                     输入模式挑冠军）
+#   CAPTION_MODE     覆盖 CAPTION=1：empty | correct | permuted。
+#                    permuted = 训练时每帧拿一张**随机另一帧**的 caption（均匀置换，
+#                    不是旋转 —— 旋转被证污染，R^2 0.32 仍能预测本帧深度）。
+#                    这是权重效应从来没有过的内容对照：注入效应已证与内容无关
+#                    （shuffled−correct −0.00006、胜率 49.5%），但「训练时用 caption
+#                    有益」究竟是内容还是正则化，没人测过。val 跟着 train 走。
 #   SMOKE=1          5 个 update 即退出
 #   OVERFIT=1        300 步 / 32 样本自检
 #   EPOCHS           默认 20
@@ -47,6 +53,12 @@
 #   caption 臂：
 #     ROUTE=b_thermal_unet CAPTION=1 sbatch -J route_b_cap --time=2-00:00:00 \
 #       --export=ALL,ROUTE,CAPTION ~/Iris/slurm/route_suite.sbatch
+#
+#   caption 内容对照臂（用打乱的 caption 训练，填权重效应那个空格）：
+#     ROUTE=b_thermal_unet CAPTION_MODE=permuted EPOCHS=5 SNAPSHOT_EPOCHS=1,3,5
+#     RUN_TAG=b_caption_permuted sbatch -J bcap_perm --time=08:00:00
+#       --export=ALL,ROUTE,CAPTION_MODE,EPOCHS,SNAPSHOT_EPOCHS,RUN_TAG ~/Iris/slurm/route_suite.sbatch
+#     出数后要用 eval.sbatch 以 CAPTION_MODE=empty 在 test 上评，才与 0.0869 同口径
 #
 #   天空实验（b 线，最上 32 行不进损失，5 个 epoch 就够 —— b 的最佳点在 e5）：
 #     ROUTE=b_thermal_unet EXCLUDE_TOP_ROWS=32 EPOCHS=5 SNAPSHOT_EPOCHS=1,3,5 \
@@ -123,7 +135,11 @@ if [[ -n "${SKY_W:-}" ]]; then
   ARGS+=(--sky-loss-weight "$SKY_W" --sky-mask-dir "$SKY_MASKS" --sky-loss-mode "${SKY_MODE:-l1}")
 fi
 
-if [[ "${CAPTION:-0}" == "1" ]]; then
+# CAPTION_MODE 优先于 CAPTION=1。val 跟着 train 走 —— 否则会用它没训过的输入模式挑 best。
+if [[ -n "${CAPTION_MODE:-}" ]]; then
+  echo "=== caption 臂：train 与 val 都用 $CAPTION_MODE ==="
+  ARGS+=(--caption-mode "$CAPTION_MODE" --val-caption-mode "$CAPTION_MODE")
+elif [[ "${CAPTION:-0}" == "1" ]]; then
   echo "=== caption 臂：train 与 val 都用 correct ==="
   ARGS+=(--caption-mode correct --val-caption-mode correct)
 fi

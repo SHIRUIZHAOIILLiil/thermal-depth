@@ -191,7 +191,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-gt-decode-fp32", dest="gt_decode_fp32", action="store_false")
 
-    parser.add_argument("--caption-mode", choices=("empty", "correct"), default="empty")
+    parser.add_argument(
+        "--caption-mode",
+        choices=("empty", "correct", "permuted"),
+        default="empty",
+        help=(
+            "What text the TRAINING loop sees. 'permuted' hands every frame a "
+            "uniformly random other frame's caption, which is the control the "
+            "weight effect has never had: the injection effect was shown to be "
+            "content-free (shuffled minus correct = -0.00006, 49.5% win rate), "
+            "but nobody has asked whether training's benefit is content-driven "
+            "or just the regularisation of a varying text input. Same text "
+            "distribution, same token statistics, only the pairing is destroyed."
+        ),
+    )
     parser.add_argument("--caption-dropout", type=float, default=0.1)
     parser.add_argument(
         "--input-max-edge",
@@ -876,7 +889,7 @@ def permute_captions(rows: list[dict], seed: int) -> dict:
     captions = [row["caption"] for row in rows]
     missing = sum(1 for caption in captions if not caption.strip())
     if missing:
-        raise SystemExit(f"--val-caption-mode permuted needs captions on every row; {missing} lack one")
+        raise SystemExit(f"permuted captions need a caption on every row; {missing} lack one")
     order = np.random.default_rng(seed).permutation(len(rows))
     for index in range(len(rows)):
         if order[index] == index:                       # swap with a neighbour
@@ -1120,12 +1133,25 @@ def main() -> None:
         )
         val_rows = val_rows[:: max(1, args.val_stride)]
 
-    if args.caption_mode == "correct":
+    caption_permutation = None
+    if args.caption_mode in ("correct", "permuted"):
         missing = [row["id"] for row in train_rows if not row["caption"].strip()]
         if missing:
             raise SystemExit(
-                f"--caption-mode correct but {len(missing)} train rows lack captions (first: {missing[:3]})"
+                f"--caption-mode {args.caption_mode} but {len(missing)} train rows lack "
+                f"captions (first: {missing[:3]})"
             )
+    if args.caption_mode == "permuted":
+        # Reassign once, before training, so every epoch sees the same wrong
+        # pairing -- a fresh permutation each epoch would average the content
+        # away by itself and confound the very thing being measured.
+        caption_permutation = permute_captions(train_rows, args.seed)
+        print(
+            f"[data] TRAIN captions permuted: uniform random donors (seed {args.seed}), "
+            f"{caption_permutation['self_assignments']} self-assignments, "
+            f"median donor offset {caption_permutation['median_donor_offset_frames']:.0f} frames",
+            flush=True,
+        )
 
     print(f"[data] train {len(train_rows)} frames from {args.train_manifest.name}", flush=True)
     if val_rows:
@@ -1212,6 +1238,7 @@ def main() -> None:
         "route": args.route,
         "objective": "pure masked SSI-L1 vs LiDAR disparity; no teacher of any kind",
         "loss_exclude_top_rows": args.loss_exclude_top_rows,
+        "caption_permutation": caption_permutation,
         "modality": modality,
         "condition": ROUTES[args.route][1],
         "trains_adapter": model.trains_adapter,
@@ -1292,7 +1319,7 @@ def main() -> None:
             if sky_mask is not None:
                 sky_mask = sky_mask.to(device)
 
-            if args.caption_mode == "correct" and caption_rng.random() >= args.caption_dropout:
+            if args.caption_mode in ("correct", "permuted") and caption_rng.random() >= args.caption_dropout:
                 prompt = model.encode_prompt(row["caption"])
             else:
                 prompt = prompts["empty"]
