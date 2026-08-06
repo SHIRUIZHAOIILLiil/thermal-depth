@@ -37,3 +37,8 @@ dependencies:
       # 已改名的模型，还依赖 patch_embed.backbone.stages 这类内部结构。
       # 0.6.12 是 MiDaS 官方钉的版本。
       - timm==0.6.12
+      # 天空掩码：Mask2Former 的 __init__ 无条件构造 Mask2FormerLoss，其匈牙利
+      # 匹配要 scipy.optimize —— 纯推理也躲不掉，缺了会在建模型时直接 ImportError。
+      # 1.13.x 是最后一批按 numpy 1.x ABI 编的 wheel；1.14+ 按 numpy 2.0 编，
+      # 与上面钉死的 numpy==1.26.4 不兼容。
+      - scipy==1.13.1

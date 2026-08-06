@@ -27,6 +27,13 @@
 #   TAG          输出目录名，默认 skymask_<max_samples>
 #   MAX_SAMPLES  默认 100（验收）；0 = 全量（出正式掩码时用）
 #   SAVE_MASKS   1 = 落盘 masks/<id>.png。验收阶段不用；全量时必须开
+#   MODEL        分割模型，默认 Mask2Former（与 Jasmine 同款）。
+#                ⚠️ 它要 scipy（Mask2FormerLoss 的匈牙利匹配，纯推理也躲不掉），
+#                环境里缺就装 `pip install --no-deps scipy==1.13.1`
+#                （1.14+ 按 numpy 2.0 编，与钉死的 numpy 1.26.4 不兼容）。
+#                不想动环境就换 nvidia/segformer-b4-finetuned-cityscapes-1024-1024
+#                —— 同样 Cityscapes 标签集、有 sky 类、不要 scipy，
+#                工具按 config 声明的类加载，换模型不用改代码。
 #
 # ── 用法 ────────────────────────────────────────────────────────────
 #   验收（100 帧，不落盘）：
@@ -56,6 +63,7 @@ ARGS=(
   --output-dir "$OUT"
   --max-samples "$MAX_SAMPLES"
 )
+[[ -n "${MODEL:-}" ]] && ARGS+=(--model "$MODEL")
 [[ "${SAVE_MASKS:-0}" == "1" ]] && ARGS+=(--save-masks)
 [[ "${LOCAL_FILES_ONLY:-1}" == "1" ]] && ARGS+=(--local-files-only)
 
