@@ -27,6 +27,9 @@
 #   GRAD_WEIGHT      MiDaS 多尺度梯度匹配项的权重；不设＝关闭。数据项系数 5.0 时
 #                    对应 MiDaS α=0.5 的平衡点是 2.5
 #   EXCLUDE_TOP_ROWS 天空实验：最上 N 行不进**训练损失**（验证不变）。不设＝关闭
+#   SKY_W            sky loss 权重（Jasmine 附录 C.3）。不设＝关闭。要配 SKY_MASKS
+#   SKY_MASKS        天空掩码目录（tools/build_sky_masks.py --save-masks 出的）
+#   SKY_MODE         l1（默认，与 Jasmine 同）| hinge（只罚判得过近的）
 #   RUN_TAG          覆盖输出目录名
 #
 # ── 用法 ────────────────────────────────────────────────────────────
@@ -109,6 +112,16 @@ ARGS=(
 # 只拿掉全部监督像素的 0.7-1.0%，AbsRel 基本不该动 —— 判据看**上带中位**。
 # 详见 docs/SKY_PROBLEM_SUMMARY_20260805.md §5。
 [[ -n "${EXCLUDE_TOP_ROWS:-}" ]] && ARGS+=(--loss-exclude-top-rows "$EXCLUDE_TOP_ROWS")
+
+# Jasmine 附录 C.3 的 sky loss：在分割出的天空掩码上把视差压向 1/max_depth。
+# 无监督区唯一的正向约束 —— sky32 证明了「删掉有偏的标签」只会更糟（上带 9.6→4.3 m），
+# 要的是加约束而不是减标签。⚠️ AbsRel 不会因此变好（天空本来就不进指标），
+# 判据是 tools/analyze_sky_band.py 的上带中位。
+if [[ -n "${SKY_W:-}" ]]; then
+  : "${SKY_MASKS:?SKY_W 需要配 SKY_MASKS（掩码目录）}"
+  [[ -d "$SKY_MASKS" ]] || { echo "找不到掩码目录: $SKY_MASKS"; exit 1; }
+  ARGS+=(--sky-loss-weight "$SKY_W" --sky-mask-dir "$SKY_MASKS" --sky-loss-mode "${SKY_MODE:-l1}")
+fi
 
 if [[ "${CAPTION:-0}" == "1" ]]; then
   echo "=== caption 臂：train 与 val 都用 correct ==="

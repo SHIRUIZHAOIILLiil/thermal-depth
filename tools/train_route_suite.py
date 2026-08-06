@@ -70,6 +70,7 @@ from train_ms2_joint_gt_v3 import (  # noqa: E402
     load_gt_disparity,
     masked_ssi_l1,
     ssi_grad_matching,
+    ssi_sky_loss,
     decode_to_disparity,
 )
 
@@ -145,6 +146,37 @@ def parse_args() -> argparse.Namespace:
             "reward because they are pointwise too; this term prices that hedge. "
             "MiDaS pairs alpha 0.5 with a data weight of 1, so 2.5 matches the 5.0 "
             "default here -- but check the two terms' raw magnitudes first."
+        ),
+    )
+    parser.add_argument(
+        "--sky-loss-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight on the sky term (Jasmine appendix C.3). 0 (the default) leaves "
+            "every existing number untouched. Sky returns no lidar, so it gets zero "
+            "gradient from the data term and zero weight in the metrics: measured, "
+            "the top 32 rows read 41 m frozen and 9.6 m after five epochs, and "
+            "AbsRel cannot see the difference. This term is the constraint that "
+            "region otherwise lacks. Needs --sky-mask-dir. Calibrate it against the "
+            "two terms' GRADIENT magnitudes, not their loss values -- that mistake "
+            "is what sank the gradient-matching arm."
+        ),
+    )
+    parser.add_argument(
+        "--sky-loss-mode",
+        choices=("l1", "hinge"),
+        default="l1",
+        help="l1 is Jasmine's two-sided form; hinge only punishes sky judged too near.",
+    )
+    parser.add_argument(
+        "--sky-mask-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory of <id>.png sky masks (0/255), from tools/build_sky_masks.py. "
+            "A missing file means 'no sky in this frame', which is normal (24 of 100 "
+            "probe frames: tunnels, canopy, tall buildings) -- not an error."
         ),
     )
     parser.add_argument("--gt-min-depth", type=float, default=0.1)
@@ -545,6 +577,18 @@ def load_sample(row: dict, modality: str, args: argparse.Namespace):
         row["depth_path"], args.gt_min_depth, args.gt_max_depth, args.depth_scale
     )
     diagnostics.update({"id": row["id"], "gt_valid_pixels": int(valid_mask.sum())})
+    sky_mask = None
+    if getattr(args, "sky_mask_dir", None) is not None:
+        path = args.sky_mask_dir / f"{row['id']}.png"
+        if path.exists():
+            sky = np.asarray(Image.open(path), dtype=np.uint8) > 127
+            sky_mask = torch.from_numpy(sky.astype(np.float32))[None]
+            diagnostics["sky_pixels"] = int(sky.sum())
+        else:
+            # A frame with no sky at all is normal here (24 of 100 in the probe:
+            # tunnels, canopy, tall buildings), so a missing file is not an error
+            # -- but it must not silently become "sky everywhere" either.
+            diagnostics["sky_pixels"] = 0
     rows_out = int(getattr(args, "loss_exclude_top_rows", 0))
     if rows_out > 0:
         # Only the training loss loses these rows. run_validation reads the GT
@@ -554,7 +598,7 @@ def load_sample(row: dict, modality: str, args: argparse.Namespace):
         valid_mask[..., :rows_out, :] = 0.0
         diagnostics["gt_pixels_dropped_top_rows"] = dropped
         diagnostics["gt_valid_pixels_after_exclusion"] = int(valid_mask.sum())
-    return tensor, gt_disparity, valid_mask, diagnostics
+    return tensor, gt_disparity, valid_mask, sky_mask, diagnostics
 
 
 # --------------------------------------------------------------------------- #
@@ -1089,7 +1133,7 @@ def main() -> None:
     if args.loss_exclude_top_rows > 0:
         # Measure the bite on a sample rather than assert it: a run whose log does
         # not show pixels leaving has not actually run the experiment.
-        probe = [load_sample(row, modality, args)[3] for row in train_rows[:: max(1, len(train_rows) // 20)][:20]]
+        probe = [load_sample(row, modality, args)[-1] for row in train_rows[:: max(1, len(train_rows) // 20)][:20]]
         kept = sum(d["gt_valid_pixels_after_exclusion"] for d in probe)
         before = sum(d["gt_valid_pixels"] for d in probe)
         print(
@@ -1231,7 +1275,8 @@ def main() -> None:
         permutation = list(range(len(train_rows)))
         random.Random(args.seed + epoch).shuffle(permutation)
         epoch_started = time.time()
-        running = {"gt_ssi_l1": 0.0, "gt_abs_rel": 0.0, "grad_match": 0.0}
+        running = {"gt_ssi_l1": 0.0, "gt_abs_rel": 0.0, "grad_match": 0.0,
+                   "sky": 0.0, "sky_pixels": 0.0}
         # The epoch-cumulative mean stops moving once a few thousand samples are
         # in, which makes a live run look frozen. Keep a short window for the
         # console; the epoch record still uses the full-epoch mean.
@@ -1241,9 +1286,11 @@ def main() -> None:
 
         for position, index in enumerate(permutation):
             row = train_rows[index]
-            image_tensor, gt_disparity, valid_mask, _ = load_sample(row, modality, args)
+            image_tensor, gt_disparity, valid_mask, sky_mask, _ = load_sample(row, modality, args)
             gt_disparity = gt_disparity.to(device)
             valid_mask = valid_mask.to(device)
+            if sky_mask is not None:
+                sky_mask = sky_mask.to(device)
 
             if args.caption_mode == "correct" and caption_rng.random() >= args.caption_dropout:
                 prompt = model.encode_prompt(row["caption"])
@@ -1262,12 +1309,22 @@ def main() -> None:
                 grad_loss = ssi_grad_matching(prediction[None], gt_disparity, valid_mask)
                 loss = loss + args.grad_loss_weight * grad_loss
                 grad_term = float(grad_loss.detach())
+            sky_term, sky_pixels = 0.0, 0
+            if args.sky_loss_weight > 0 and sky_mask is not None:
+                sky_loss, sky_pixels = ssi_sky_loss(
+                    prediction[None], gt_disparity, valid_mask, sky_mask,
+                    args.gt_max_depth, mode=args.sky_loss_mode,
+                )
+                loss = loss + args.sky_loss_weight * sky_loss
+                sky_term = float(sky_loss.detach())
             (loss / args.gradient_accumulation_steps).backward()
 
             step_loss = float(gt_loss.detach())
             running["gt_ssi_l1"] += step_loss
             running["gt_abs_rel"] += float(gt_abs_rel.detach())
             running["grad_match"] += grad_term
+            running["sky"] += sky_term
+            running["sky_pixels"] += sky_pixels
             window.append(step_loss)
             seen += 1
 
@@ -1298,6 +1355,14 @@ def main() -> None:
                             if args.grad_loss_weight > 0
                             else ""
                         )
+                        + (
+                            # The term and how many pixels it saw: a sky loss
+                            # averaging over ~0 pixels is off even when weighted on.
+                            f"sky {running['sky'] / max(1, seen):.5f} "
+                            f"skypx {running['sky_pixels'] / max(1, seen):.0f} "
+                            if args.sky_loss_weight > 0
+                            else ""
+                        )
                         + f"lr x{factor:.3f} grad {float(grad_norm):.3f}",
                         flush=True,
                     )
@@ -1314,6 +1379,8 @@ def main() -> None:
                                     "window_gt_ssi_l1": sum(window) / len(window),
                                     "gt_abs_rel": running["gt_abs_rel"] / max(1, seen),
                                     "grad_match": running["grad_match"] / max(1, seen),
+                                    "sky": running["sky"] / max(1, seen),
+                                    "sky_pixels": running["sky_pixels"] / max(1, seen),
                                     grad_key: float(grad_norm),
                                     "lr_factor": factor,
                                     "samples_seen": epoch * len(train_rows) + seen,
@@ -1336,6 +1403,8 @@ def main() -> None:
             "train_gt_abs_rel": running["gt_abs_rel"] / max(1, seen),
             # 权重 0 时恒为 0；开启时用来核对两项量级是否失衡
             "train_grad_match": running["grad_match"] / max(1, seen),
+            "train_sky": running["sky"] / max(1, seen),
+            "train_sky_pixels": running["sky_pixels"] / max(1, seen),
             "epoch_seconds": time.time() - epoch_started,
         }
 

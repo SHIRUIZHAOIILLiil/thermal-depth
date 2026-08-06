@@ -315,6 +315,51 @@ def ssi_grad_matching(prediction, gt_disparity, valid_mask, scales: int = 4):
     return total / pairs
 
 
+def ssi_sky_loss(prediction, gt_disparity, valid_mask, sky_mask, max_depth, mode="l1"):
+    """Jasmine's anti-artifact sky term (appendix C.3), in this pipeline's space.
+
+    Sky returns no lidar, so `masked_ssi_l1` gives those pixels exactly zero
+    gradient and the official metrics give them exactly zero weight: whatever
+    the U-Net does up there is both unconstrained and invisible. Measured, it
+    drifts near -- the top 32 rows read 41 m frozen and 9.6 m after five epochs.
+    This term is the constraint that region otherwise lacks.
+
+    Jasmine writes it as L1 against D_max on a segmentation sky mask. Ours has
+    to live in disparity space, because that is where the data term lives and
+    the two must share one alignment convention -- so the target is 1/max_depth
+    and the affine fit is the same closed-form detached one `masked_ssi_l1`
+    uses. Keep this next to that function; if one changes, so does this.
+
+    The mask is intersected with the *invalid* mask: where lidar spoke, lidar
+    wins. On MS2 that intersection is small (0.22% of predicted sky carries GT,
+    and at 46.7 m median it is skyline structure, not something near) but a
+    frame that disagrees should not get two conflicting targets.
+
+    `mode="hinge"` only punishes predictions that are too *near*, leaving the
+    ones already past the target alone; `"l1"` is Jasmine's own two-sided form.
+    """
+    mask = valid_mask > 0.5
+    count = int(mask.sum())
+    if count < MIN_VALID_PIXELS:
+        raise RuntimeError(f"GT valid pixels {count} below minimum {MIN_VALID_PIXELS}.")
+    sky = (sky_mask > 0.5) & ~mask
+    sky_count = int(sky.sum())
+    if not sky_count:
+        return prediction.new_zeros(()), 0
+    with torch.no_grad():
+        pred_v, gt_v = prediction[mask], gt_disparity[mask]
+        design = torch.stack([pred_v, torch.ones_like(pred_v)], dim=1)
+        solution = torch.linalg.lstsq(design, gt_v[:, None]).solution.squeeze(1)
+        scale, shift = solution[0], solution[1]
+        if not bool(torch.isfinite(scale)) or not bool(torch.isfinite(shift)):
+            raise RuntimeError("Non-finite scale/shift in GT alignment.")
+    aligned = (scale * prediction + shift)[sky]
+    target = 1.0 / float(max_depth)
+    residual = aligned - target
+    loss = residual.clamp_min(0).mean() if mode == "hinge" else residual.abs().mean()
+    return loss, sky_count
+
+
 def decode_to_disparity(lotus, x0, device, gt_vae=None):
     """Mirror the official evaluator: decode x0, denormalize, channel-mean."""
     if gt_vae is not None:
