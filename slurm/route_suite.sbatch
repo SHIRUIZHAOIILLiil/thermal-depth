@@ -25,6 +25,10 @@
 #                    不设＝关闭（连第二次前向都不做，与历史逐位一致）。要配 CAPTION=1。
 #                    ⚠️ λ 乘的是**未加权**的排序项，数据项带 --gt-loss-weight 5.0，
 #                    所以 λ=0.5 才相当于数据项的十分之一。
+#   RANK_REFS        正确 caption 要赢过谁：wrong | empty | both（默认 both）
+#                    ⚠️ 现在「空」比「对」还好（0.0869 vs 0.0882），empty 那一条
+#                    才是真正要关掉的差距。空分支默认 detach，不然模型会靠
+#                    把空 prompt 做烂来满足间隔 —— 那正是我们最好的那一档。
 #   RANK_M           margin，默认 0（"正确 caption 至少不能输"，无需标定量纲）
 #   RANK_DETACH=1    错误分支只作参照、不回传 —— 防退化解的备用开关
 #   SMOKE=1          5 个 update 即退出
@@ -129,7 +133,9 @@ ARGS=(
 # 缺的只是方向监督。⚠️ 先知上界只有 +0.0018，别指望数量级变化。
 if [[ -n "${RANK_W:-}" ]]; then
   ARGS+=(--caption-rank-weight "$RANK_W" --caption-rank-margin "${RANK_M:-0}")
+  ARGS+=(--caption-rank-refs "${RANK_REFS:-both}")
   [[ "${RANK_DETACH:-0}" == "1" ]] && ARGS+=(--caption-rank-detach-wrong)
+  [[ "${RANK_EMPTY_LIVE:-0}" == "1" ]] && ARGS+=(--no-caption-rank-detach-empty)
 fi
 
 # 天空实验：把最上 N 行从**训练损失**里拿掉（验证不受影响，仍走官方协议全图，

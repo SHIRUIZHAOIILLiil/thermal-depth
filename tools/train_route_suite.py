@@ -207,15 +207,41 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--caption-rank-refs",
+        choices=("wrong", "empty", "both"),
+        default="both",
+        help=(
+            "What a frame's own caption has to beat. 'wrong' is a random other "
+            "frame's caption, 'empty' is the null prompt. Both, by default: beating "
+            "a wrong caption says the model reads the text at all, beating the empty "
+            "prompt says reading it is worth more than ignoring it -- and right now "
+            "the empty prompt WINS (0.0869 against 0.0882), so that second one is "
+            "the gap that actually has to close."
+        ),
+    )
+    parser.add_argument(
         "--caption-rank-detach-wrong",
         action="store_true",
         help=(
-            "Take the wrong-caption branch as a constant reference. Off by default, "
-            "matching the plain ranking loss. Turn it on if the logs show the "
-            "degenerate solution -- satisfying the margin by making the WRONG branch "
-            "worse instead of the correct one better, which leaves depth accuracy "
-            "untouched. `rank_correct` and `rank_wrong` are logged separately so that "
-            "is visible rather than inferred."
+            "Take the wrong-caption branch as a constant reference. Off by default: "
+            "a model that genuinely uses the text SHOULD do worse when handed the "
+            "wrong one, so that branch moving is the point, not a cheat. The failure "
+            "to watch for is L_correct standing still while L_wrong balloons, which "
+            "the separate rank c / w log fields make visible."
+        ),
+    )
+    parser.add_argument(
+        "--no-caption-rank-detach-empty",
+        dest="caption_rank_detach_empty",
+        action="store_false",
+        default=True,
+        help=(
+            "Let gradients flow through the empty-prompt reference. Detached by "
+            "default, and the asymmetry with the wrong branch is deliberate: the "
+            "empty prompt is the configuration holding the best thermal score this "
+            "project has (0.0869), so a margin that can be met by degrading it would "
+            "trade the one number worth having for a ranking that merely looks "
+            "right. Detached, the only way to meet it is a better correct branch."
         ),
     )
     parser.add_argument("--gt-min-depth", type=float, default=0.1)
@@ -1286,7 +1312,9 @@ def main() -> None:
         "caption_permutation": caption_permutation,
         "caption_rank_weight": args.caption_rank_weight,
         "caption_rank_margin": args.caption_rank_margin,
+        "caption_rank_refs": args.caption_rank_refs,
         "caption_rank_detach_wrong": args.caption_rank_detach_wrong,
+        "caption_rank_detach_empty": args.caption_rank_detach_empty,
         "modality": modality,
         "condition": ROUTES[args.route][1],
         "trains_adapter": model.trains_adapter,
@@ -1353,7 +1381,8 @@ def main() -> None:
         epoch_started = time.time()
         running = {"gt_ssi_l1": 0.0, "gt_abs_rel": 0.0, "grad_match": 0.0,
                    "sky": 0.0, "sky_pixels": 0.0,
-                   "rank": 0.0, "rank_correct": 0.0, "rank_wrong": 0.0}
+                   "rank": 0.0, "rank_correct": 0.0, "rank_wrong": 0.0,
+                   "rank_empty": 0.0}
         # The epoch-cumulative mean stops moving once a few thousand samples are
         # in, which makes a live run look frozen. Keep a short window for the
         # console; the epoch record still uses the full-epoch mean.
@@ -1395,30 +1424,45 @@ def main() -> None:
             # fixed timestep, and the mask is the same -- only the prompt differs.
             # Skipped on caption-dropout steps, where the "correct" branch saw no
             # caption at all and the comparison would be meaningless.
-            rank_term, rank_correct, rank_wrong = 0.0, 0.0, 0.0
+            rank_term, rank_correct, rank_wrong, rank_empty = 0.0, 0.0, 0.0, 0.0
             if args.caption_rank_weight > 0 and used_own_caption:
-                donor = row
-                while donor["id"] == row["id"] and len(train_rows) > 1:
-                    donor = train_rows[int(rank_rng.integers(len(train_rows)))]
-                wrong_prompt = model.encode_prompt(donor["caption"])
-                if args.caption_rank_detach_wrong:
-                    with torch.no_grad():
-                        wrong_prediction = model.predict_disparity(row, image_tensor, wrong_prompt)
-                else:
-                    wrong_prediction = model.predict_disparity(row, image_tensor, wrong_prompt)
-                if wrong_prediction.shape != gt_disparity.shape[-2:]:
-                    wrong_prediction = F.interpolate(
-                        wrong_prediction[None, None], gt_disparity.shape[-2:],
-                        mode="bilinear", align_corners=False,
-                    )[0, 0]
-                wrong_loss, _, _ = masked_ssi_l1(wrong_prediction[None], gt_disparity, valid_mask)
-                if args.caption_rank_detach_wrong:
-                    wrong_loss = wrong_loss.detach()
-                rank_loss = torch.clamp(args.caption_rank_margin + gt_loss - wrong_loss, min=0.0)
+
+                def reference_loss(reference_prompt, detach):
+                    """Same frame: same seeded noise, same timestep, same mask."""
+                    if detach:
+                        with torch.no_grad():
+                            other = model.predict_disparity(row, image_tensor, reference_prompt)
+                    else:
+                        other = model.predict_disparity(row, image_tensor, reference_prompt)
+                    if other.shape != gt_disparity.shape[-2:]:
+                        other = F.interpolate(
+                            other[None, None], gt_disparity.shape[-2:],
+                            mode="bilinear", align_corners=False,
+                        )[0, 0]
+                    value, _, _ = masked_ssi_l1(other[None], gt_disparity, valid_mask)
+                    return value.detach() if detach else value
+
+                references = []
+                if args.caption_rank_refs in ("wrong", "both"):
+                    donor = row
+                    while donor["id"] == row["id"] and len(train_rows) > 1:
+                        donor = train_rows[int(rank_rng.integers(len(train_rows)))]
+                    wrong_loss = reference_loss(
+                        model.encode_prompt(donor["caption"]), args.caption_rank_detach_wrong
+                    )
+                    rank_wrong = float(wrong_loss.detach())
+                    references.append(wrong_loss)
+                if args.caption_rank_refs in ("empty", "both"):
+                    empty_loss = reference_loss(prompts["empty"], args.caption_rank_detach_empty)
+                    rank_empty = float(empty_loss.detach())
+                    references.append(empty_loss)
+                rank_loss = sum(
+                    torch.clamp(args.caption_rank_margin + gt_loss - reference, min=0.0)
+                    for reference in references
+                )
                 loss = loss + args.caption_rank_weight * rank_loss
                 rank_term = float(rank_loss.detach())
                 rank_correct = float(gt_loss.detach())
-                rank_wrong = float(wrong_loss.detach())
 
             sky_term, sky_pixels = 0.0, 0
             if args.sky_loss_weight > 0 and sky_mask is not None:
@@ -1437,6 +1481,7 @@ def main() -> None:
             running["rank"] += rank_term
             running["rank_correct"] += rank_correct
             running["rank_wrong"] += rank_wrong
+            running["rank_empty"] += rank_empty
             running["sky"] += sky_term
             running["sky_pixels"] += sky_pixels
             window.append(step_loss)
@@ -1483,7 +1528,8 @@ def main() -> None:
                             # correct one getting better, it shows here.
                             f"rank {running['rank'] / max(1, seen):.5f} "
                             f"(c {running['rank_correct'] / max(1, seen):.5f} "
-                            f"w {running['rank_wrong'] / max(1, seen):.5f}) "
+                            f"w {running['rank_wrong'] / max(1, seen):.5f} "
+                            f"e {running['rank_empty'] / max(1, seen):.5f}) "
                             if args.caption_rank_weight > 0
                             else ""
                         )
@@ -1530,6 +1576,7 @@ def main() -> None:
             "train_rank": running["rank"] / max(1, seen),
             "train_rank_correct": running["rank_correct"] / max(1, seen),
             "train_rank_wrong": running["rank_wrong"] / max(1, seen),
+            "train_rank_empty": running["rank_empty"] / max(1, seen),
             "train_sky": running["sky"] / max(1, seen),
             "train_sky_pixels": running["sky_pixels"] / max(1, seen),
             "epoch_seconds": time.time() - epoch_started,
