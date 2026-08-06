@@ -92,20 +92,39 @@ def find_sky_label(id2label: dict) -> int:
 
 def main() -> None:
     args = parse_args()
-    from transformers import AutoImageProcessor, Mask2FormerForUniversalSegmentation
+    # Resolve the class the checkpoint declares rather than naming one: Mask2Former
+    # lives under universal segmentation and SegFormer under semantic, so no single
+    # Auto* class covers both, and a fallback checkpoint should need only --model.
+    # Every such processor exposes post_process_semantic_segmentation, which is all
+    # this tool uses.
+    import transformers
+    from transformers import AutoConfig, AutoImageProcessor
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rows = read_manifest(args.manifest, args.max_samples)
     device = torch.device(args.device)
 
+    # Say where we are before the slow part: a failure inside from_pretrained is
+    # otherwise indistinguishable from a failure importing torch.
+    print(f"[init] loading {args.model} (local_files_only={args.local_files_only})", flush=True)
+    config = AutoConfig.from_pretrained(args.model, local_files_only=args.local_files_only)
+    architectures = list(getattr(config, "architectures", None) or [])
+    if not architectures:
+        raise SystemExit(f"{args.model}: config declares no architecture to load")
+    model_class = getattr(transformers, architectures[0], None)
+    if model_class is None:
+        raise SystemExit(
+            f"{args.model} declares {architectures[0]}, which transformers "
+            f"{transformers.__version__} does not provide."
+        )
     processor = AutoImageProcessor.from_pretrained(
         args.model, local_files_only=args.local_files_only
     )
-    model = Mask2FormerForUniversalSegmentation.from_pretrained(
+    model = model_class.from_pretrained(
         args.model, local_files_only=args.local_files_only
     ).to(device).eval()
     sky_id = find_sky_label(model.config.id2label)
-    print(f"[init] {args.model}: sky = class {sky_id}, {len(rows)} frames", flush=True)
+    print(f"[init] {type(model).__name__}: sky = class {sky_id}, {len(rows)} frames", flush=True)
 
     mask_dir = args.output_dir / "masks"
     if args.save_masks:
