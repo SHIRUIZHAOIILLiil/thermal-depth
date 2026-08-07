@@ -103,16 +103,27 @@ YAML
 echo "=== 尺子 ==="; cat "$RULER"
 
 cd "$IRIS_REPO"
-[[ "${AUDIT_ONLY:-0}" == "1" ]] && AUDIT=(--audit-only) || AUDIT=()
+# common.sh 开了 set -euo pipefail，所以这里不能用 `cond && a || b`（条件为假时
+# 整个复合命令返回 1，直接把作业带走），也不能靠 `cmd; rc=$?` 接住失败
+# —— 一条线炸了要接着跑剩下的，才知道是四条全错还是只错一条。
+AUDIT=()
+if [[ "${AUDIT_ONLY:-0}" == "1" ]]; then AUDIT=(--audit-only); fi
 
 failed=0
 for entry in "${ENTRIES[@]}"; do
   IFS='|' read -r tag route pred <<< "$entry"
   echo; echo "=== [$tag] route=$route ==="
-  python tools/run_unified_ms2_evaluation.py --config "$RULER" \
-    --route "$route" --prediction-dir "$pred" --output-dir "$OUT_ROOT/$tag" "${AUDIT[@]}"
-  rc=$?
-  if [[ $rc -ne 0 ]]; then echo "!! [$tag] 退出码 $rc"; failed=1; continue; fi
+  # set -u 下空数组展开在旧 bash 里会报 unbound variable
+  if ! python tools/run_unified_ms2_evaluation.py --config "$RULER" \
+      --route "$route" --prediction-dir "$pred" --output-dir "$OUT_ROOT/$tag" \
+      ${AUDIT[@]+"${AUDIT[@]}"}; then
+    echo "!! [$tag] 失败"; failed=1; continue
+  fi
+  if [[ "${AUDIT_ONLY:-0}" == "1" ]]; then
+    # audit 查的是 manifest 与 GT，与路线无关，跑一条就够；而且它在建 adapter
+    # 之前就返回，下面的探针没有 output_adapter.json 可读
+    echo "  audit 与路线无关，其余三条跳过"; break
+  fi
   # §13.4 的教训：作业 COMPLETED 不等于开关生效。这两行是探针，不是日志。
   python - "$OUT_ROOT/$tag" <<'PROBE'
 import json, sys
