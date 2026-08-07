@@ -77,6 +77,11 @@ ARGS=(
   --eval-checkpoint "$CKPT"
   --val-stride "${VAL_STRIDE:-1}"
   --val-caption-mode "${CAPTION_MODE:-empty}"
+)
+# Iris Table 5's middle rungs: one fixed sentence for every frame. Quote it in
+# --export or the shell hands the job only its first word.
+[[ -n "${CAPTION_TEXT:-}" ]] && ARGS+=(--val-caption-text "$CAPTION_TEXT")
+ARGS+=(
   --num-inference-steps "${STEPS:-1}"
 )
 [[ -n "${VAL_MANIFEST:-}" ]] && ARGS+=(--val-manifest "$VAL_MANIFEST")

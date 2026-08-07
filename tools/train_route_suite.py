@@ -299,7 +299,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-every", type=int, default=1, help="Validate every N epochs.")
     parser.add_argument(
         "--val-caption-mode",
-        choices=("empty", "correct", "shuffled", "permuted"),
+        choices=("empty", "correct", "shuffled", "permuted", "fixed"),
         default="empty",
         help=(
             "shuffled: donor caption from half a set away (kilometres along the path). "
@@ -307,7 +307,20 @@ def parse_args() -> argparse.Namespace:
             "contaminated control: these drives double back, so a donor kilometres "
             "along the path can be metres away in space, and its caption still predicts "
             "the recipient's median GT depth at R^2 0.32 (MS2) / 0.46 (RGBDT500) versus "
-            "~-0.1 for a uniform permutation (probe_caption_scale_information.py)."
+            "~-0.1 for a uniform permutation (probe_caption_scale_information.py). "
+            "fixed: the one sentence in --val-caption-text, for every frame."
+        ),
+    )
+    parser.add_argument(
+        "--val-caption-text",
+        default=None,
+        help=(
+            "The sentence --val-caption-mode fixed feeds to every frame. Between an "
+            "empty prompt and a real caption sit the rungs of Iris Table 5 -- 'An "
+            "image', then a generic template -- and they are what separates text "
+            "costing us because of what it claims from text costing us because it is "
+            "there at all. Only the first reading leaves a caption rewrite anything "
+            "to win, so this decides whether regenerating a corpus is worth it."
         ),
     )
     parser.add_argument("--skip-val", action="store_true")
@@ -477,6 +490,12 @@ def validate_args(args: argparse.Namespace) -> None:
             "--num-inference-steps > 1 is an evaluation-only knob (--eval-checkpoint). "
             "Training runs one forward at --timestep."
         )
+    if args.val_caption_mode == "fixed" and not (args.val_caption_text or "").strip():
+        raise ValueError("--val-caption-mode fixed needs --val-caption-text")
+    if args.val_caption_text is not None and args.val_caption_mode != "fixed":
+        # Passing the text without the mode would score the real captions under a
+        # label that names a sentence never fed to the model.
+        raise ValueError("--val-caption-text only applies to --val-caption-mode fixed")
     if args.val_caption_mode in ("shuffled", "permuted") and args.eval_checkpoint is None:
         # The donor reassignment happens in run_evaluation, not in the per-epoch
         # run_validation, so a training run would silently score with each frame's
@@ -997,6 +1016,8 @@ def run_validation(
         image_tensor, _ = load_input_tensor(row, model.modality, args)
         if args.val_caption_mode == "empty":
             prompt = prompts["empty"]
+        elif args.val_caption_mode == "fixed":
+            prompt = prompts["fixed"]
         else:
             # 'shuffled' rows already carry the donor caption (see rotate_captions)
             prompt = model.encode_prompt(row["caption"])
@@ -1061,6 +1082,10 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
     )
 
     rotation = None
+    if args.val_caption_mode == "fixed":
+        # A COMPLETED job has told us nothing about whether a switch took effect,
+        # and this one is a string: print what every frame actually received.
+        print(f"[eval] fixed caption for all frames: {args.val_caption_text!r}", flush=True)
     if args.val_caption_mode == "shuffled":
         rotation = rotate_captions(val_rows)
         print(
@@ -1115,6 +1140,7 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
             "val_manifest": str(args.val_manifest),
             "val_stride": args.val_stride,
             "val_caption_mode": args.val_caption_mode,
+            "val_caption_text": args.val_caption_text,
             "caption_rotation": rotation,
             "num_inference_steps": args.num_inference_steps,
             "timestep": args.timestep if args.num_inference_steps == 1 else None,
@@ -1243,6 +1269,8 @@ def main() -> None:
 
     model = RouteModel(args, device, frozen_dtype)
     prompts = {"empty": model.encode_prompt("")}
+    if args.val_caption_mode == "fixed":
+        prompts["fixed"] = model.encode_prompt(args.val_caption_text)
     caption_rng = random.Random(args.seed + 424242)
 
     if args.eval_checkpoint is not None:
