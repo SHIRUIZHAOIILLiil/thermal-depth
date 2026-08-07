@@ -96,9 +96,14 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     pred_dir = Path(model["prediction_dir"]).resolve(); rows = []
     raw_global, aligned_global = PixelAccumulator(), PixelAccumulator()
     resolution_log = []; visualize_count = int(config.get("visualization_samples", 8))
+    # Whether the adapter had to touch the raw values decides if this route's number
+    # is comparable to its upstream one at all, so it cannot stay a silent detail.
+    adapter_diagnostics: dict[str, int] = {}
     for index, sample in enumerate(samples):
         raw = np.load(prediction_path(pred_dir, sample.sample_id), allow_pickle=False)
         adapted = adapter.adapt(raw); _, gt = load_ms2_gt(sample.thermal_gt_path, float(dataset["depth_scale"]))
+        for key, value in adapted.diagnostics.items():
+            if isinstance(value, int): adapter_diagnostics[key] = adapter_diagnostics.get(key, 0) + value
         valid = np.isfinite(gt) & (gt > float(evaluation["min_depth_m"])) & (gt < float(evaluation["max_depth_m"]))
         native = resize_dense_prediction(adapted.depth, tuple(gt.shape))
         metrics, aligned = evaluate_depth_pair(native, gt, valid, raw_is_metric=adapter.declaration.metric_scale_exists,
@@ -129,4 +134,5 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     write_json(output / "metrics" / "summary_by_condition.json", summarize_by_condition(rows))
     write_json(output / "metrics" / "bootstrap_comparison.json", {"status": "single-run; use paired comparison for ablations"})
     write_json(output / "logs" / "resolutions.json", resolution_log)
+    write_json(output / "logs" / "adapter_diagnostics.json", {"totals": adapter_diagnostics, "sample_count": len(rows)})
     return {"status": "complete", "sample_count": len(rows), "output_dir": str(output), "summary": summary}

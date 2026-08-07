@@ -50,7 +50,7 @@ class OutputAdapter:
         return asdict(self.declaration)
 
 
-class MetricDepthAdapter(OutputAdapter):
+class IdentityDepthAdapter(OutputAdapter):
     def adapt(self, raw: np.ndarray) -> AdaptedPrediction:
         depth = self._single_channel(raw)
         bad = ~np.isfinite(depth)
@@ -62,6 +62,27 @@ class MetricDepthAdapter(OutputAdapter):
         if self.clip_max is not None: depth = np.minimum(depth, float(self.clip_max))
         return AdaptedPrediction(depth.astype(np.float32), self.declaration, {
             "nonpositive_clipped": int((before <= 0).sum()), "raw_shape": list(np.asarray(raw).shape),
+        })
+
+
+class RelativeDepthAdapter(OutputAdapter):
+    """Depth-oriented output on an arbitrary affine scale (MiDaS/DPT-style).
+
+    Sign and scale are meaningless until the per-image scale+shift fit against GT
+    depth, which is how the upstream protocol evaluates this family, so values pass
+    through untouched -- clamping them positive first would discard the negative
+    side of the network's range. ``nonpositive_raw`` records whether that side is
+    actually populated; the affine alignment clamps its own output.
+    """
+
+    def adapt(self, raw: np.ndarray) -> AdaptedPrediction:
+        value = self._single_channel(raw)
+        if not np.isfinite(value).all():
+            raise ValueError(f"{self.declaration.route}: raw output contains NaN/Inf")
+        if self.clip_min is not None or self.clip_max is not None:
+            raise ValueError(f"{self.declaration.route}: depth clips are meaningless before affine alignment")
+        return AdaptedPrediction(value, self.declaration, {
+            "nonpositive_raw": int((value <= 0).sum()), "raw_shape": list(np.asarray(raw).shape),
         })
 
 
@@ -79,12 +100,29 @@ class InverseDepthAdapter(OutputAdapter):
         })
 
 
+RELATIVE_DEPTH_CONVERSION = "identity; affine alignment supplies sign and scale"
+_ADAPTER_BY_CONVERSION = {
+    "identity": IdentityDepthAdapter,
+    RELATIVE_DEPTH_CONVERSION: RelativeDepthAdapter,
+    "depth=1/max(disparity,epsilon)": InverseDepthAdapter,
+}
+
+
 def create_output_adapter(route: str, **kwargs) -> OutputAdapter:
-    """Create one of the four registered route adapters.
+    """Create one of the registered route adapters.
 
     Iris/Lotus-family native outputs are treated as relative inverse depth, so
     raw metric errors are unavailable. SP-DiT restores metric depth and is the
     only default route with native metric scale.
+
+    AnyThermal is relative like the Lotus family but depth-oriented: its released
+    MiDaS/DPT path is evaluated upstream by fitting scale+shift of the raw output
+    against GT depth (BridgeMultiSpectralDepth, our ``--align ssi``), never against
+    GT disparity, and the fit runs on unclamped network output. Inverting or
+    clamping it here would contradict that protocol, so it shares neither the Lotus
+    inversion nor SP-DiT's positivity clamp despite matching each on one field --
+    which is why the class is chosen by the declared conversion rather than by
+    ``metric_scale_exists``.
     """
     key = route.strip().lower().replace("_", "-")
     declarations = {
@@ -94,9 +132,10 @@ def create_output_adapter(route: str, **kwargs) -> OutputAdapter:
         "adapter-unet": AdapterDeclaration("adapter+u-net", "lotus_relative_disparity", "larger-is-nearer", False, "depth=1/max(disparity,epsilon)", "positive epsilon; optional configured depth clip"),
         "sp-dit": AdapterDeclaration("sp-dit", "metric_depth_m", "larger-is-farther", True, "identity", "positive epsilon; optional configured depth clip"),
         "spdit": AdapterDeclaration("sp-dit", "metric_depth_m", "larger-is-farther", True, "identity", "positive epsilon; optional configured depth clip"),
+        "anythermal": AdapterDeclaration("anythermal", "relative_depth_affine", "larger-is-farther", False, RELATIVE_DEPTH_CONVERSION, "none before alignment; alignment clamps to positive epsilon"),
+        "anythermal-midas": AdapterDeclaration("anythermal", "relative_depth_affine", "larger-is-farther", False, RELATIVE_DEPTH_CONVERSION, "none before alignment; alignment clamps to positive epsilon"),
     }
     if key not in declarations:
-        raise KeyError(f"Unknown route {route!r}; expected Iris/Lotus, Adapter-only, Adapter+U-Net, or SP-DiT")
+        raise KeyError(f"Unknown route {route!r}; expected Iris/Lotus, Adapter-only, Adapter+U-Net, SP-DiT, or AnyThermal")
     declaration = declarations[key]
-    cls = MetricDepthAdapter if declaration.metric_scale_exists else InverseDepthAdapter
-    return cls(declaration, **kwargs)
+    return _ADAPTER_BY_CONVERSION[declaration.conversion_to_positive_depth](declaration, **kwargs)

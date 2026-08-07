@@ -67,10 +67,28 @@ class UnifiedEvaluatorTests(unittest.TestCase):
         self.assertIsNone(metrics["rmse_m"]); self.assertIsNotNone(metrics["aligned_rmse_m"])
 
     def test_registered_routes_have_explicit_declarations(self):
-        for route in ("iris-lotus", "adapter-only", "adapter+u-net", "sp-dit"):
+        for route in ("iris-lotus", "adapter-only", "adapter+u-net", "sp-dit", "anythermal", "anythermal_midas"):
             declaration = create_output_adapter(route).metadata()
             for key in ("raw_representation_type", "orientation", "metric_scale_exists", "conversion_to_positive_depth", "clipping_rules"):
                 self.assertIn(key, declaration)
+
+    def test_anythermal_is_relative_but_neither_inverted_nor_clamped(self):
+        """Upstream fits scale+shift on unclamped output, so both would break the protocol."""
+        adapter = create_output_adapter("anythermal")
+        raw = np.asarray([[-1.0, 2.0], [4.0, 8.0]], np.float32)
+        adapted = adapter.adapt(raw)
+        np.testing.assert_allclose(adapted.depth, raw)
+        self.assertEqual(adapted.diagnostics["nonpositive_raw"], 1)
+        self.assertFalse(adapted.declaration.metric_scale_exists)
+        self.assertEqual(adapted.declaration.orientation, "larger-is-farther")
+        # SP-DiT shares the identity conversion yet must clamp; Lotus shares
+        # metric_scale_exists=False yet must invert. AnyThermal does neither.
+        self.assertGreater(create_output_adapter("sp-dit").adapt(raw).depth.min(), 0.0)
+        np.testing.assert_allclose(create_output_adapter("iris-lotus").adapt(raw).depth[0, 1], 0.5)
+
+    def test_depth_clips_are_rejected_before_alignment(self):
+        with self.assertRaisesRegex(ValueError, "meaningless before affine alignment"):
+            create_output_adapter("anythermal", clip_max=80.0).adapt(np.ones((2, 2), np.float32))
 
     def test_bootstrap_and_paired_direction(self):
         ci = bootstrap_mean_ci([1.0, 2.0, 3.0], iterations=200, seed=1)
