@@ -38,9 +38,14 @@ class EndToEndPipelineTest(unittest.TestCase):
             for relative in ("config_resolved.yaml", "run_metadata.json", "checkpoint_info.json",
                              "metrics/per_image.csv", "metrics/summary.json", "metrics/summary_by_condition.json",
                              "metrics/bootstrap_comparison.json", "logs/gt_audit.json", "logs/resolutions.json",
-                             "visualizations/sample_0/comparison_panel.png"):
+                             "logs/adapter_diagnostics.json", "visualizations/sample_0/comparison_panel.png"):
                 self.assertTrue((output / relative).is_file(), relative)
-            summary = json.loads((output / "metrics" / "summary.json").read_text())
+            diagnostics = json.loads((output / "logs" / "adapter_diagnostics.json").read_text(encoding="utf-8"))
+            self.assertEqual(diagnostics["sample_count"], 8)
+            self.assertEqual(diagnostics["totals"]["nonpositive_clipped"], 0)
+            # write_json emits UTF-8; the default codepage mangles any non-ASCII
+            # character the temp path drags in, which is a decode error here.
+            summary = json.loads((output / "metrics" / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["sample_count"], 8)
             self.assertEqual(summary["global_pixel"]["raw_metric"]["delta1"], 1.0)
 
