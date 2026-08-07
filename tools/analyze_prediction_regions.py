@@ -60,8 +60,10 @@ def parse_args() -> argparse.Namespace:
         "--predictions",
         action="append",
         required=True,
-        metavar="DIR[:LABEL]",
-        help="Raw *.npy prediction directory, optionally labelled. Repeat to compare models.",
+        metavar="DIR[:LABEL[:ALIGN]]",
+        help="Raw *.npy prediction directory, optionally labelled. Repeat to compare models. "
+        "A third field overrides --align for that directory alone, which is how a "
+        "disparity-space route and a depth-space one enter the same paired table.",
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
@@ -74,7 +76,8 @@ def parse_args() -> argparse.Namespace:
         "--align",
         default="auto",
         choices=("auto", *ALIGN_MODES),
-        help="auto = look --route up in the official table. Applies to every prediction dir.",
+        help="auto = look --route up in the official table. The default for every "
+        "prediction dir that does not name its own.",
     )
     parser.add_argument(
         "--gt-view",
@@ -98,19 +101,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def parse_prediction_sources(values: list[str]) -> list[tuple[str, Path]]:
+def parse_prediction_sources(values: list[str], default_align: str) -> list[tuple[str, Path, str]]:
     sources = []
     for value in values:
+        rest, align = value, default_align
+        # DIR:LABEL:ALIGN -- the alignment names are a closed set, so a trailing
+        # field that is one of them can only have been meant as the alignment
+        head, _, tail = value.rpartition(":")
+        if tail in ALIGN_MODES and ":" in head[2:]:
+            rest, align = head, tail
         # a Windows drive letter is not a label separator
-        if ":" in value[2:]:
-            head, _, label = value.rpartition(":")
-            sources.append((label, Path(head)))
+        if ":" in rest[2:]:
+            head, _, label = rest.rpartition(":")
+            sources.append((label, Path(head), align))
         else:
-            sources.append((Path(value).name, Path(value)))
-    labels = [label for label, _ in sources]
+            sources.append((Path(rest).name, Path(rest), align))
+    labels = [label for label, _, _ in sources]
     if len(set(labels)) != len(labels):
         raise SystemExit(f"Prediction labels must be unique, got {labels}")
-    for label, directory in sources:
+    for label, directory, _ in sources:
         if not directory.is_dir():
             raise SystemExit(f"{label}: not a directory: {directory}")
     return sources
@@ -213,18 +222,24 @@ def main() -> None:
     if args.align == "auto":
         if args.route is None:
             raise SystemExit("--align auto needs --route to look the alignment up.")
-        align = ROUTE_DEFAULT_ALIGN[args.route]
+        default_align = ROUTE_DEFAULT_ALIGN[args.route]
     else:
-        align = args.align
+        default_align = args.align
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    sources = parse_prediction_sources(args.predictions)
+    sources = parse_prediction_sources(args.predictions, default_align)
     rows = read_rows(args.manifest, args.data_root, args.gt_view, args.stride, args.limit)
-    print(f"[data] {len(rows)} frames, GT view {args.gt_view}, align {align}", flush=True)
+    print(f"[data] {len(rows)} frames, GT view {args.gt_view}", flush=True)
+    if len({align for _, _, align in sources}) > 1:
+        # Everything downstream of alignment is shared, so the table stays readable
+        # only if the one step that is not shared is stated where the numbers are.
+        print("[align] mixed -- each model removes its own scale/shift ambiguity:", flush=True)
+        for label, _, align in sources:
+            print(f"        {label}: {align}", flush=True)
 
     results = {}
-    for label, directory in sources:
-        print(f"[scan] {label} <- {directory}", flush=True)
+    for label, directory, align in sources:
+        print(f"[scan] {label} <- {directory} (align {align})", flush=True)
         results[label] = score_predictions(label, directory, rows, align, args)
         print(
             f"       official AbsRel {results[label]['official_abs_rel']:.4f} "
@@ -245,11 +260,11 @@ def main() -> None:
 
     report: dict = {
         "strata": {},
-        "predictions": {label: str(directory) for label, directory in sources},
+        "predictions": {label: str(directory) for label, directory, _ in sources},
         "manifest": str(args.manifest),
         "frames": len(rows),
         "gt_view": args.gt_view,
-        "align": align,
+        "align": {label: align for label, _, align in sources},
         "official_abs_rel": {name: results[name]["official_abs_rel"] for name in names},
     }
     for stratum in strata:
