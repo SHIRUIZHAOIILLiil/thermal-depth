@@ -59,6 +59,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-masks", action="store_true",
                         help="Write masks/<id>.png (0/255). Off by default so a "
                              "quality probe does not litter scratch with inodes.")
+    parser.add_argument("--save-labels", action="store_true",
+                        help="Also write labels/<id>.png -- the FULL class map as "
+                             "uint8 class ids, not just sky. Needed to ask where a "
+                             "caption's effect lands: the caption names objects, and "
+                             "a whole-image mean cannot see a correction confined to "
+                             "one of them. id2label is recorded in the report.")
     return parser.parse_args()
 
 
@@ -129,6 +135,9 @@ def main() -> None:
     mask_dir = args.output_dir / "masks"
     if args.save_masks:
         mask_dir.mkdir(exist_ok=True)
+    label_dir = args.output_dir / "labels"
+    if args.save_labels:
+        label_dir.mkdir(exist_ok=True)
 
     records: list[dict] = []
     previews: list[tuple[np.ndarray, np.ndarray]] = []
@@ -168,6 +177,10 @@ def main() -> None:
         })
         if args.save_masks:
             Image.fromarray((sky * 255).astype(np.uint8)).save(mask_dir / f"{row['id']}.png")
+        if args.save_labels:
+            if labels.max() > 255:
+                raise SystemExit(f"{len(model.config.id2label)} classes will not fit in uint8")
+            Image.fromarray(labels.astype(np.uint8)).save(label_dir / f"{row['id']}.png")
         if len(previews) < args.preview_frames and index % max(1, len(rows) // max(args.preview_frames, 1)) == 0:
             previews.append((np.asarray(image), sky))
         if (index + 1) % 25 == 0:
@@ -197,6 +210,7 @@ def main() -> None:
 
     (args.output_dir / "sky_mask_report.json").write_text(
         json.dumps({"model": args.model, "sky_class": sky_id, "frames": len(records),
+                    "id2label": {int(k): v for k, v in model.config.id2label.items()},
                     "manifest": str(args.manifest), "verdict": verdict,
                     "summary": {"sky_fraction_mean": float(fractions.mean()),
                                 "sky_with_gt_fraction_mean": float(with_gt.mean()),
