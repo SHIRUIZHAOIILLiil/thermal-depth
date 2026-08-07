@@ -23,7 +23,12 @@
 #   MANIFEST   考卷；默认独立 test 集 16-08-46
 #   FRAME_IDS  帧 id，空格分隔；不设则按 FRAMES 均匀抽
 #   FRAMES     默认 5
-#   STYLE      official（默认）| shared | both
+#   STYLE      both（默认）| official | shared
+#              ⚠️ official 风格下每一栏**各自** min-max 归一化，所以六个模型的
+#              颜色互相不可比 —— 同样的橙色在不同栏里是不同的深度。横向比较要看
+#              shared（强制共用一个归一化区间）。official 那张只用来对齐论文观感。
+#   PANEL_W    每栏宽度，默认 640（= 源图原宽）。调大只是渲染更大，不会增加细节。
+#   GT_DILATE  稀疏 GT 的膨胀窗口，默认 3；幻灯上看不清就调 5
 #   CAPTION    推理时喂的文本：empty（默认）| correct
 #
 # ── 用法 ────────────────────────────────────────────────────────────
@@ -51,7 +56,9 @@ ARGS=(
   --output-dir "$OUT"
   --val-manifest "$MANIFEST"
   --ms2-root "$IRIS_MS2_ROOT"
-  --style "${STYLE:-official}"
+  --style "${STYLE:-both}"
+  --panel-width "${PANEL_W:-640}"
+  --gt-dilate "${GT_DILATE:-3}"
   --caption-mode "${CAPTION:-empty}"
 )
 if [[ -n "${FRAME_IDS:-}" ]]; then
