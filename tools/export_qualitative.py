@@ -206,7 +206,21 @@ def main() -> None:
     rows = read_manifest(args.val_manifest, args.ms2_root, modality, split=None, check_files=False)
     if args.frame_ids:
         wanted = set(args.frame_ids)
+        available = {r["id"] for r in rows}
         rows = [r for r in rows if r["id"] in wanted]
+        if not rows:
+            # Otherwise both models load and run before an empty panel list
+            # crashes the canvas -- a GPU job spent to learn the ids were wrong.
+            # The usual cause is passing the numeric suffix: manifest ids carry
+            # the sequence, e.g. 2021-08-13-16-08-46_000036.
+            sample = sorted(available)[:2]
+            raise SystemExit(
+                f"None of --frame-ids {sorted(wanted)} are in {args.val_manifest.name}. "
+                f"Ids look like {sample} -- pass them in full, not just the number."
+            )
+        missing = sorted(wanted - available)
+        if missing:
+            print(f"[data] not in this manifest, skipped: {missing}", flush=True)
     else:
         step = max(1, len(rows) // (args.frames + 1))
         rows = rows[step::step][: args.frames]
