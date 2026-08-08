@@ -46,6 +46,9 @@
 #   SKY_W            sky loss 权重（Jasmine 附录 C.3）。不设＝关闭。要配 SKY_MASKS
 #   SKY_MASKS        天空掩码目录（tools/build_sky_masks.py --save-masks 出的）
 #   SKY_MODE         l1（默认，与 Jasmine 同）| hinge（只罚判得过近的）
+#   PSEUDO_DIR       calibrated_pseudo_depth 目录（build_anythermal_pseudo_gt.py 产出）
+#   PSEUDO_W         补全区权重；真实 lidar 恒为 1.0。不设＝关闭，走原基线代码路径
+#   PSEUDO_RANGE     drop（默认，超量程不给目标）| clip（钉到边界＝断言远处都在那里）
 #   RUN_TAG          覆盖输出目录名
 #
 # ── 用法 ────────────────────────────────────────────────────────────
@@ -155,6 +158,16 @@ if [[ -n "${SKY_W:-}" ]]; then
   : "${SKY_MASKS:?SKY_W 需要配 SKY_MASKS（掩码目录）}"
   [[ -d "$SKY_MASKS" ]] || { echo "找不到掩码目录: $SKY_MASKS"; exit 1; }
   ARGS+=(--sky-loss-weight "$SKY_W" --sky-mask-dir "$SKY_MASKS" --sky-loss-mode "${SKY_MODE:-l1}")
+fi
+
+# Dense completion: lidar leaves ~three quarters of a frame with no target at all,
+# and calibrated pseudo depth stands in exactly there. Real returns always win where
+# they exist, and the alignment is still fitted on them alone.
+if [[ -n "${PSEUDO_W:-}" ]]; then
+  : "${PSEUDO_DIR:?PSEUDO_W 需要配 PSEUDO_DIR（calibrated_pseudo_depth 目录）}"
+  [[ -d "$PSEUDO_DIR" ]] || { echo "找不到 pseudo GT 目录: $PSEUDO_DIR"; exit 1; }
+  ARGS+=(--pseudo-gt-dir "$PSEUDO_DIR" --pseudo-weight "$PSEUDO_W"
+         --pseudo-range-mode "${PSEUDO_RANGE:-drop}")
 fi
 
 # CAPTION_MODE 优先于 CAPTION=1。val 跟着 train 走 —— 否则会用它没训过的输入模式挑 best。

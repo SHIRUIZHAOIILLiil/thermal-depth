@@ -260,6 +260,63 @@ def masked_ssi_l1(prediction, gt_disparity, valid_mask):
     return loss, abs_rel, count
 
 
+def masked_ssi_l1_dense_completion(
+    prediction,
+    gt_disparity,
+    real_gt_mask,
+    pseudo_disparity,
+    pseudo_mask,
+    pseudo_weight,
+):
+    """`masked_ssi_l1` extended past the pixels lidar reached, under one alignment.
+
+    Lidar leaves roughly three quarters of a frame without a number, and those
+    pixels get exactly zero gradient here and exactly zero weight in the metric.
+    Pseudo depth supplies a target there; this scores both regions against the
+    same prediction.
+
+    The affine is fitted on the real lidar pixels alone. Refitting on the union
+    would let the pseudo region -- the larger part of the image -- outvote the
+    lidar the alignment exists to be anchored to, and fitting each region
+    separately would let the two be satisfied at different implicit scales,
+    which anchors nothing at all. So one fit, taken where the measurements are,
+    and both residuals read under it.
+
+    `abs_rel` stays a real-lidar quantity so the training curve remains
+    comparable with every run that had no pseudo GT.
+    """
+    mask = real_gt_mask > 0.5
+    count = int(mask.sum())
+    if count < MIN_VALID_PIXELS:
+        raise RuntimeError(f"GT valid pixels {count} below minimum {MIN_VALID_PIXELS}.")
+    pred = prediction[mask]
+    gt = gt_disparity[mask]
+    with torch.no_grad():
+        ones = torch.ones_like(pred)
+        design = torch.stack([pred, ones], dim=1)
+        solution = torch.linalg.lstsq(design, gt[:, None]).solution.squeeze(1)
+        scale, shift = solution[0], solution[1]
+        if not bool(torch.isfinite(scale)) or not bool(torch.isfinite(shift)):
+            raise RuntimeError("Non-finite scale/shift in GT alignment.")
+    real_l1 = (scale * pred + shift - gt).abs().mean()
+
+    pseudo = pseudo_mask > 0.5
+    pseudo_count = int(pseudo.sum())
+    if pseudo_count:
+        aligned_pseudo = scale * prediction[pseudo] + shift
+        pseudo_l1 = (aligned_pseudo - pseudo_disparity[pseudo]).abs().mean()
+    else:
+        # Tunnels and heavy canopy can leave a frame with nothing to complete.
+        pseudo_l1 = torch.zeros((), device=prediction.device, dtype=real_l1.dtype)
+    loss = real_l1 + pseudo_weight * pseudo_l1
+
+    with torch.no_grad():
+        gt_depth = 1.0 / gt.clamp_min(1e-6)
+        pred_depth = 1.0 / (scale * pred + shift).detach().clamp_min(1e-6)
+        abs_rel = ((pred_depth - gt_depth).abs() / gt_depth).mean()
+    return loss, real_l1, pseudo_l1, abs_rel, count, pseudo_count
+
+
 def ssi_grad_matching(prediction, gt_disparity, valid_mask, scales: int = 4):
     """MiDaS's multi-scale gradient matching term, the companion to the data term.
 

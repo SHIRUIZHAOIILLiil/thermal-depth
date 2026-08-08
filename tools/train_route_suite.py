@@ -69,6 +69,7 @@ from models.anythermal_lotus_model import extract_anythermal_feature_pyramid  # 
 from train_ms2_joint_gt_v3 import (  # noqa: E402
     load_gt_disparity,
     masked_ssi_l1,
+    masked_ssi_l1_dense_completion,
     ssi_grad_matching,
     ssi_sky_loss,
     decode_to_disparity,
@@ -323,6 +324,31 @@ def parse_args() -> argparse.Namespace:
             "to win, so this decides whether regenerating a corpus is worth it."
         ),
     )
+    parser.add_argument(
+        "--pseudo-gt-dir",
+        type=Path,
+        default=None,
+        help="calibrated_pseudo_depth/ from build_anythermal_pseudo_gt.py: dense depth "
+             "in metres, standing in only where lidar returned nothing.",
+    )
+    parser.add_argument(
+        "--pseudo-weight",
+        type=float,
+        default=0.0,
+        help="Weight on the completed region; real lidar always weighs 1.0. At 0 the "
+             "run takes the same code path as before this flag existed.",
+    )
+    parser.add_argument("--pseudo-min-depth", type=float, default=None, help="Defaults to --gt-min-depth.")
+    parser.add_argument("--pseudo-max-depth", type=float, default=None, help="Defaults to --gt-max-depth.")
+    parser.add_argument(
+        "--pseudo-range-mode",
+        choices=("drop", "clip"),
+        default="drop",
+        help="What to do past the range. drop: those pixels carry no target. clip: pin "
+             "them to the bound, which asserts everything beyond it sits exactly there "
+             "-- a distance prior the sky experiment is meant to test for, not assume. "
+             "Measured, 0.12%% of masked sky exceeds 80 m, so drop costs almost nothing.",
+    )
     parser.add_argument("--skip-val", action="store_true")
 
     parser.add_argument(
@@ -490,6 +516,15 @@ def validate_args(args: argparse.Namespace) -> None:
             "--num-inference-steps > 1 is an evaluation-only knob (--eval-checkpoint). "
             "Training runs one forward at --timestep."
         )
+    if args.pseudo_weight > 0 and args.pseudo_gt_dir is None:
+        raise ValueError("--pseudo-weight needs --pseudo-gt-dir")
+    if args.pseudo_gt_dir is not None and args.pseudo_weight <= 0:
+        # Otherwise the arm reads as completed supervision and trains as the baseline.
+        raise ValueError("--pseudo-gt-dir was given but --pseudo-weight is 0")
+    if args.pseudo_weight > 0 and args.loss_exclude_top_rows > 0:
+        # Excluded rows stop being real GT and would be handed to pseudo depth, so the
+        # two switches would silently overwrite each other's region.
+        raise ValueError("--pseudo-weight and --loss-exclude-top-rows both claim the top rows")
     if args.val_caption_mode == "fixed" and not (args.val_caption_text or "").strip():
         raise ValueError("--val-caption-mode fixed needs --val-caption-text")
     if args.val_caption_text is not None and args.val_caption_mode != "fixed":
@@ -692,6 +727,28 @@ def load_sample(row: dict, modality: str, args: argparse.Namespace):
             # tunnels, canopy, tall buildings), so a missing file is not an error
             # -- but it must not silently become "sky everywhere" either.
             diagnostics["sky_pixels"] = 0
+    pseudo_disparity = pseudo_mask = None
+    if getattr(args, "pseudo_gt_dir", None) is not None and args.pseudo_weight > 0:
+        path = args.pseudo_gt_dir / f"{row['id']}.npy"
+        if not path.is_file():
+            # A missing file would quietly turn this arm back into the baseline.
+            raise FileNotFoundError(f"No pseudo depth for {row['id']}: {path}")
+        depth = np.load(path, allow_pickle=False).astype(np.float32)
+        low = args.pseudo_min_depth if args.pseudo_min_depth is not None else args.gt_min_depth
+        high = args.pseudo_max_depth if args.pseudo_max_depth is not None else args.gt_max_depth
+        usable = np.isfinite(depth) & (depth > low)
+        if args.pseudo_range_mode == "clip":
+            depth = np.clip(depth, low, high)
+        else:
+            usable &= depth < high
+        # Where lidar spoke, lidar wins: completion only fills what it left empty.
+        keep = usable & (valid_mask[0].numpy() < 0.5)
+        filled = np.zeros_like(depth)
+        filled[keep] = 1.0 / depth[keep]
+        pseudo_disparity = torch.from_numpy(filled)[None]
+        pseudo_mask = torch.from_numpy(keep.astype(np.float32))[None]
+        diagnostics["pseudo_pixels"] = int(keep.sum())
+        diagnostics["pseudo_fraction"] = float(keep.mean())
     rows_out = int(getattr(args, "loss_exclude_top_rows", 0))
     if rows_out > 0:
         # Only the training loss loses these rows. run_validation reads the GT
@@ -701,7 +758,7 @@ def load_sample(row: dict, modality: str, args: argparse.Namespace):
         valid_mask[..., :rows_out, :] = 0.0
         diagnostics["gt_pixels_dropped_top_rows"] = dropped
         diagnostics["gt_valid_pixels_after_exclusion"] = int(valid_mask.sum())
-    return tensor, gt_disparity, valid_mask, sky_mask, diagnostics
+    return tensor, gt_disparity, valid_mask, sky_mask, pseudo_disparity, pseudo_mask, diagnostics
 
 
 # --------------------------------------------------------------------------- #
@@ -1310,6 +1367,18 @@ def main() -> None:
     parameter_groups = []
     if model.trains_unet:
         parameter_groups.append({"params": model.unet.parameters(), "lr": args.unet_learning_rate})
+    if args.pseudo_weight > 0:
+        # A COMPLETED job says nothing about whether a switch took effect, and this one
+        # is a directory: read a few frames and report what the loss will actually see.
+        sampled = [load_sample(row, modality, args)[-1]
+                   for row in train_rows[:: max(1, len(train_rows) // 10)][:10]]
+        share = sum(d["pseudo_fraction"] for d in sampled) / max(1, len(sampled))
+        real = sum(d["gt_valid_pixels"] for d in sampled) / max(1, len(sampled))
+        print(f"[data] dense completion on: weight {args.pseudo_weight}, range mode "
+              f"{args.pseudo_range_mode}, dir {args.pseudo_gt_dir}\n"
+              f"[data] {len(sampled)}-frame probe: pseudo covers {share * 100:.1f}% of pixels, "
+              f"real lidar {real:.0f} px/frame", flush=True)
+
     if model.trains_adapter:
         parameter_groups.append({"params": model.adapter.parameters(), "lr": args.adapter_learning_rate})
     optimizer = torch.optim.AdamW(parameter_groups, weight_decay=args.weight_decay)
@@ -1335,7 +1404,17 @@ def main() -> None:
     frozen_config = {
         "format": CHECKPOINT_FORMAT,
         "route": args.route,
-        "objective": "pure masked SSI-L1 vs LiDAR disparity; no teacher of any kind",
+        "objective": (
+            "masked SSI-L1 vs LiDAR disparity, extended to the pixels lidar missed by "
+            "offline calibrated pseudo depth under the lidar-fitted alignment"
+            if args.pseudo_weight > 0
+            else "pure masked SSI-L1 vs LiDAR disparity; no teacher of any kind"
+        ),
+        "pseudo_gt_dir": str(args.pseudo_gt_dir) if args.pseudo_gt_dir else None,
+        "pseudo_weight": args.pseudo_weight,
+        "pseudo_range_mode": args.pseudo_range_mode,
+        "pseudo_min_depth": args.pseudo_min_depth,
+        "pseudo_max_depth": args.pseudo_max_depth,
         "loss_exclude_top_rows": args.loss_exclude_top_rows,
         "caption_permutation": caption_permutation,
         "caption_rank_weight": args.caption_rank_weight,
@@ -1408,7 +1487,7 @@ def main() -> None:
         random.Random(args.seed + epoch).shuffle(permutation)
         epoch_started = time.time()
         running = {"gt_ssi_l1": 0.0, "gt_abs_rel": 0.0, "grad_match": 0.0,
-                   "sky": 0.0, "sky_pixels": 0.0,
+                   "sky": 0.0, "sky_pixels": 0.0, "pseudo": 0.0, "pseudo_pixels": 0.0,
                    "rank": 0.0, "rank_correct": 0.0, "rank_wrong": 0.0,
                    "rank_empty": 0.0}
         # The epoch-cumulative mean stops moving once a few thousand samples are
@@ -1420,7 +1499,8 @@ def main() -> None:
 
         for position, index in enumerate(permutation):
             row = train_rows[index]
-            image_tensor, gt_disparity, valid_mask, sky_mask, _ = load_sample(row, modality, args)
+            (image_tensor, gt_disparity, valid_mask, sky_mask,
+             pseudo_disparity, pseudo_mask, _) = load_sample(row, modality, args)
             gt_disparity = gt_disparity.to(device)
             valid_mask = valid_mask.to(device)
             if sky_mask is not None:
@@ -1440,7 +1520,17 @@ def main() -> None:
                 prediction = F.interpolate(
                     prediction[None, None], gt_disparity.shape[-2:], mode="bilinear", align_corners=False
                 )[0, 0]
-            gt_loss, gt_abs_rel, _ = masked_ssi_l1(prediction[None], gt_disparity, valid_mask)
+            # Dispatched, not degenerated: at pseudo_weight 0 this is the same call the
+            # sparse-GT baseline has always made, so that arm needs no rerun to compare.
+            pseudo_term, pseudo_px = 0.0, 0
+            if pseudo_mask is None:
+                gt_loss, gt_abs_rel, _ = masked_ssi_l1(prediction[None], gt_disparity, valid_mask)
+            else:
+                gt_loss, _, pseudo_l1, gt_abs_rel, _, pseudo_px = masked_ssi_l1_dense_completion(
+                    prediction[None], gt_disparity, valid_mask,
+                    pseudo_disparity.to(device), pseudo_mask.to(device), args.pseudo_weight,
+                )
+                pseudo_term = float(pseudo_l1.detach())
             loss = args.gt_loss_weight * gt_loss
             grad_term = 0.0
             if args.grad_loss_weight > 0:
@@ -1512,6 +1602,8 @@ def main() -> None:
             running["rank_empty"] += rank_empty
             running["sky"] += sky_term
             running["sky_pixels"] += sky_pixels
+            running["pseudo"] += pseudo_term
+            running["pseudo_pixels"] += pseudo_px
             window.append(step_loss)
             seen += 1
 
@@ -1548,6 +1640,14 @@ def main() -> None:
                             f"sky {running['sky'] / max(1, seen):.5f} "
                             f"skypx {running['sky_pixels'] / max(1, seen):.0f} "
                             if args.sky_loss_weight > 0
+                            else ""
+                        )
+                        + (
+                            # The term and the pixels it covered: completion averaging
+                            # over ~0 pixels is off however the weight reads.
+                            f"pseudo {running['pseudo'] / max(1, seen):.5f} "
+                            f"psdpx {running['pseudo_pixels'] / max(1, seen):.0f} "
+                            if args.pseudo_weight > 0
                             else ""
                         )
                         + (
