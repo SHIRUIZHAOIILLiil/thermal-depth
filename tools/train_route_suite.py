@@ -1707,6 +1707,10 @@ def main() -> None:
             "train_rank_empty": running["rank_empty"] / max(1, seen),
             "train_sky": running["sky"] / max(1, seen),
             "train_sky_pixels": running["sky_pixels"] / max(1, seen),
+            # A twenty-hour run has to be answerable afterwards from its own record,
+            # not from whether a step log happened to land on the right interval.
+            "train_pseudo": running["pseudo"] / max(1, seen),
+            "train_pseudo_pixels": running["pseudo_pixels"] / max(1, seen),
             "epoch_seconds": time.time() - epoch_started,
         }
 
