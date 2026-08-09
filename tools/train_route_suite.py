@@ -135,7 +135,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-updates", type=int, default=200)
     parser.add_argument("--min-lr-ratio", type=float, default=0.05)
 
-    parser.add_argument("--gt-loss-weight", type=float, default=5.0)
+    parser.add_argument(
+        "--gt-loss-weight",
+        type=float,
+        default=5.0,
+        help=(
+            "Inherited from the three-term joint objective, where it set the GT "
+            "term's share against two distillation regularisers; an overfit-32 sweep "
+            "found 0.5/2.0/5.0 endpoint-equivalent and took 5.0 on a hair "
+            "(LOTUS_LINE_V2_ROUTE_AND_CAPTION_FREEZE_20260705.md:99). This objective "
+            "has one data term, so here it is only a 5x learning-rate scale -- but "
+            "--sky-loss-weight, --pseudo-weight and --caption-rank-weight are added "
+            "OUTSIDE it, which quietly makes 5.0 the denominator of every one of "
+            "them. Changing it would break comparability with every published run."
+        ),
+    )
     parser.add_argument(
         "--grad-loss-weight",
         type=float,
@@ -161,7 +175,12 @@ def parse_args() -> argparse.Namespace:
             "AbsRel cannot see the difference. This term is the constraint that "
             "region otherwise lacks. Needs --sky-mask-dir. Calibrate it against the "
             "two terms' GRADIENT magnitudes, not their loss values -- that mistake "
-            "is what sank the gradient-matching arm."
+            "is what sank the gradient-matching arm. "
+            "NOTE this multiplies the RAW sky term while the data term carries "
+            "--gt-loss-weight (5.0), so 0.5 here is a TENTH of the data term, not a "
+            "half. Both terms average over their own region too, so a sky pixel at "
+            "0.5 pulls 0.56x as hard as a supervised one (7,258 vs 40,363 px); "
+            "parity would be about 0.9."
         ),
     )
     parser.add_argument(
@@ -335,8 +354,13 @@ def parse_args() -> argparse.Namespace:
         "--pseudo-weight",
         type=float,
         default=0.0,
-        help="Weight on the completed region; real lidar always weighs 1.0. At 0 the "
-             "run takes the same code path as before this flag existed.",
+        help="Weight on the completed region, relative to the real-lidar term inside "
+             "the same call. At 0 the run takes the same code path as before this "
+             "flag existed. NOTE both terms are then multiplied by --gt-loss-weight "
+             "(5.0), and each averages over its own region, so 0.2 here leaves a "
+             "pseudo pixel pulling 0.067x as hard as a supervised one (121,650 vs "
+             "40,884 px); parity would be about 3.0. Read the share off the gradient, "
+             "never off the loss value.",
     )
     parser.add_argument("--pseudo-min-depth", type=float, default=None, help="Defaults to --gt-min-depth.")
     parser.add_argument("--pseudo-max-depth", type=float, default=None, help="Defaults to --gt-max-depth.")
