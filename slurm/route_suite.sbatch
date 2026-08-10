@@ -49,6 +49,12 @@
 #   PSEUDO_DIR       calibrated_pseudo_depth 目录（build_anythermal_pseudo_gt.py 产出）
 #   PSEUDO_W         补全区权重；真实 lidar 恒为 1.0。不设＝关闭，走原基线代码路径
 #   PSEUDO_RANGE     drop（默认，超量程不给目标）| clip（钉到边界＝断言远处都在那里）
+#   LATENT_TARGET=1  改用 Iris/Lotus 的 latent 目标：把补全后的稠密深度 VAE 编码成
+#                    latent 当监督，在 latent 空间算 MSE，而不是在解码后的视差上算
+#                    掩码损失。需配 PSEUDO_DIR，与 PSEUDO_W 互斥。
+#                    ⚠️ 一个 latent cell 覆盖 8×8 像素，真实 LiDAR 与伪 GT 无法再分别
+#                    加权 —— 这条线学的是整张补全图，LiDAR 失去像素级权威，
+#                    因此它回答不了「能否超过 AnyThermal」。
 #   RUN_TAG          覆盖输出目录名
 #
 # ── 用法 ────────────────────────────────────────────────────────────
@@ -168,6 +174,15 @@ if [[ -n "${PSEUDO_W:-}" ]]; then
   [[ -d "$PSEUDO_DIR" ]] || { echo "找不到 pseudo GT 目录: $PSEUDO_DIR"; exit 1; }
   ARGS+=(--pseudo-gt-dir "$PSEUDO_DIR" --pseudo-weight "$PSEUDO_W"
          --pseudo-range-mode "${PSEUDO_RANGE:-drop}")
+fi
+
+# Iris/Lotus 的 latent 目标：把补全后的稠密深度编码成 latent 当监督，而不是在解码后的
+# 视差上算掩码损失。⚠️ 一个 latent cell 覆盖 8×8 像素，真实 LiDAR 与伪 GT 在其中混合、
+# 无法再分别加权 —— 这条线学的是整张补全图，LiDAR 失去像素级权威。
+if [[ "${LATENT_TARGET:-0}" == "1" ]]; then
+  : "${PSEUDO_DIR:?LATENT_TARGET=1 需要配 PSEUDO_DIR（稀疏 LiDAR 编不出这个目标）}"
+  [[ -d "$PSEUDO_DIR" ]] || { echo "找不到 pseudo GT 目录: $PSEUDO_DIR"; exit 1; }
+  ARGS+=(--latent-target --pseudo-gt-dir "$PSEUDO_DIR")
 fi
 
 # CAPTION_MODE 优先于 CAPTION=1。val 跟着 train 走 —— 否则会用它没训过的输入模式挑 best。

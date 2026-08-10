@@ -373,6 +373,17 @@ def parse_args() -> argparse.Namespace:
              "-- a distance prior the sky experiment is meant to test for, not assume. "
              "Measured, 0.12%% of masked sky exceeds 80 m, so drop costs almost nothing.",
     )
+    parser.add_argument(
+        "--latent-target",
+        action="store_true",
+        help="Train against the encoded depth latent instead of the decoded disparity, "
+             "mirroring lotus/train_iris_g.py: the target map is VAE-encoded, noised at "
+             "--timestep, and the U-Net's x0 is scored against it by MSE in latent space "
+             "(train_iris_g.py:1038/1073/1137/1151). Sparse lidar cannot supply this -- a "
+             "latent cell counts only where all 64 of its pixels are valid (:1054), and "
+             "MS2's scattered 26.5%% leaves almost none -- so it needs --pseudo-gt-dir to "
+             "fill the gaps, and the whole map, lidar included, becomes one target.",
+    )
     parser.add_argument("--skip-val", action="store_true")
 
     parser.add_argument(
@@ -540,6 +551,18 @@ def validate_args(args: argparse.Namespace) -> None:
             "--num-inference-steps > 1 is an evaluation-only knob (--eval-checkpoint). "
             "Training runs one forward at --timestep."
         )
+    if args.latent_target:
+        if args.pseudo_gt_dir is None:
+            raise ValueError(
+                "--latent-target needs --pseudo-gt-dir: the target is encoded as a whole "
+                "image, and sparse lidar leaves almost every latent cell incomplete"
+            )
+        if args.pseudo_weight > 0:
+            # The pixel-space split has no counterpart here: one latent cell spans 8x8
+            # pixels, so lidar and completed depth cannot carry different weights.
+            raise ValueError("--latent-target replaces the pixel-space terms; drop --pseudo-weight")
+        if args.num_inference_steps != 1:
+            raise ValueError("--latent-target trains at a single fixed timestep, as Lotus does")
     if args.pseudo_weight > 0 and args.pseudo_gt_dir is None:
         raise ValueError("--pseudo-weight needs --pseudo-gt-dir")
     if args.pseudo_gt_dir is not None and args.pseudo_weight <= 0:
@@ -773,6 +796,25 @@ def load_sample(row: dict, modality: str, args: argparse.Namespace):
         pseudo_mask = torch.from_numpy(keep.astype(np.float32))[None]
         diagnostics["pseudo_pixels"] = int(keep.sum())
         diagnostics["pseudo_fraction"] = float(keep.mean())
+    dense_target = None
+    if getattr(args, "latent_target", False):
+        path = args.pseudo_gt_dir / f"{row['id']}.npy"
+        if not path.is_file():
+            raise FileNotFoundError(f"No pseudo depth for {row['id']}: {path}")
+        pseudo = np.load(path, allow_pickle=False).astype(np.float32)
+        real = valid_mask[0].numpy() > 0.5
+        gt_depth = np.zeros_like(pseudo)
+        gt_depth[real] = 1.0 / gt_disparity[0].numpy()[real]
+        # Encoded as one image, so every pixel must carry a value: out-of-range
+        # pseudo depth is clipped rather than dropped -- there is nowhere to drop to.
+        dense = np.clip(np.where(real, gt_depth, pseudo), args.gt_min_depth, args.gt_max_depth)
+        disparity = 1.0 / dense
+        low, high = float(disparity.min()), float(disparity.max())
+        # norm_type='disparity' from HypersimImageDepthNormalTransform, the convention
+        # this checkpoint was trained under.
+        dense_target = torch.from_numpy(((disparity - low) / (high - low + 1e-5) - 0.5) * 2.0)[None]
+        diagnostics["latent_target_depth_range_m"] = [float(dense.min()), float(dense.max())]
+        diagnostics["latent_target_real_fraction"] = float(real.mean())
     rows_out = int(getattr(args, "loss_exclude_top_rows", 0))
     if rows_out > 0:
         # Only the training loss loses these rows. run_validation reads the GT
@@ -782,7 +824,8 @@ def load_sample(row: dict, modality: str, args: argparse.Namespace):
         valid_mask[..., :rows_out, :] = 0.0
         diagnostics["gt_pixels_dropped_top_rows"] = dropped
         diagnostics["gt_valid_pixels_after_exclusion"] = int(valid_mask.sum())
-    return tensor, gt_disparity, valid_mask, sky_mask, pseudo_disparity, pseudo_mask, diagnostics
+    return (tensor, gt_disparity, valid_mask, sky_mask,
+            pseudo_disparity, pseudo_mask, dense_target, diagnostics)
 
 
 # --------------------------------------------------------------------------- #
@@ -937,6 +980,8 @@ class RouteModel:
         prompt: torch.Tensor,
         donor_row: dict | None = None,
         donor_tensor: torch.Tensor | None = None,
+        target_latent: torch.Tensor | None = None,
+        return_latent: bool = False,
     ):
         condition = self.condition(row, image_tensor, donor_row, donor_tensor)
         noise = seeded_noise(
@@ -954,7 +999,16 @@ class RouteModel:
             self.lotus.scheduler.set_timesteps(steps, device=self.device)
             timesteps = list(self.lotus.scheduler.timesteps)
         unet_dtype = next(self.unet.parameters()).dtype
-        latents = noise
+        if target_latent is not None:
+            # train_iris_g.py:1078 -- the input is the target noised at this timestep,
+            # not pure noise. At t=999 alpha_bar is about 4.7e-5, so the target
+            # contributes under 1% of the input; Lotus trains this way and infers
+            # from pure noise, and its released weights work under that mismatch.
+            latents = self.lotus.scheduler.add_noise(
+                target_latent.to(self.device, torch.float32), noise, timesteps[0]
+            )
+        else:
+            latents = noise
         for timestep in timesteps:
             latent_input = self.lotus.scheduler.scale_model_input(latents, timestep).detach()
             x0 = self.unet(
@@ -971,7 +1025,20 @@ class RouteModel:
                 if len(timesteps) > 1
                 else x0
             )
-        return decode_to_disparity(self.lotus, latents.float(), self.device, gt_vae=self.gt_vae)
+        disparity = decode_to_disparity(self.lotus, latents.float(), self.device, gt_vae=self.gt_vae)
+        return (disparity, latents.float()) if return_latent else disparity
+
+    def encode_depth_target(self, normalised: torch.Tensor) -> torch.Tensor:
+        """VAE-encode a [-1,1] depth map into the latent the loss scores against.
+
+        train_iris_g.py:1038 draws from the posterior rather than taking its mode,
+        so a fresh sample per step is part of the recipe; that is also why this runs
+        here instead of being precomputed once and frozen.
+        """
+        image = normalised.to(self.device, torch.float32)[None].repeat(1, 3, 1, 1)
+        with torch.no_grad():
+            posterior = self.lotus.vae.encode(image.to(self.lotus.vae.dtype)).latent_dist
+            return (posterior.sample() * self.lotus.vae.config.scaling_factor).float()
 
     def trainable_modules(self) -> dict:
         modules = {}
@@ -1391,6 +1458,17 @@ def main() -> None:
     parameter_groups = []
     if model.trains_unet:
         parameter_groups.append({"params": model.unet.parameters(), "lr": args.unet_learning_rate})
+    if args.latent_target:
+        sampled = [load_sample(row, modality, args)[-1]
+                   for row in train_rows[:: max(1, len(train_rows) // 6)][:6]]
+        ranges = [d["latent_target_depth_range_m"] for d in sampled]
+        real = sum(d["latent_target_real_fraction"] for d in sampled) / max(1, len(sampled))
+        print(f"[data] latent target on: encoding the completed depth map, dir {args.pseudo_gt_dir}\n"
+              f"[data] {len(sampled)}-frame probe: depth range "
+              f"{min(r[0] for r in ranges):.1f}-{max(r[1] for r in ranges):.1f} m, "
+              f"real lidar covers {real * 100:.1f}% of each map (the rest is completed)",
+              flush=True)
+
     if args.pseudo_weight > 0:
         # A COMPLETED job says nothing about whether a switch took effect, and this one
         # is a directory: read a few frames and report what the loss will actually see.
@@ -1429,11 +1507,16 @@ def main() -> None:
         "format": CHECKPOINT_FORMAT,
         "route": args.route,
         "objective": (
-            "masked SSI-L1 vs LiDAR disparity, extended to the pixels lidar missed by "
+            "latent-space MSE against the VAE-encoded completed depth map, mirroring "
+            "lotus/train_iris_g.py; lidar and completed depth are one target, since a "
+            "latent cell spans 8x8 pixels and cannot separate them"
+            if args.latent_target
+            else "masked SSI-L1 vs LiDAR disparity, extended to the pixels lidar missed by "
             "offline calibrated pseudo depth under the lidar-fitted alignment"
             if args.pseudo_weight > 0
             else "pure masked SSI-L1 vs LiDAR disparity; no teacher of any kind"
         ),
+        "latent_target": args.latent_target,
         "pseudo_gt_dir": str(args.pseudo_gt_dir) if args.pseudo_gt_dir else None,
         "pseudo_weight": args.pseudo_weight,
         "pseudo_range_mode": args.pseudo_range_mode,
@@ -1524,7 +1607,7 @@ def main() -> None:
         for position, index in enumerate(permutation):
             row = train_rows[index]
             (image_tensor, gt_disparity, valid_mask, sky_mask,
-             pseudo_disparity, pseudo_mask, _) = load_sample(row, modality, args)
+             pseudo_disparity, pseudo_mask, dense_target, _) = load_sample(row, modality, args)
             gt_disparity = gt_disparity.to(device)
             valid_mask = valid_mask.to(device)
             if sky_mask is not None:
@@ -1539,7 +1622,14 @@ def main() -> None:
             else:
                 prompt = prompts["empty"]
 
-            prediction = model.predict_disparity(row, image_tensor, prompt)
+            target_latent = None
+            if args.latent_target:
+                target_latent = model.encode_depth_target(dense_target)
+                prediction, x0_latent = model.predict_disparity(
+                    row, image_tensor, prompt, target_latent=target_latent, return_latent=True
+                )
+            else:
+                prediction = model.predict_disparity(row, image_tensor, prompt)
             if prediction.shape != gt_disparity.shape[-2:]:
                 prediction = F.interpolate(
                     prediction[None, None], gt_disparity.shape[-2:], mode="bilinear", align_corners=False
@@ -1547,7 +1637,16 @@ def main() -> None:
             # Dispatched, not degenerated: at pseudo_weight 0 this is the same call the
             # sparse-GT baseline has always made, so that arm needs no rerun to compare.
             pseudo_term, pseudo_px = 0.0, 0
-            if pseudo_mask is None:
+            if args.latent_target:
+                # train_iris_g.py:1151 -- MSE against the clean target latent, since
+                # this checkpoint's DDIM config predicts the sample, not the noise.
+                # Every latent cell counts: completion left no invalid pixel behind.
+                gt_loss = F.mse_loss(x0_latent.float(), target_latent.float())
+                with torch.no_grad():
+                    # Kept on real lidar so the curve stays readable beside every
+                    # run that used the pixel-space objective.
+                    _, gt_abs_rel, _ = masked_ssi_l1(prediction[None], gt_disparity, valid_mask)
+            elif pseudo_mask is None:
                 gt_loss, gt_abs_rel, _ = masked_ssi_l1(prediction[None], gt_disparity, valid_mask)
             else:
                 gt_loss, _, pseudo_l1, gt_abs_rel, _, pseudo_px = masked_ssi_l1_dense_completion(
