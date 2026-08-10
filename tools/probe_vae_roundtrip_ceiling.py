@@ -51,6 +51,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-scale", type=float, default=256.0)
     parser.add_argument("--min-depth", type=float, default=0.1)
     parser.add_argument("--max-depth", type=float, default=80.0)
+    parser.add_argument(
+        "--norm-types",
+        nargs="+",
+        default=["disparity", "truncnorm", "instnorm"],
+        choices=["disparity", "truncnorm", "instnorm"],
+        help="disparity is what this checkpoint trains under; the others are run "
+             "beside it so a bad ceiling can be attributed. Per-image min-max on "
+             "disparity is outlier-sensitive -- one near pixel compresses the rest -- "
+             "which is why Marigold clips to quantiles instead.",
+    )
+    parser.add_argument("--truncnorm-min", type=float, default=0.02)
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--stride", type=int, default=0, help="0 = spread --limit evenly over the split.")
     parser.add_argument("--device", default="cuda")
@@ -105,57 +116,74 @@ def main() -> int:
         # The target the latent objective would encode: lidar where it spoke,
         # completed pseudo depth everywhere else.
         dense = np.clip(np.where(valid, gt, pseudo), args.min_depth, args.max_depth)
-        disparity = 1.0 / dense
-        dmin, dmax = float(disparity.min()), float(disparity.max())
-        normalised = ((disparity - dmin) / (dmax - dmin + 1e-5) - 0.5) * 2.0
-
-        tensor = torch.from_numpy(normalised).float()[None, None].repeat(1, 3, 1, 1).to(device)
-        with torch.no_grad():
-            latent = vae.encode(tensor).latent_dist.mode() * scaling
-            decoded = vae.decode(latent / scaling).sample
-        out = decoded.float().mean(dim=1)[0].cpu().numpy().astype(np.float64)
-
-        # Undo the normalisation, then align exactly as every other number here is
-        # aligned -- otherwise this would measure a scale convention, not the VAE.
-        round_trip_disparity = (out / 2.0 + 0.5) * (dmax - dmin + 1e-5) + dmin
         gt_disparity = np.zeros_like(gt)
         gt_disparity[valid] = 1.0 / gt[valid]
-        scale, shift = fit_scale_shift(round_trip_disparity.astype(np.float32),
-                                       gt_disparity.astype(np.float32), valid)
-        aligned = np.clip(1.0 / np.clip(round_trip_disparity * scale + shift, 1e-3, None),
-                          args.min_depth, args.max_depth)
 
-        abs_rel = float(np.mean(np.abs(aligned[valid] - gt[valid]) / gt[valid]))
-        # Fidelity to the map that went in, with no alignment involved at all.
-        fidelity = float(np.mean(np.abs(round_trip_disparity - disparity) / np.maximum(disparity, 1e-6)))
-        records.append({"id": row["id"], "abs_rel_vs_lidar": abs_rel,
-                        "disparity_round_trip_rel": fidelity,
-                        "valid_pixels": int(valid.sum())})
+        record = {"id": row["id"], "valid_pixels": int(valid.sum())}
+        for norm in args.norm_types:
+            if norm == "instnorm":
+                source, lo, hi = dense, float(dense.min()), float(dense.max())
+            elif norm == "truncnorm":
+                source = dense
+                lo = float(np.quantile(dense, args.truncnorm_min))
+                hi = float(np.quantile(dense, 1.0 - args.truncnorm_min))
+            else:
+                source = 1.0 / dense
+                lo, hi = float(source.min()), float(source.max())
+            normalised = ((source - lo) / (hi - lo + 1e-5) - 0.5) * 2.0
+
+            tensor = torch.from_numpy(normalised).float()[None, None].repeat(1, 3, 1, 1).to(device)
+            with torch.no_grad():
+                latent = vae.encode(tensor).latent_dist.mode() * scaling
+                decoded = vae.decode(latent / scaling).sample
+            out = decoded.float().mean(dim=1)[0].cpu().numpy().astype(np.float64)
+            round_trip = (out / 2.0 + 0.5) * (hi - lo + 1e-5) + lo
+
+            # Align exactly as every other number here is aligned, in whichever
+            # space this convention produced -- otherwise this measures a scale
+            # convention rather than the VAE.
+            target = gt_disparity if norm == "disparity" else gt
+            scale, shift = fit_scale_shift(round_trip.astype(np.float32),
+                                           target.astype(np.float32), valid)
+            fitted = round_trip * scale + shift
+            aligned = (1.0 / np.clip(fitted, 1e-3, None)) if norm == "disparity" else fitted
+            aligned = np.clip(aligned, args.min_depth, args.max_depth)
+
+            record[f"abs_rel__{norm}"] = float(np.mean(np.abs(aligned[valid] - gt[valid]) / gt[valid]))
+            # Fidelity to the map that went in, no alignment involved at all.
+            record[f"round_trip_rel__{norm}"] = float(
+                np.mean(np.abs(round_trip - source) / np.maximum(np.abs(source), 1e-6)))
+        records.append(record)
         if index % 50 == 0:
-            print(f"[{index + 1}/{len(rows)}] {row['id']} abs_rel {abs_rel:.4f} "
-                  f"disp_rt {fidelity:.4f}", flush=True)
+            shown = "  ".join(f"{n} {record[f'abs_rel__{n}']:.4f}" for n in args.norm_types)
+            print(f"[{index + 1}/{len(rows)}] {row['id']}  {shown}", flush=True)
 
     if not records:
         raise SystemExit("No frame produced a measurement")
-    a = np.asarray([r["abs_rel_vs_lidar"] for r in records])
-    f = np.asarray([r["disparity_round_trip_rel"] for r in records])
-    summary = {
-        "frames": len(records), "lotus_model_path": args.lotus_model_path,
-        "normalisation": "disparity, per-image min-max to [-1,1] (norm_type='disparity')",
-        "abs_rel_vs_lidar": {"p50": float(np.median(a)), "mean": float(a.mean()),
-                             "p90": float(np.percentile(a, 90)), "max": float(a.max())},
-        "disparity_round_trip_rel": {"p50": float(np.median(f)), "mean": float(f.mean())},
-    }
+    summary = {"frames": len(records), "lotus_model_path": args.lotus_model_path,
+               "checkpoint_convention": "disparity", "by_norm": {}}
+    for norm in args.norm_types:
+        a = np.asarray([r[f"abs_rel__{norm}"] for r in records])
+        f = np.asarray([r[f"round_trip_rel__{norm}"] for r in records])
+        summary["by_norm"][norm] = {
+            "abs_rel_p50": float(np.median(a)), "abs_rel_mean": float(a.mean()),
+            "abs_rel_p90": float(np.percentile(a, 90)), "abs_rel_max": float(a.max()),
+            "round_trip_rel_p50": float(np.median(f)),
+        }
     (args.output_dir / "vae_ceiling.json").write_text(
         json.dumps({"summary": summary, "per_frame": records}, indent=2), encoding="utf-8")
 
     print(f"\n[frames] {len(records)}")
-    print(f"[ceiling] AbsRel of the perfectly-predicted target vs lidar: "
-          f"p50 {np.median(a):.4f}  mean {a.mean():.4f}  p90 {np.percentile(a, 90):.4f}")
-    print(f"[fidelity] disparity round-trip relative error: p50 {np.median(f):.4f}")
-    print("\nReading it: this is what the latent objective could reach if the U-Net were")
-    print("perfect, because the target is only ever seen through this round trip. Compare")
-    print("it against 0.0849, which the current pixel-space objective already achieves.")
+    print(f"\n{'normalisation':16s}{'AbsRel p50':>12s}{'mean':>10s}{'p90':>10s}{'往返相对误差':>16s}")
+    for norm, s in summary["by_norm"].items():
+        mark = "  <- checkpoint" if norm == "disparity" else ""
+        print(f"{norm:16s}{s['abs_rel_p50']:>12.4f}{s['abs_rel_mean']:>10.4f}"
+              f"{s['abs_rel_p90']:>10.4f}{s['round_trip_rel_p50']:>16.4f}{mark}")
+    print("\nReading it: each row is what the latent objective could reach if the U-Net")
+    print("were perfect, because the target is only ever seen through this round trip.")
+    print("Compare against 0.0849, which the current pixel-space objective already gets.")
+    print("A bad disparity row with a good truncnorm row means the normalisation is the")
+    print("limit, not the VAE -- per-image min-max lets one near pixel compress the rest.")
     return 0
 
 
