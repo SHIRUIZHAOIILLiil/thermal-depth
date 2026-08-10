@@ -565,8 +565,10 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError("--latent-target trains at a single fixed timestep, as Lotus does")
     if args.pseudo_weight > 0 and args.pseudo_gt_dir is None:
         raise ValueError("--pseudo-weight needs --pseudo-gt-dir")
-    if args.pseudo_gt_dir is not None and args.pseudo_weight <= 0:
+    if args.pseudo_gt_dir is not None and args.pseudo_weight <= 0 and not args.latent_target:
         # Otherwise the arm reads as completed supervision and trains as the baseline.
+        # --latent-target is the one legitimate way to use the directory without a
+        # weight: there the completed map is the target itself, not a second term.
         raise ValueError("--pseudo-gt-dir was given but --pseudo-weight is 0")
     if args.pseudo_weight > 0 and args.loss_exclude_top_rows > 0:
         # Excluded rows stop being real GT and would be handed to pseudo depth, so the
