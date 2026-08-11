@@ -19,6 +19,11 @@
 #   CAPTION_MODE  empty | correct | shuffled，默认 empty
 #                 —— 必须与该 checkpoint 训练时的输入模式一致，否则是在它没训过的
 #                    模式下打分
+#   COND_LATENT   输入图 latent 的取法：mode（默认，全部历史数字的口径）| sample
+#                 —— 上游在训练和 LotusGPipeline 推理里都用 sample
+#                 （`lotus/pipeline.py:910/1121/1297`）。评 `train_iris_ms2_g.py`
+#                 训出来的 checkpoint 时，sample 才是它训练时的约定。
+#                 ⚠️ 这是**考卷的一部分**，两种口径的数字不能放进同一张表而不注明。
 #   VAL_STRIDE    默认 1（全量）
 #   SHUFFLE_COND  证伪对照：all | anythermal。不设＝关闭
 #   STEPS         去噪步数，默认 1 ＝ 历史口径（单次前向、t=999）。
@@ -83,6 +88,7 @@ ARGS=(
 [[ -n "${CAPTION_TEXT:-}" ]] && ARGS+=(--val-caption-text "$CAPTION_TEXT")
 ARGS+=(
   --num-inference-steps "${STEPS:-1}"
+  --condition-latent "${COND_LATENT:-mode}"
 )
 [[ -n "${VAL_MANIFEST:-}" ]] && ARGS+=(--val-manifest "$VAL_MANIFEST")
 [[ "${LOCAL_FILES_ONLY:-1}" == "1" ]] && ARGS+=(--local-files-only)

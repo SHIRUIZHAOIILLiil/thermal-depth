@@ -63,20 +63,23 @@ val best 都在 e3：无 caption 0.08393、有 caption 0.08352。
 
 ---
 
-## 3. 待测：AnyThermal 在本 test 上的天花板
+## 3. ⚠️ 订正：AnyThermal 的天花板不是待测项，早就有了
 
-现有唯一的数是 400 帧 **train** 子集上留出 LiDAR 点 AbsRel 0.0573（深度空间逐帧仿射），
-而我方最好为 0.0849。两者**对齐空间不同**（`ssi` vs `ssi_disparity`），
-是 BridgeMSD 对两类输出的并行规定，可并排引用但必须注明。
+本节初稿写「待测，现有唯一的数是 400 帧 train 子集的 0.0573」。**那是错的。**
+AnyThermal 在本 test（16-08-46 / 2,543 帧、`ssi` 对齐）的 AbsRel = **0.0821**，
+2026-08-02 就已测得，见 `AIRE_RESULTS_20260802.md:580`（原话「所以这一项没有任何东西要跑」）
+与 `WEEK3_LOCAL_FINDINGS_20260805.md:409`。**不要再投 `at_official` 作业。**
 
-```
-sbatch -J at_official --cpus-per-task=8 --mem=32G --time=01:00:00 --output=at_official-%j.out \
-  --wrap="source ~/Iris/slurm/common.sh; cd \$IRIS_REPO; python tools/run_official_ms2_evaluation.py \
-  --manifest \$IRIS_MANIFEST_DIR/ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl \
-  --data-root \$IRIS_MS2_ROOT \
-  --prediction-dir \$SCRATCH/runs/anythermal/Midas_anythermal/raw_predictions \
-  --route anythermal-midas --align ssi --gt-view thermal \
-  --output-dir \$IRIS_RUNS/eval_official/anythermal_test_ssi"
-```
+把它读成「这条线的天花板」需要一点小心，两个数回答的不是同一个问题：
 
-这个数决定导师 2026-08-11 定的「完整伪 GT + Iris 训练方式」那条线是否有头部空间。
+| 数 | 是什么 |
+|---|---|
+| **0.0821** | AnyThermal 在 **test** 序列上的表现，即泛化到没见过的序列 |
+| **0.0573** | 伪 GT 在 **train** 序列上、留出 LiDAR 点的 AbsRel（400 帧子集） |
+
+训练用的是后者那一份——伪 GT 是**逐帧用该帧自己的 LiDAR 校准**的，所以它在训练序列上
+比 AnyThermal 的裸输出准。与我方最好 0.0849 相比还跨了对齐空间
+（`ssi` vs `ssi_disparity`，见 `WEEK3_LOCAL_FINDINGS_20260805.md` §8「统一不了」）。
+
+**能确定的只有一条：它没有掉到 0.09–0.10，所以这条线不是天花板贴脸。**
+还剩多少空间，等 `iris_ckpt` 自己跑出来说话。

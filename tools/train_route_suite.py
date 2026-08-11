@@ -284,7 +284,9 @@ def parse_args() -> argparse.Namespace:
             "What text the TRAINING loop sees. 'permuted' hands every frame a "
             "uniformly random other frame's caption, which is the control the "
             "weight effect has never had: the injection effect was shown to be "
-            "content-free (shuffled minus correct = -0.00006, 49.5% win rate), "
+            # argparse %-interpolates help text, so a literal percent must be
+            # doubled; this single one crashed --help for the whole tool.
+            "content-free (shuffled minus correct = -0.00006, 49.5%% win rate), "
             "but nobody has asked whether training's benefit is content-driven "
             "or just the regularisation of a varying text input. Same text "
             "distribution, same token statistics, only the pairing is destroyed."
@@ -409,6 +411,19 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--timestep", type=int, default=999)
+    parser.add_argument(
+        "--condition-latent",
+        choices=("mode", "sample"),
+        default="mode",
+        help=(
+            "How the input image's latent is taken. mode (default) is what every "
+            "published number here used. sample draws from the posterior, which is "
+            "what upstream does in training and in LotusGPipeline alike -- pass it "
+            "to score a checkpoint trained by lotus/train_iris_ms2_g.py under the "
+            "convention it was trained with. Changing this changes the exam, so a "
+            "table must not mix the two without saying which each row used."
+        ),
+    )
     parser.add_argument(
         "--num-inference-steps",
         type=int,
@@ -929,7 +944,14 @@ class RouteModel:
             posterior = self.lotus.vae.encode(
                 image_tensor.to(device=self.device, dtype=encoder_dtype)
             ).latent_dist
-            latent = posterior.mode() * self.lotus.vae.config.scaling_factor
+            # Upstream draws from the posterior here, in training and in the
+            # pipeline alike (`lotus/pipeline.py:910/1121/1297`). Every number
+            # this project has published was taken at the mode, so that stays the
+            # default; `sample` exists to score a checkpoint trained upstream's
+            # way without also changing the exam.
+            sampled = getattr(self.args, "condition_latent", "mode") == "sample"
+            latent = (posterior.sample() if sampled else posterior.mode())
+            latent = latent * self.lotus.vae.config.scaling_factor
         return latent.float()
 
     def condition(
@@ -1294,6 +1316,9 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
             "caption_rotation": rotation,
             "num_inference_steps": args.num_inference_steps,
             "timestep": args.timestep if args.num_inference_steps == 1 else None,
+            # Part of the exam, not of the model: a result read without it cannot
+            # be placed beside the rest of the table.
+            "condition_latent": args.condition_latent,
             "environment": environment_fingerprint(model.device),
             "elapsed_seconds": time.time() - started,
             "protocol": "official BMSD ssi_disparity, min_depth 1e-3, max_depth 80",
@@ -1519,6 +1544,7 @@ def main() -> None:
             else "pure masked SSI-L1 vs LiDAR disparity; no teacher of any kind"
         ),
         "latent_target": args.latent_target,
+        "condition_latent": args.condition_latent,
         "pseudo_gt_dir": str(args.pseudo_gt_dir) if args.pseudo_gt_dir else None,
         "pseudo_weight": args.pseudo_weight,
         "pseudo_range_mode": args.pseudo_range_mode,
