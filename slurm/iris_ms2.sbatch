@@ -14,11 +14,20 @@
 #
 # ── 环境变量 ────────────────────────────────────────────────────────
 #   START            起点权重，二选一（这条线两个臂唯一的差别）：
-#                      sd2  = stabilityai/stable-diffusion-2-base（Iris 自己的起点，
-#                             conv_in 做 4→8 扩展，等于在 MS2 上重造一遍 Lotus-G）
 #                      ckpt = jingheya/lotus-depth-g-v2-1-disparity（已训好的
-#                             Lotus-G，跳过扩展）
-#                    默认 sd2。
+#                             Lotus-G，跳过 conv_in 扩展）—— 默认，也是目前唯一能跑的
+#                      sd2  = stabilityai/stable-diffusion-2-base（Iris 自己的起点，
+#                             conv_in 做 4→8 扩展）
+#                    ⚠️ 2026-08-11：**sd2 那一臂暂时跑不了。** Stability AI 已把
+#                    SD 2.0/2.1 全系从 HuggingFace 下架（合规原因），匿名与带 token
+#                    请求一律 401、网页 404。要恢复这一臂，需要先找到社区镜像并验真：
+#                    Lotus 的 vae/ 与 text_encoder/ 是**未经修改的 SD2-base 组件**
+#                    （Lotus 只训 U-Net），拿镜像的这两份与缓存里的 lotus-depth
+#                    逐张量比对即可。比张量不要比文件哈希 —— 重新序列化会让字节不等
+#                    而权重相等。换更新的基座不是替代方案：SD3/3.5 是 MMDiT + 16 通道
+#                    latent（`UNet2DConditionModel` 根本加载不了），SDXL 自己占用了
+#                    `class_embed_type`（Lotus 正靠它塞任务嵌入），且两者都会换掉 VAE，
+#                    而两臂共用同一个 VAE 正是这个对照成立的前提。
 #   NO_CAPTIONS=1    无文本消融臂（每帧喂空串）。不设＝按 Iris 用真 caption 训练。
 #   PSEUDO_DIR       calibrated_pseudo_depth 目录，默认 train_full
 #   TRAIN_MANIFEST   默认 clip75_20260728（19,949 帧，≤75 token）
@@ -43,12 +52,24 @@
 
 source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
-START="${START:-sd2}"
+START="${START:-ckpt}"
 case "$START" in
   sd2)  MODEL_NAME="stabilityai/stable-diffusion-2-base" ;;
   ckpt) MODEL_NAME="jingheya/lotus-depth-g-v2-1-disparity" ;;
   *)    echo "!! START 只能是 sd2 或 ckpt，收到 '$START'"; exit 1 ;;
 esac
+
+# 权重不在缓存里就立刻停，别等 from_pretrained 去下载 —— SD2-base 已被 Stability
+# 下架（见上），那条路只会走到一个看不懂的 401 traceback，而这时排队已经花掉几小时。
+HF_REPO_DIR="$HF_HOME/hub/models--${MODEL_NAME//\//--}"
+if [[ ! -d "$HF_REPO_DIR" ]]; then
+  echo "!! $MODEL_NAME 不在 HF 缓存里（找不到 $HF_REPO_DIR）"
+  if [[ "$START" == "sd2" ]]; then
+    echo "!! sd2 臂当前无官方来源：Stability 已下架 SD 2.x，见本脚本开头的说明。"
+  fi
+  echo "!! 先用 CPU 分区预取，别让 GPU 作业去下载。"
+  exit 1
+fi
 
 TAG="${RUN_TAG:-iris_ms2_$START}"
 [[ "${NO_CAPTIONS:-0}" == "1" && -z "${RUN_TAG:-}" ]] && TAG="${TAG}_nocap"
