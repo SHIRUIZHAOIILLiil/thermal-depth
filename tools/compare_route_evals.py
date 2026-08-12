@@ -98,7 +98,21 @@ def main() -> None:
         raise SystemExit("Need at least two per-sample CSVs to compare.")
     rng = np.random.default_rng(args.seed)
 
-    tables = {label_for(path): load(path) for path in args.csvs}
+    # eval.sbatch leaves --eval-tag at its default, so every run it produces writes
+    # `eval_eval_per_sample.csv`: the file name identifies nothing and two arms of
+    # one experiment differ only by directory. Keyed on the stem alone they collapse
+    # into a single entry and the tool prints one run and no comparison at all --
+    # which reads like "no difference" rather than like a mistake.
+    names = [label_for(path) for path in args.csvs]
+    if len(set(names)) != len(names):
+        names = [path.parent.name for path in args.csvs]
+        if len(set(names)) != len(names):
+            raise SystemExit(
+                "Two CSVs share both a file name and a parent directory name; pass "
+                f"distinct files. Got: {[str(p) for p in args.csvs]}"
+            )
+        print(f"[label] file names collide, using directory names instead: {names}\n")
+    tables = {name: load(path) for name, path in zip(names, args.csvs)}
     labels = list(tables)
     shared = set.intersection(*(set(table) for table in tables.values()))
     if not shared:

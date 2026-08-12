@@ -2,8 +2,11 @@
 #SBATCH --job-name=eval
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=80G
+# 评估路径里没有 DataLoader —— train_route_suite.py 是在普通 Python 循环里逐帧
+# 加载的（grep 全文无 DataLoader/num_workers），所以多要的核一个都用不上，而每多
+# 要一分资源，能塞进的空隙就少一分。8 核/80G 曾让一个 4 分钟的作业排了几小时。
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=32G
 #SBATCH --time=00:30:00  # 全量 5810 帧实测 8.3 分钟
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
