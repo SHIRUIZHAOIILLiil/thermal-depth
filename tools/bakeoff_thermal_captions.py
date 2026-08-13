@@ -80,13 +80,32 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     # Evenly spaced, never consecutive: neighbouring MS2 frames are almost the
     # same picture, and duplicate-rate would then measure the road, not the model.
     step = len(rows) // args.frames
-    picked = [rows[i * step] for i in range(args.frames)]
+    picked = [dict(rows[i * step]) for i in range(args.frames)]
+
+    # The manifest's paths are relative to the MS2 root, but the captioner
+    # resolves them against the manifest's own directory. A subset written
+    # anywhere else would therefore point at nothing -- and the captioner would
+    # report every frame as a read failure rather than as a wrong path. Write
+    # them absolute, and prove the first one resolves before going further.
+    root = args.ms2_root.resolve()
+    for row in picked:
+        for key in ("thermal_path", "rgb_path", "depth_path", "thermal_depth_path", "rgb_depth_path"):
+            value = row.get(key)
+            if value and not Path(value).is_absolute():
+                row[key] = str(root / value)
+    for key in ("thermal_path", "rgb_path"):
+        probe = picked[0].get(key)
+        if probe and not Path(probe).is_file():
+            raise SystemExit(f"{picked[0]['id']}: {key} does not resolve to a file:\n  {probe}\n"
+                             f"Check --ms2-root (given: {root})")
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:
         for row in picked:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(f"[prepare] {len(picked)} frames every {step}th row -> {args.output}")
     print(f"[prepare] first {picked[0]['id']}  last {picked[-1]['id']}")
+    print(f"[prepare] paths rewritten absolute against {root}; first thermal frame verified")
     return 0
 
 
@@ -179,6 +198,9 @@ def main() -> int:
 
     p = sub.add_parser("prepare", help="抽一个均匀分布的小 manifest")
     p.add_argument("--manifest", type=Path, required=True)
+    p.add_argument("--ms2-root", type=Path, required=True,
+                   help="manifest 里的相对路径按它展开成绝对路径。必填 —— 猜错会让每一帧"
+                        "都读不到图，而 captioner 只会报读取失败，不会说路径错了。")
     p.add_argument("--frames", type=int, default=40)
     p.add_argument("--output", type=Path, required=True)
     p.set_defaults(func=cmd_prepare)
