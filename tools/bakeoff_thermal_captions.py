@@ -92,12 +92,22 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         for key in ("thermal_path", "rgb_path", "depth_path", "thermal_depth_path", "rgb_depth_path"):
             value = row.get(key)
             if value and not Path(value).is_absolute():
-                row[key] = str(root / value)
+                # as_posix() so the file never carries backslashes: a Windows-style
+                # path is not absolute under POSIX, so a consumer on the other
+                # system silently joins it onto its own directory instead of
+                # failing, and every frame comes back as a read error.
+                row[key] = (root / value).as_posix()
     for key in ("thermal_path", "rgb_path"):
         probe = picked[0].get(key)
         if probe and not Path(probe).is_file():
             raise SystemExit(f"{picked[0]['id']}: {key} does not resolve to a file:\n  {probe}\n"
                              f"Check --ms2-root (given: {root})")
+    if str(root)[1:2] == ":":
+        # The existence check above passes on Windows and tells you nothing about
+        # WSL, so say it rather than let it be discovered forty frames later.
+        print(f"[prepare] ⚠️  paths are Windows-style ({root}). Anything reading this "
+              f"manifest must run on Windows too. For WSL, re-run prepare there with "
+              f"--ms2-root /mnt/<drive>/...", flush=True)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:
