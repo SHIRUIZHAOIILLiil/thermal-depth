@@ -152,9 +152,22 @@ def score_arm(captions: dict[str, str], rgb: dict[str, str]) -> dict:
     }
 
 
+def join_key(value: str) -> str:
+    """Key on the input image, not on `image_id`.
+
+    The manifest's `image_id` is the bare frame number (`000000`), which repeats
+    in every sequence -- 10-59-33 and 11-37-46 both have one. Joining on it would
+    silently mix two sequences together, and at full scale roughly half the
+    frames collide. The image path is what actually identifies a frame.
+    """
+    return Path(str(value).replace("\\", "/")).as_posix().lower()
+
+
 def cmd_score(args: argparse.Namespace) -> int:
     subset = read_jsonl(args.subset)
-    rgb = {row["id"]: row.get("caption", "") for row in subset}
+    rgb = {join_key(row["thermal_path"]): row.get("caption", "") for row in subset}
+    order = [join_key(row["thermal_path"]) for row in subset]
+    labels_by_key = {join_key(row["thermal_path"]): row["id"] for row in subset}
 
     arms = {}
     for spec in args.captions:
@@ -163,9 +176,20 @@ def cmd_score(args: argparse.Namespace) -> int:
         label, path = spec.split("=", 1)
         rows = read_jsonl(Path(path))
         arms[label] = {
-            r.get("image_id", ""): r.get("caption", "")
+            join_key(r.get("input_path") or r.get("thermal_path") or r.get("image_id", "")):
+                r.get("caption", "")
             for r in rows if r.get("status", "ok") == "ok"
         }
+        matched = len(set(arms[label]) & set(order))
+        if matched == 0:
+            sample = next(iter(arms[label]), "<空>")
+            raise SystemExit(
+                f"{label}: 没有一条 caption 能和子集对上。\n"
+                f"  caption 侧的键: {sample}\n  子集侧的键:    {order[0]}\n"
+                f"两边的路径写法不一致（Windows vs WSL？）"
+            )
+        if matched < len(order):
+            print(f"[warn] {label}: {matched}/{len(order)} 帧对上")
 
     print(f"\n{len(subset)} 帧；RGB caption 作为参照（同一场景、另一台相机）\n")
     header = f"{'':16s}" + "".join(f"{k:>14s}" for k in arms) + f"{'rgb(现用)':>14s}"
@@ -193,13 +217,13 @@ def cmd_score(args: argparse.Namespace) -> int:
           "\n      与 RGB 重合接近 0 = 描述的不是同一个场景。"
           "\n      （rgb 那一列是现用 caption，作为量表的参照，不是候选。）")
 
-    ids = [row["id"] for row in subset][: args.examples]
-    print(f"\n=== 前 {len(ids)} 帧逐条对照 ===")
-    for image_id in ids:
-        print(f"\n[{image_id}]")
+    shown = order[: args.examples]
+    print(f"\n=== 前 {len(shown)} 帧逐条对照 ===")
+    for key in shown:
+        print(f"\n[{labels_by_key[key]}]")
         for label, caps in arms.items():
-            print(f"  {label:10s} {caps.get(image_id, '<缺>')}")
-        print(f"  {'rgb(现用)':10s} {rgb.get(image_id, '<缺>')}")
+            print(f"  {label:10s} {caps.get(key, '<缺>')}")
+        print(f"  {'rgb(现用)':10s} {rgb.get(key, '<缺>')}")
     return 0
 
 
