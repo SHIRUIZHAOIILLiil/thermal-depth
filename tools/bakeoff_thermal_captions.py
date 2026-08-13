@@ -105,9 +105,11 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     if str(root)[1:2] == ":":
         # The existence check above passes on Windows and tells you nothing about
         # WSL, so say it rather than let it be discovered forty frames later.
-        print(f"[prepare] ⚠️  paths are Windows-style ({root}). Anything reading this "
-              f"manifest must run on Windows too. For WSL, re-run prepare there with "
-              f"--ms2-root /mnt/<drive>/...", flush=True)
+        # Plain ASCII: this tool gets run from a GBK console, where an emoji in a
+        # print() aborts the program outright.
+        print(f"[prepare] WARNING: paths are Windows-style ({root}). Anything reading "
+              f"this manifest must run on Windows too. For WSL, re-run prepare there "
+              f"with --ms2-root /mnt/<drive>/...", flush=True)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:
