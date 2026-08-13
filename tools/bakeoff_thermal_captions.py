@@ -102,15 +102,6 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         if probe and not Path(probe).is_file():
             raise SystemExit(f"{picked[0]['id']}: {key} does not resolve to a file:\n  {probe}\n"
                              f"Check --ms2-root (given: {root})")
-    if str(root)[1:2] == ":":
-        # The existence check above passes on Windows and tells you nothing about
-        # WSL, so say it rather than let it be discovered forty frames later.
-        # Plain ASCII: this tool gets run from a GBK console, where an emoji in a
-        # print() aborts the program outright.
-        print(f"[prepare] WARNING: paths are Windows-style ({root}). Anything reading "
-              f"this manifest must run on Windows too. For WSL, re-run prepare there "
-              f"with --ms2-root /mnt/<drive>/...", flush=True)
-
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:
         for row in picked:
@@ -118,6 +109,15 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     print(f"[prepare] {len(picked)} frames every {step}th row -> {args.output}")
     print(f"[prepare] first {picked[0]['id']}  last {picked[-1]['id']}")
     print(f"[prepare] paths rewritten absolute against {root}; first thermal frame verified")
+    if str(root)[1:2] == ":":
+        # Last line, so it is the one still on screen. The existence check above
+        # passes on Windows and says nothing about WSL, so this has to be stated
+        # rather than discovered forty frames into a captioning run.
+        # Plain ASCII: run from a GBK console, an emoji here aborts the program.
+        print(f"[prepare] WARNING: these paths are Windows-style ({root}). Whatever reads "
+              f"this manifest must run on Windows too -- under WSL a path like E:\\... is "
+              f"not absolute, so it gets joined onto the manifest's own directory and every "
+              f"frame fails to load. For WSL, re-run prepare there with --ms2-root /mnt/e/...")
     return 0
 
 
