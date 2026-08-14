@@ -72,8 +72,13 @@ def main() -> int:
     by_key = {join_key(r["thermal_path"]): r for r in rows}
 
     over, failed, fine, unmatched = [], [], 0, 0
+    # Built once. Inside the `missing` comprehension below it would be rebuilt per
+    # row: twenty thousand rows times twenty thousand captions is four hundred
+    # million key constructions, which does not fail -- it just never finishes.
+    captioned = set()
     for entry in captions:
         key = join_key(entry.get("input_path") or entry.get("thermal_path") or "")
+        captioned.add(key)
         row = by_key.get(key)
         if row is None:
             unmatched += 1
@@ -88,9 +93,7 @@ def main() -> int:
     if unmatched:
         print(f"[warn] {unmatched} 条 caption 在 manifest 里找不到对应帧")
 
-    missing = [row for key, row in by_key.items()
-               if key not in {join_key(e.get("input_path") or e.get("thermal_path") or "")
-                              for e in captions}]
+    missing = [row for key, row in by_key.items() if key not in captioned]
 
     retry = over + failed + missing
     seen, unique = set(), []
