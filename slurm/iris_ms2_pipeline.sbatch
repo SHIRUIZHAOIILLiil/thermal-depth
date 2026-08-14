@@ -26,6 +26,10 @@
 #   TEST_PROMPTS test 上要评的臂，空格分隔。默认 "empty"；带 caption 的臂给 "empty correct"
 #   ROUTE        默认 b_thermal_unet
 #   VAL_STRIDE   val 抽帧，默认 4（1453 帧，与历史训练曲线同口径）
+#   VAL_MANIFEST 选点用的 val manifest。不设＝脚本自带的默认（RGB caption 那份）。
+#                ⚠️ 用热像 caption 训练的臂必须传对应的 val manifest —— 拿 RGB caption
+#                给它选冠军，等于在它没训过的文本分布下挑权重，和用错 SEL_PROMPT 同性质。
+#   TEST_MANIFEST 同理，不设＝默认 test（RGB caption 那份）
 #
 # ── 用法 ────────────────────────────────────────────────────────────
 #   不带 caption 训练的臂：
@@ -49,7 +53,7 @@ VAL_STRIDE="${VAL_STRIDE:-4}"
 
 RUN_DIR="$IRIS_RUNS/iris_ms2/$RUN"
 CONV_DIR="$RUN_DIR/converted"
-TEST_MANIFEST="$IRIS_MANIFEST_DIR/ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl"
+TEST_MANIFEST="${TEST_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_test_16-08-46_rgb_depth_v1_clip75_20260728.jsonl}"
 TRAIN_MANIFEST="${TRAIN_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_train_day2seq_clip75_20260728.jsonl}"
 
 [[ -d "$RUN_DIR" ]]        || { echo "!! 找不到训练输出目录 $RUN_DIR"; exit 1; }
@@ -65,6 +69,10 @@ echo "run          = $RUN"
 echo "steps        = $STEPS"
 echo "选点 prompt   = $SEL_PROMPT   (须与训练时一致)"
 echo "test 臂       = $TEST_PROMPTS"
+# 两个 manifest 决定了 caption 是哪一版；不打出来，日后分不清一份结果是
+# 在热像 caption 还是 RGB caption 下选出来的。
+echo "val manifest = ${VAL_MANIFEST:-<脚本默认：RGB caption>}"
+echo "test manifest= $TEST_MANIFEST"
 echo "============"
 
 run_eval() {  # tag ckpt prompt stride [manifest]
@@ -96,7 +104,7 @@ done
 
 # --- 2. val 逐点评估 -------------------------------------------------------
 for s in $STEPS; do
-  run_eval "${RUN}_val_s${s}" "$CONV_DIR/step${s}_weights.pt" "$SEL_PROMPT" "$VAL_STRIDE"
+  run_eval "${RUN}_val_s${s}" "$CONV_DIR/step${s}_weights.pt" "$SEL_PROMPT" "$VAL_STRIDE" "${VAL_MANIFEST:-}"
 done
 
 # --- 3. 按 val 选最佳（机械的一步，不需要人） -------------------------------
