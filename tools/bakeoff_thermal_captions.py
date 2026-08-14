@@ -75,12 +75,18 @@ def read_jsonl(path: Path) -> list[dict]:
 
 def cmd_prepare(args: argparse.Namespace) -> int:
     rows = read_jsonl(args.manifest)
-    if len(rows) < args.frames:
-        raise SystemExit(f"{args.manifest} has {len(rows)} rows, fewer than --frames {args.frames}")
-    # Evenly spaced, never consecutive: neighbouring MS2 frames are almost the
-    # same picture, and duplicate-rate would then measure the road, not the model.
-    step = len(rows) // args.frames
-    picked = [dict(rows[i * step]) for i in range(args.frames)]
+    if args.frames == 0:
+        # Every row, same absolute-path rewrite. The full manifests need it just
+        # as much as a subset does: their paths are relative to the MS2 root,
+        # and the captioner resolves against the manifest's own directory.
+        step, picked = 1, [dict(row) for row in rows]
+    else:
+        if len(rows) < args.frames:
+            raise SystemExit(f"{args.manifest} has {len(rows)} rows, fewer than --frames {args.frames}")
+        # Evenly spaced, never consecutive: neighbouring MS2 frames are almost the
+        # same picture, and duplicate-rate would then measure the road, not the model.
+        step = len(rows) // args.frames
+        picked = [dict(rows[i * step]) for i in range(args.frames)]
 
     # The manifest's paths are relative to the MS2 root, but the captioner
     # resolves them against the manifest's own directory. A subset written
@@ -237,7 +243,8 @@ def main() -> int:
     p.add_argument("--ms2-root", type=Path, required=True,
                    help="manifest 里的相对路径按它展开成绝对路径。必填 —— 猜错会让每一帧"
                         "都读不到图，而 captioner 只会报读取失败，不会说路径错了。")
-    p.add_argument("--frames", type=int, default=40)
+    p.add_argument("--frames", type=int, default=40,
+                   help="0 = 全部行（只做绝对路径改写，不抽样）")
     p.add_argument("--output", type=Path, required=True)
     p.set_defaults(func=cmd_prepare)
 
