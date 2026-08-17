@@ -169,7 +169,15 @@ def main() -> int:
                 failed.append((row.get("id", "?"), f"pseudo {pseudo.shape} vs GT {depth.shape}"))
                 continue
             depth = np.clip(np.where(valid, depth, pseudo), args.min_depth, args.max_depth)
-            valid = np.ones_like(depth, dtype=bool)
+            # Not every pixel of the dense map is a measurement. Anything sitting
+            # on the ceiling was put there by the clip, and counting it made a
+            # quarter of the captions end with "extends to about 80 m" -- a
+            # constant, carrying nothing, in 26.6% of frames. The lidar path
+            # already excludes the ceiling by requiring depth < max_depth; this
+            # makes the two sources treat it the same way. The target still holds
+            # 80 there, so the caption is silent about those pixels rather than
+            # in disagreement with what the model is trained on.
+            valid = depth < args.max_depth * 0.999
         caption = describe(depth, valid, args.min_valid, args.ignore_top_fraction)
         if caption is None:
             failed.append((row.get("id", "?"), f"only {int(valid.sum())} valid lidar pixels"))
