@@ -136,8 +136,19 @@ def main() -> int:
     if args.limit:
         rows = rows[: args.limit]
 
+    # Twenty thousand frames off a network filesystem takes minutes, and a tool
+    # that prints nothing until it finishes is indistinguishable from one that
+    # has hung -- which has cost this project three separate rounds of "is it
+    # working?" already.
+    import time
+
+    started = time.time()
     written, failed = [], []
-    for row in rows:
+    for index, row in enumerate(rows):
+        if index and index % 2000 == 0:
+            rate = index / max(time.time() - started, 1e-6)
+            print(f"  [{index}/{len(rows)}] {rate:.0f} 帧/秒，"
+                  f"剩余约 {(len(rows) - index) / max(rate, 1e-6) / 60:.1f} 分钟", flush=True)
         relative = row.get("thermal_depth_path") or row.get("depth_path")
         if not relative:
             failed.append((row.get("id", "?"), "no thermal-view GT path"))
