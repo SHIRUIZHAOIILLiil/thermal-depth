@@ -46,11 +46,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--ms2-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--pseudo-gt-dir", type=Path, default=None,
+        help="calibrated_pseudo_depth 目录。给了就用「LiDAR 写回 + AnyThermal 填空」的稠密图，"
+             "也就是模型训练时的那张目标图；不给就只用真实 LiDAR。\n"
+             # argparse 对 help 做 %-插值，字面百分号必须写成 %%。
+             "两者回答的问题不同：稠密图让文本与训练目标完全一致（天空那 73.5%% 上真实 LiDAR "
+             "什么都没有，而目标图写着 80 m —— 用 LiDAR 生成的 caption 会和目标打架，"
+             "模型可能因此学会不信文本，那会把实验本身搞坏）；真实 LiDAR 则对应评估标准本身。",
+    )
     parser.add_argument("--depth-scale", type=float, default=256.0)
     parser.add_argument("--min-depth", type=float, default=1e-3)
     parser.add_argument("--max-depth", type=float, default=80.0)
     parser.add_argument("--min-valid", type=int, default=200,
                         help="低于这个有效像素数就判这一帧无法生成，宁可报错也不编")
+    parser.add_argument("--ignore-top-fraction", type=float, default=1/3,
+                        help="统计时排除画面顶部这一比例（天空带）。0 = 不排除。")
     parser.add_argument("--limit", type=int, default=0)
     return parser.parse_args()
 
@@ -71,10 +82,18 @@ def round_metres(value: float) -> int:
     return int(round(value / 5) * 5)
 
 
-def describe(depth: np.ndarray, valid: np.ndarray, min_valid: int) -> str | None:
+def describe(depth: np.ndarray, valid: np.ndarray, min_valid: int, ignore_top: float) -> str | None:
+    height, width = depth.shape
+    if ignore_top > 0:
+        # The dense map fills the sky, which is a third of the frame and uniformly
+        # far, so a column median computed over the whole image is a statement
+        # about the sky rather than about the structure the depth actually varies
+        # over. Real lidar excludes it by having no returns there; saying so
+        # explicitly keeps the two sources describing the same region.
+        valid = valid.copy()
+        valid[: int(height * ignore_top)] = False
     if int(valid.sum()) < min_valid:
         return None
-    height, width = depth.shape
     edges = (0, width // 3, 2 * width // 3, width)
 
     per_column = {}
@@ -125,7 +144,22 @@ def main() -> int:
             continue
         depth = np.asarray(Image.open(args.ms2_root / relative), dtype=np.float32) / args.depth_scale
         valid = np.isfinite(depth) & (depth > args.min_depth) & (depth < args.max_depth)
-        caption = describe(depth, valid, args.min_valid)
+        if args.pseudo_gt_dir is not None:
+            # Exactly the map the trainer builds (train_route_suite.py:806 and
+            # ms2_thermal_dataset.py): lidar written back over calibrated pseudo
+            # depth, clipped into range. Describing anything else would put the
+            # text and the training target in disagreement.
+            pseudo_path = args.pseudo_gt_dir / f"{row['id']}.npy"
+            if not pseudo_path.is_file():
+                failed.append((row.get("id", "?"), f"no pseudo depth at {pseudo_path}"))
+                continue
+            pseudo = np.load(pseudo_path, allow_pickle=False).astype(np.float32)
+            if pseudo.shape != depth.shape:
+                failed.append((row.get("id", "?"), f"pseudo {pseudo.shape} vs GT {depth.shape}"))
+                continue
+            depth = np.clip(np.where(valid, depth, pseudo), args.min_depth, args.max_depth)
+            valid = np.ones_like(depth, dtype=bool)
+        caption = describe(depth, valid, args.min_valid, args.ignore_top_fraction)
         if caption is None:
             failed.append((row.get("id", "?"), f"only {int(valid.sum())} valid lidar pixels"))
             continue
