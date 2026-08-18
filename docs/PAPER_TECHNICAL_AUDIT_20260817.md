@@ -657,3 +657,56 @@ is a property of the method; one that rises was a property of the data.
 
 Cost: data preparation, one training run, one evaluation pipeline. Not started
 -- worth raising before it is spent.
+
+
+---
+
+# 15. Retraction: the GT-caption run is not an upper bound (2026-08-18, after the meeting)
+
+§13 and §14 call the GT-caption arm a ceiling experiment. It is not one, and
+the write-up should not have used the word.
+
+**An upper bound has to be at least as good as what it bounds.** The arm scores
+AbsRel 0.08758. The ordinary RGB-caption arm, trained on captions a VLM guessed
+from a different camera, scores 0.08530. The thing being bounded beats the
+bound, so nothing is bounded.
+
+The run is also degraded from the start, which the absolute numbers show
+plainly:
+
+| arm | empty prompt | its own caption |
+|---|---|---|
+| no caption training | **0.08551** | 0.08764 |
+| RGB caption training | 0.08752 | **0.08530** |
+| GT geometric caption training | **0.09104** | 0.08758 |
+
+Training on captions computed from the ground truth cost 0.0055 AbsRel at the
+empty prompt relative to the no-caption baseline. The model learned to lean on
+a signal that does not exist at inference, and its visual pathway got worse for
+it. A content share measured inside a run that starts 6% behind says something
+about that run's internals, not about what language can contribute.
+
+## 15.1 What survives
+
+The within-run comparison stands: holding weights fixed, the frame's own
+geometric sentence beats another frame's on all three metrics. That arm is
+weakly but genuinely sensitive to caption content.
+
+## 15.2 What does not survive
+
+- "No captioner, prompt or thermal VLM will change this" — unsupported.
+- "The ceiling on language is here" — retracted twice now: first for the scene
+  diversity confound (§14.2), now because the arm is not a bound at all.
+- The 7.8% figure may be quoted only as "the content share inside the
+  GT-caption run", never as a limit on language.
+
+## 15.3 What a real bound would need
+
+At minimum the oracle arm has to reach the no-text baseline (0.08551) before
+its internal decomposition means anything. The cheapest design that could:
+keep training captions as they are on the arm that already works (RGB caption,
+0.08530) and append the GT geometric clause to them, so the oracle information
+is *added* to a model that already uses text rather than replacing the text
+distribution it was trained on. If that arm does not beat 0.08530, the claim is
+about language; if it does, the earlier arms were limited by caption content
+after all.
