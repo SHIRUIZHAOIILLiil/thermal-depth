@@ -28,6 +28,10 @@ REPOS = [
     # 天空掩码（Jasmine 附录 C.3 的 sky loss 要它）。取 Cityscapes 版：
     # 它的标签集里有 sky，域也是行车场景。约 1.6 GB。
     "facebook/mask2former-swin-large-cityscapes-semantic",
+    # caption 生成用（caption_ms2.sbatch）。约 16 GB。
+    # 必须在投 caption array 之前跑完：十几个 array 任务同时冷启动会并发写
+    # 同一个缓存目录，把权重下坏，然后整个 array 一起失败。
+    "OpenGVLab/InternVL3-8B",
 ]
 
 for repo in REPOS:
