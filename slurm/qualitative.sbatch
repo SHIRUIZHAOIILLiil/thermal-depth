@@ -29,7 +29,10 @@
 #              shared（强制共用一个归一化区间）。official 那张只用来对齐论文观感。
 #   PANEL_W    每栏宽度，默认 640（= 源图原宽）。调大只是渲染更大，不会增加细节。
 #   GT_DILATE  稀疏 GT 的膨胀窗口，默认 3；幻灯上看不清就调 5
-#   CAPTION    推理时喂的文本：empty（默认）| correct
+#   CAPTION    推理时喂的文本：empty（默认）| correct | shuffled。
+#              也可以给逗号分隔的一串，一个模型一个，用来把「同一份权重换 prompt」
+#              和「换权重」放进同一张图（`--caption-mode` 本来就支持）。
+#   PANEL_LABELS on（默认）| off。off = 面板上不画字，给幻灯用；栏目名写在图注里。
 #
 # ── 用法 ────────────────────────────────────────────────────────────
 #   天空修复前后对比：
@@ -60,6 +63,7 @@ ARGS=(
   --panel-width "${PANEL_W:-640}"
   --gt-dilate "${GT_DILATE:-3}"
   --caption-mode "${CAPTION:-empty}"
+  --panel-labels "${PANEL_LABELS:-on}"
 )
 if [[ -n "${FRAME_IDS:-}" ]]; then
   ARGS+=(--frame-ids $FRAME_IDS)

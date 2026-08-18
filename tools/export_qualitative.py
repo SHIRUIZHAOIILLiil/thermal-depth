@@ -90,6 +90,11 @@ def parse_args() -> argparse.Namespace:
             "再让整行共用该帧真值的量程 —— 只有这个模式下'天空发黄'才能读作'距离判错'。"
         ),
     )
+    parser.add_argument(
+        "--panel-labels", choices=("on", "off"), default="on",
+        help="off = 面板上不画任何文字。给幻灯用的图一律用 off：烘进像素的标注没法在"
+             "排版时改，读图的人会把它当成结论的一部分。栏目名放到幻灯的图注里。",
+    )
     parser.add_argument("--min-depth", type=float, default=0.1)
     parser.add_argument("--max-depth", type=float, default=80.0)
     return parser.parse_args()
@@ -147,6 +152,10 @@ def strip(panels: list[tuple[str, Image.Image]], width: int, label_h: int = 34) 
         resized.append((name, im.resize((width, h), Image.BICUBIC)))
     row_h = max(im.height for _, im in resized) + label_h
     canvas = Image.new("RGB", (width * len(resized), row_h), (255, 255, 255))
+    if label_h <= 0:
+        for i, (_, im) in enumerate(resized):
+            canvas.paste(im, (i * width, 0))
+        return canvas
     draw = ImageDraw.Draw(canvas)
     # panel labels are ASCII on purpose: a missing CJK face silently renders
     # every Chinese glyph as a box, and the fallback bitmap font is unreadable
@@ -268,6 +277,7 @@ def main() -> None:
         del model
         torch.cuda.empty_cache()
 
+    label_h = 34 if args.panel_labels == "on" else 0
     styles = ("official", "shared") if args.style == "both" else (args.style,)
     strips: dict[str, list] = {style: [] for style in styles}
     sky_report: list[dict] = []
@@ -323,7 +333,7 @@ def main() -> None:
                 panel = colorize_depth_map(pred, reverse_color=True)
                 panels.append((f"{label}  [{mode}]", panel))
                 panel.save(args.output_dir / f"{label}_pred_demo.png")
-            strips["official"].append(strip(panels, args.panel_width))
+            strips["official"].append(strip(panels, args.panel_width, label_h))
 
         if "shared" in styles:
             # Iris colours disparity, so the shared range lives in disparity too.
@@ -339,12 +349,11 @@ def main() -> None:
             ]
             for _, _, label, mode in specs:
                 aligned = aligned_by_label[label]
-                median_top = float(np.median(aligned[top]))
                 panels.append((
-                    f"{label}  [{mode}]   top1/3 median {median_top:.0f} m",
+                    f"{label}  [{mode}]",
                     colour_shared(1.0 / np.maximum(aligned, 1e-6), lo, hi),
                 ))
-            strips["shared"].append(strip(panels, args.panel_width))
+            strips["shared"].append(strip(panels, args.panel_width, label_h))
 
     for style, images in strips.items():
         total_h = sum(im.height for im in images) + 12 * (len(images) - 1)
