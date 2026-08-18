@@ -577,3 +577,83 @@ Recorded as the researcher's stated position, not as a finding.
 | Generic-template prompt rung (Iris Table 5's middle level) | Never tested on the thermal line |
 | Seed replication | **None.** Every arm is a single run, and between-arm differences are the same order as the within-arm prompt effects, so no arm has been shown better than another |
 | `E:\project\captioning` | Not under version control; the 16-bit fix and the prompt versions exist only on disk |
+
+
+---
+
+# 14. Scene diversity of the training split (2026-08-18)
+
+## 14.1 VERIFIED — the training set is two drives, and they repeat themselves
+
+`ms2_train_day2seq_clip75_20260728.jsonl` holds 19,949 frames. Counting them by
+sequence:
+
+| sequence | frames | frame numbers | adjacent stride |
+|---|---|---|---|
+| `2021-08-06-10-59-33` | 10,441 | 0..10441 | 1 (10,439 of them) |
+| `2021-08-06-11-37-46` | 9,508 | 0..9514 | 1 (9,500 of them) |
+
+Two continuous drives at full rate. That alone says nothing about how much the
+picture changes, so it was measured on the pixels: each frame reduced to a
+32x16 signature under the same per-image min-max the encoder applies, then the
+mean distance between frames plotted against how far apart in time they are.
+The reference is the mean distance between two frames drawn at random, 0.2011.
+
+| lag (frames) | distance | share of reference |
+|---|---|---|
+| 1 | 0.0294 | 15% |
+| 10 | 0.0937 | 47% |
+| 50 | 0.1395 | 69% |
+| 150 | 0.1668 | 83% |
+| 500 | 0.1900 | 94% |
+| 800 | 0.1967 | 98% |
+
+Two frames need to be ~500 apart before they are as unlike each other as two
+frames picked at random. Dividing the frame count by that lag:
+
+**Effectively independent scenes: ~39 (at the 90% threshold), ~132 (at 80%).**
+
+Order 10^2, not 10^4. A contact sheet at 664-frame spacing confirms the content
+does change -- car parks, tree-lined avenues, an overpass, an underpass, city
+traffic -- so the frames are not one place revisited. What repeats is the
+*layout*: ego-forward view, road surface below, structures at the sides, sky
+above, which is the level the signature measures and also the level a depth
+model works at.
+
+⚠️ Limits of this measure: a 32x16 signature sees coarse layout and gross
+brightness, not object identity. Two different streets with the same layout
+register as similar, so the count is a lower bound on semantic diversity and a
+fair estimate of geometric diversity.
+
+## 14.2 What this invalidates
+
+The 2026-08-18 ceiling result (§ the GT-caption line) was first written up as
+"content is worth 7.8% of the text effect, so the ceiling on language is here."
+The argument offered against a data-volume explanation was that too little data
+would weaken *both* the presence effect and the content effect, whereas the
+measured gap is 12x.
+
+**That argument does not survive ~39 independent scenes.** Learning a binary
+distinction (is there text or not) needs far fewer distinct examples than
+learning a mapping from stated numbers to geometry, so the two effects are not
+expected to degrade together. The confound cannot be ruled out with the data in
+hand.
+
+The result should therefore be stated with its condition attached:
+
+> On a training set containing on the order of 40-130 effectively independent
+> scenes, captions computed from the frame's own lidar contribute 7.8% of the
+> total text effect.
+
+Not: "the ceiling on language is here."
+
+## 14.3 What would settle it
+
+`E:\dataset\ms2\sync_data\` holds 16 further sequences, still as `.tar.bz2`
+(~230 GB). Training currently uses 2 of them. Rebuilding the training split
+from 6-8 sequences across different times and routes and rerunning the ceiling
+experiment separates the two explanations: a content share that stays near 7.8%
+is a property of the method; one that rises was a property of the data.
+
+Cost: data preparation, one training run, one evaluation pipeline. Not started
+-- worth raising before it is spent.
