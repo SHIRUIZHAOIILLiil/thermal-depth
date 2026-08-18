@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=03:00:00
+#SBATCH --time=01:30:00
 #SBATCH --output=%x-%A_%a.out
 #SBATCH --error=%x-%A_%a.err
 #
@@ -21,11 +21,15 @@
 #   sbatch --array=0-3%4   --export=ALL,SPLIT=val   $HOME/Iris/slurm/caption_ms2.sbatch
 #   sbatch --array=0-1%2   --export=ALL,SPLIT=test  $HOME/Iris/slurm/caption_ms2.sbatch
 #
-# 分片数直接取自 SLURM_ARRAY_TASK_COUNT，所以改 --array 就等于改分片，
-# 不需要同步改脚本里的任何常数。
+# 首次提交时分片数取自 SLURM_ARRAY_TASK_COUNT，所以整段投的话改 --array 就等于
+# 改分片。但**只补投其中几片时必须显式带 NSHARDS**，理由见下面 NSHARDS 处的注释。
 #
-# 超时或被抢占后**直接重投同一条命令即可**：--resume 是默认开启的，
-# 每片有自己的输出文件，已成功的行会被跳过。
+# 超时或被抢占后**重投整段同一条命令最省心**：--resume 是默认开启的，
+# 每片有自己的输出文件，已完成的片会在几秒内跳过退出。
+#
+# --time 报准很重要：实测每片约 56 分钟（19,949 帧 / 12 片，1.6-2 s/帧），
+# 所以这里填 1:30 而不是 3:00 —— Slurm backfill 会让短作业插进大作业的空档先跑，
+# 时限报大等于主动放弃插空机会（slurm/README.md 也写着这条）。
 
 source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
@@ -41,7 +45,17 @@ INPUT_MANIFEST="${INPUT_MANIFEST:-$SCRATCH/manifests/capinput/ms2_${SPLIT}_capin
 OUT_ROOT="${OUT_ROOT:-$SCRATCH/captions/${PROMPT_VERSION}/${SPLIT}}"
 
 SHARD="${SLURM_ARRAY_TASK_ID:-0}"
-NSHARDS="${SLURM_ARRAY_TASK_COUNT:-1}"
+# ⚠️ 分片总数必须是"这个 split 一共切成几片"，不是"这次投了几个任务"。
+# SLURM_ARRAY_TASK_COUNT 等于本次 --array 的任务数，所以只补投失败的几片时
+# （例如 --array=5-11）它会变成 7 而不是 12，于是 rows[5::7] 和 rows[5::12]
+# 是完全不同的帧集合 —— 补跑会既重复又漏帧，而 --resume 按帧去重、看不出异常。
+# 因此补投时必须显式带上 NSHARDS，保持与首次提交一致：
+#   sbatch --array=5-11 --export=ALL,SPLIT=train,NSHARDS=12 caption_ms2.sbatch
+NSHARDS="${NSHARDS:-${SLURM_ARRAY_TASK_COUNT:-1}}"
+if [[ "${SLURM_ARRAY_TASK_COUNT:-0}" -gt 0 && "$NSHARDS" -ne "$SLURM_ARRAY_TASK_COUNT" ]]; then
+  echo "note: NSHARDS=$NSHARDS 与本次 array 任务数 ${SLURM_ARRAY_TASK_COUNT} 不同 —— 按补投处理"
+fi
+(( SHARD < NSHARDS )) || { echo "!! SHARD=$SHARD 超出 NSHARDS=$NSHARDS"; exit 1; }
 
 [[ -f "$CAPTION_SCRIPT"  ]] || { echo "!! 找不到 captioner：$CAPTION_SCRIPT"; exit 1; }
 [[ -f "$INPUT_MANIFEST"  ]] || { echo "!! 找不到输入清单：$INPUT_MANIFEST"; exit 1; }
