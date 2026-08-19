@@ -136,14 +136,22 @@ for p in $TEST_PROMPTS; do
   run_eval "${RUN}_test_s${BEST}_${p}" "$CONV_DIR/step${BEST}_weights.pt" "$p" 1 "$TEST_MANIFEST"
 done
 
-# --- 5. 两臂逐帧配对（给了两个 prompt 才有意义） -----------------------------
-set -- $TEST_PROMPTS
-if [[ $# -ge 2 ]]; then
-  echo "=== 逐帧配对：$2 − $1 ==="
-  python tools/compare_route_evals.py \
-    "$IRIS_RUNS/eval/${RUN}_test_s${BEST}_${1}/eval_eval_per_sample.csv" \
-    "$IRIS_RUNS/eval/${RUN}_test_s${BEST}_${2}/eval_eval_per_sample.csv"
-fi
+# --- 5. 逐帧配对：所有两两组合 ----------------------------------------------
+# 原来只配对前两个臂。给 "empty correct shuffled" 时它算 correct−empty 就收工，
+# 而 **shuffled−correct 才是这条线要回答的那个问题**（模型用的是文本的存在
+# 还是内容），却被静默丢掉 —— 2026-08-19 的 v3_1 那轮就是这么漏的，事后只能
+# 手动补跑。臂数很少，全配一遍的代价可以忽略。
+ARMS=( $TEST_PROMPTS )
+for ((i = 0; i < ${#ARMS[@]}; i++)); do
+  for ((j = i + 1; j < ${#ARMS[@]}; j++)); do
+    a="${ARMS[i]}"; b="${ARMS[j]}"
+    echo
+    echo "=== 逐帧配对：$b − $a ==="
+    python tools/compare_route_evals.py \
+      "$IRIS_RUNS/eval/${RUN}_test_s${BEST}_${a}/eval_eval_per_sample.csv" \
+      "$IRIS_RUNS/eval/${RUN}_test_s${BEST}_${b}/eval_eval_per_sample.csv"
+  done
+done
 
 # --- 6. 汇总 ---------------------------------------------------------------
 echo "=== 最终结果（test 16-08-46 / 2543 帧，官方协议，condition_latent=mode）==="
