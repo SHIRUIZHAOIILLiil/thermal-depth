@@ -39,8 +39,24 @@ import re
 from collections import Counter
 from pathlib import Path
 
-# Later version wins when a frame appears more than once.
-PROMPT_PRECEDENCE = {"thermal_depth_v1": 1, "thermal_depth_v2": 2, "thermal_depth_v2_short": 3}
+# Later version wins when a frame appears more than once. Lookups go through
+# .get(version, 0), so a version missing from this table silently ranks below
+# every listed one: passing a v3_1 caption file alongside an old v2 one would
+# rebuild the manifest from v2 without warning anybody. Every prompt version
+# that has ever produced captions has to be listed here.
+#
+# v3_1 sits at the top because it won the 200-frame bake-off of 2026-08-18
+# against v2, v3 and v3_2 on every measure that separated them: night misreads
+# 0.0% (v3_2 was 75.5%), boilerplate 2.0% (v3 was 40.0%), degenerate text 0.5%,
+# temperature content 0.5%, single-sentence 96%.
+PROMPT_PRECEDENCE = {
+    "thermal_depth_v1": 1,
+    "thermal_depth_v2": 2,
+    "thermal_depth_v2_short": 3,
+    "thermal_depth_v3": 4,
+    "thermal_depth_v3_2": 5,
+    "thermal_depth_v3_1": 6,
+}
 KEY_DEPTH = 5  # sync_data/_<sequence>/thr/img_left/<frame>.png
 
 
