@@ -101,6 +101,11 @@ PY
 echo "=== split=$SPLIT prompt=$PROMPT_VERSION shard=$SHARD/$NSHARDS ==="
 echo "=== 输出 -> $OUT_ROOT ==="
 
+# CAPTION_EXTRA_ARGS 用于补跑那种一次性场景，最典型的是
+# --no-fail-on-quality-error：质量检查拦下的帧会写成 error 行，而
+# build_thermal_caption_manifest.py 过滤掉 error 行之后那帧就"没有 caption"，
+# 于是它在训练时等同于空 prompt —— 那是另一条实验臂，混进来就污染了。
+# 宁可要一句啰嗦的 caption，也不要一个静默变成空 prompt 的样本。
 srun python "$CAPTION_SCRIPT" \
   --manifest "$SHARD_MANIFEST" \
   --output-dir "$OUT_ROOT" \
@@ -108,6 +113,7 @@ srun python "$CAPTION_SCRIPT" \
   --thermal-render grayscale \
   --models internvl3_8b \
   --prompt-type "$PROMPT_VERSION" \
-  --source-tag "${SPLIT}_shard${SHARD}of${NSHARDS}"
+  --source-tag "${SPLIT}_shard${SHARD}of${NSHARDS}" \
+  ${CAPTION_EXTRA_ARGS:-}
 
 echo "=== shard $SHARD 完成 ==="
