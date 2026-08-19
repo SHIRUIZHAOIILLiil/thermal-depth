@@ -61,7 +61,20 @@ declare -A URL=(
 PATTERNS=( "*/thr/depth_filtered/*" "*/thr/depth/*" )
 [[ "$INCLUDE_RGB_DEPTH" == "1" ]] && PATTERNS+=( "*/rgb/depth_filtered/*" )
 
-free_gb() { df -BG --output=avail "$SCRATCH" 2>/dev/null | tail -1 | tr -dc '0-9'; }
+# ⚠️ 不能用 df：Lustre 上它报的是整个文件系统的可用量（2.8 PB），不是你的配额。
+# 用它做守卫等于没有守卫 —— 永远不会触发，而 scratch 一旦被填满，正在跑的训练
+# 作业写 checkpoint 也会失败，那才是真正的损失。per-user 配额只能问 lfs quota
+# （prefetch_models.sbatch 里也是这么查的）。
+# 输出列：Filesystem kbytes quota limit grace files ...  超软配额时数字后会带 '*'。
+free_gb() {
+  lfs quota -u "$USER" /scratch 2>/dev/null | awk '
+    $1 ~ /scratch/ {
+      used = $2; limit = $4
+      gsub(/[^0-9.]/, "", used); gsub(/[^0-9.]/, "", limit)
+      if (limit + 0 > 0) { printf "%d", (limit - used) / 1024 / 1024; found = 1 }
+    }
+    END { if (!found) print -1 }'
+}
 
 echo "=== 目标 $DEST"
 echo "=== 取这些子目录: ${PATTERNS[*]}"
@@ -80,9 +93,14 @@ for seq in $SEQS; do
   fi
 
   avail=$(free_gb)
+  if (( avail < 0 )); then
+    echo "!! 读不到 lfs quota —— 拒绝在配额未知的情况下下载几十 GB"
+    echo "   手动确认后用 MIN_FREE_GB=0 覆盖，或修 free_gb()"
+    exit 1
+  fi
   if (( avail < MIN_FREE_GB )); then
-    echo "!! 剩余 ${avail}GB 低于 MIN_FREE_GB=${MIN_FREE_GB}，停手"
-    echo "   先清理或减少序列数再继续。"
+    echo "!! 配额剩余 ${avail}GB 低于 MIN_FREE_GB=${MIN_FREE_GB}，停手"
+    echo "   填满 scratch 会连带让正在跑的训练作业写不出 checkpoint。"
     exit 1
   fi
 
