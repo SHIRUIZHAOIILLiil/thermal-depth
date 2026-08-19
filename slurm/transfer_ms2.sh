@@ -117,14 +117,28 @@ send_seq() {
   if [[ ${#paths[@]} -eq 0 ]]; then echo "!! 本地无数据，跳过 $seq"; return; fi
 
   local want have
-  want=$(local_count "$seq"); have=$(remote_count "$seq")
-  if [[ "$have" == "$want" && "$want" != "0" ]]; then
-    echo "== $seq 已完整（$have 个文件），跳过"; return
+  if [[ "${SKIP_VERIFY:-0}" == "1" ]]; then
+    # 本地计数要 find 遍历几万个文件，通过 WSL 的 /mnt/e（DrvFs）访问 Windows
+    # 文件系统时慢得离谱 —— 20 条序列约 35 万文件，光计数就要很久。
+    # 明知远端为空时（例如首次传新序列）没必要算，直接传。
+    want="?"; have=0
+  else
+    want=$(local_count "$seq"); have=$(remote_count "$seq")
+    if [[ "$have" == "$want" && "$want" != "0" ]]; then
+      echo "== $seq 已完整（$have 个文件），跳过"; return
+    fi
+    [[ "$have" != "0" ]] && echo "== $seq 不完整（$have/$want），重传"
   fi
-  [[ "$have" != "0" ]] && echo "== $seq 不完整（$have/$want），重传"
 
   echo ">> 传输 $seq  （$want 个文件，${#paths[@]} 个子目录）"
-  ssh "$REMOTE" "rm -rf '$DEST/sync_data/$seq' '$DEST/proj_depth/$seq'; mkdir -p '$DEST'"
+  # ⚠️ 只删**本次真要重传的那几个子树**，绝不能按 sync_data/$seq + proj_depth/$seq
+  # 一刀切。原来那种写法有一个隐含前提：本地是两棵树的唯一来源。自从
+  # fetch_proj_depth.sbatch 开始在集群上直取深度 GT，这个前提就不成立了 ——
+  # 本地只有 sync_data 的序列会连带把远端刚下好的 proj_depth 删掉，
+  # 而且悄无声息（计数不匹配 → 重传 → 删除），下次评测才会发现 GT 没了。
+  local rmlist="" p
+  for p in "${paths[@]}"; do rmlist+=" '$DEST/$p'"; done
+  ssh "$REMOTE" "rm -rf $rmlist; mkdir -p '$DEST'"
   tar -cf - -C "$root" "${paths[@]}" | ssh "$REMOTE" "tar -xf - -C '$DEST'"
   echo "   完成 $seq  （远端 $(remote_count "$seq") 个文件）"
 }
