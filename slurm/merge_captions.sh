@@ -36,13 +36,26 @@ python - "$MERGED" "$INPUT_MANIFEST" <<'PY'
 import json, sys, collections
 merged, expected = sys.argv[1], sys.argv[2]
 
-want = {json.loads(l)["id"] for l in open(expected, encoding="utf-8")}
+# ⚠️ 千万别用 image_id 做 join 键：它是**裸帧号**，而每条 MS2 序列都有 000000。
+# train 横跨两条序列，按裸帧号比对会得出"9507 个重复、全部缺失"这种看着像
+# 灾难、其实只是键空间对不上的结论。按图路径末 5 段比对 —— 这也是
+# tools/build_thermal_caption_manifest.py 用的键，两边保持一致。
+KEY_DEPTH = 5  # sync_data/_<sequence>/thr/img_left/<frame>.png
+
+def frame_key(value):
+    parts = str(value).replace("\\", "/").lower().split("/")
+    return "/".join(parts[-KEY_DEPTH:])
+
+want = {frame_key(json.loads(l)["thermal_path"]) for l in open(expected, encoding="utf-8")}
 rows = [json.loads(l) for l in open(merged, encoding="utf-8")]
-got = collections.Counter(r["image_id"] for r in rows)
+got = collections.Counter(
+    frame_key(r.get("thermal_path") or r.get("input_path") or "") for r in rows
+)
 status = collections.Counter(r.get("status", "?") for r in rows)
 
 dupes = {k: v for k, v in got.items() if v > 1}
 missing = want - set(got)
+extra = set(got) - want
 
 print(f"\n=== 合并结果 {merged} ===")
 print(f"期望 {len(want)} 帧，实得 {len(rows)} 行、{len(got)} 个唯一帧")
@@ -52,14 +65,20 @@ if dupes:
 if missing:
     print(f"!! 缺失 {len(missing)} 帧（前 5）: {sorted(missing)[:5]}")
     print("   补跑：重投同一条 sbatch 命令即可，--resume 会跳过已成功的行")
+if extra:
+    print(f"!! 多出 {len(extra)} 帧不在输入清单里（前 5）: {sorted(extra)[:5]}")
 
 bad = [r for r in rows if r.get("status") != "ok"]
 if bad:
-    print(f"!! 非 ok 行 {len(bad)} 条（前 3）:")
-    for r in bad[:3]:
-        print(f"   {r.get('image_id')}: {str(r.get('error'))[:120]}")
+    # 质量检查拦下来的（多为词语重复），不算缺帧：它们有行、只是没有可用 caption。
+    # 数量少可以直接放着（下游按帧 join，这些帧就是没有 caption），
+    # 多了就得回头看 prompt。
+    reasons = collections.Counter(str(r.get("error"))[:60] for r in bad)
+    print(f"!! 非 ok 行 {len(bad)} 条 = {len(bad)/len(rows):.3%}，原因分布:")
+    for reason, n in reasons.most_common(5):
+        print(f"   {n:5d}  {reason}")
 
-sys.exit(1 if (missing or dupes or bad) else 0)
+sys.exit(1 if (missing or dupes or extra) else 0)
 PY
 
 echo
