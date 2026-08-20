@@ -109,6 +109,20 @@ PY
 echo "=== split=$SPLIT prompt=$PROMPT_VERSION shard=$SHARD/$NSHARDS ==="
 echo "=== 输出 -> $OUT_ROOT ==="
 
+# ⚠️ 等显存真的空出来再加载模型。
+# array 用 %N 节流时，前一片结束、后一片会被立刻调度到同一张卡上，而 **CUDA 释放
+# 显存滞后于 Slurm 的调度**。实测：46 GB 的 L40S 上已用 34 GB，而 InternVL3-8B 要
+# 约 17 GB —— 加载直接 OOM，12 秒就退。这个 race 在批次交替时会反复发生，不是偶发。
+# （2026-08-20：24 片里 11 片这样挂掉。）
+NEED_MIB="${NEED_MIB:-20000}"
+for attempt in $(seq 1 60); do
+  free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1)
+  [[ -z "$free" ]] && { echo "[wait] 读不到 nvidia-smi，直接继续"; break; }
+  (( free >= NEED_MIB )) && { echo "[wait] GPU 空闲 ${free} MiB，开始加载"; break; }
+  echo "[wait] GPU 空闲 ${free} MiB < 需要 ${NEED_MIB} MiB —— 等 30s（第 ${attempt}/60 次）"
+  sleep 30
+done
+
 # CAPTION_EXTRA_ARGS 用于补跑那种一次性场景，最典型的是
 # --no-fail-on-quality-error：质量检查拦下的帧会写成 error 行，而
 # build_thermal_caption_manifest.py 过滤掉 error 行之后那帧就"没有 caption"，
