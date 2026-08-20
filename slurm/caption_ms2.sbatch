@@ -114,14 +114,28 @@ echo "=== 输出 -> $OUT_ROOT ==="
 # 显存滞后于 Slurm 的调度**。实测：46 GB 的 L40S 上已用 34 GB，而 InternVL3-8B 要
 # 约 17 GB —— 加载直接 OOM，12 秒就退。这个 race 在批次交替时会反复发生，不是偶发。
 # （2026-08-20：24 片里 11 片这样挂掉。）
+echo "[gpu] node=$(hostname -s) CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<未设置>}"
 NEED_MIB="${NEED_MIB:-20000}"
-for attempt in $(seq 1 60); do
-  free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1)
-  [[ -z "$free" ]] && { echo "[wait] 读不到 nvidia-smi，直接继续"; break; }
-  (( free >= NEED_MIB )) && { echo "[wait] GPU 空闲 ${free} MiB，开始加载"; break; }
-  echo "[wait] GPU 空闲 ${free} MiB < 需要 ${NEED_MIB} MiB —— 等 30s（第 ${attempt}/60 次）"
-  sleep 30
-done
+gpu_free() { nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1; }
+free=$(gpu_free)
+if [[ -n "$free" ]]; then
+  for attempt in $(seq 1 20); do          # 最多等 10 分钟
+    (( free >= NEED_MIB )) && break
+    echo "[wait] GPU 空闲 ${free} MiB < 需要 ${NEED_MIB} MiB —— 等 30s（第 ${attempt}/20 次）"
+    sleep 30
+    free=$(gpu_free)
+  done
+  if (( free < NEED_MIB )); then
+    # 等不到就**直接失败**，别撞上去 OOM。占卡的多半是同一节点上的另一个 array
+    # 任务（一片要跑近两小时，等不来），而 OOM 会让本片写满 error 行 —— 那种产物
+    # 比干脆失败更麻烦，还得手动清理。
+    echo "!! GPU 空闲仅 ${free} MiB，等了 10 分钟仍不足 ${NEED_MIB} MiB。"
+    echo "   多半是 Slurm 把多个 array 任务排到了同一张卡上（集群空闲时更容易发生）。"
+    echo "   对策：降低 --array 的 %N 并发，或改天再投；本片直接退出，稍后重投即可。"
+    exit 1
+  fi
+fi
+echo "[gpu] 空闲 ${free:-?} MiB，开始加载模型"
 
 # CAPTION_EXTRA_ARGS 用于补跑那种一次性场景，最典型的是
 # --no-fail-on-quality-error：质量检查拦下的帧会写成 error 行，而
