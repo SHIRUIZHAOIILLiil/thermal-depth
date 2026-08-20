@@ -124,4 +124,29 @@ srun python "$CAPTION_SCRIPT" \
   --source-tag "${SPLIT}_shard${SHARD}of${NSHARDS}" \
   ${CAPTION_EXTRA_ARGS:-}
 
+# ⚠️ generate_captions.py 把每帧的失败写成 error 行然后**正常退出**，所以
+# 「3,190 帧全部 CUDA OOM」和「3,190 帧全部成功」在 sacct 里都是 COMPLETED 0:0。
+# 2026-08-20 就这么中招：scancel 之后立刻重投，新任务被调度到显存还没释放的卡上，
+# 三个分片瞬间失败 3,120 帧，日志无报错、退出码为零，只有耗时 12 秒露了馅。
+# 所以这里自己判失败率 —— 让作业**响亮地失败**，别把空产物留给下游。
+OUT_FILE="$OUT_ROOT/captions_${SPLIT}_shard${SHARD}of${NSHARDS}_internvl3_8b_thermal_${PROMPT_VERSION}.jsonl"
+python - "$OUT_FILE" "$SHARD_MANIFEST" <<'PY'
+import json, sys
+out, want = sys.argv[1], sys.argv[2]
+n_want = sum(1 for _ in open(want, encoding="utf-8"))
+ok = bad = 0
+for line in open(out, encoding="utf-8"):
+    r = json.loads(line)
+    if r.get("status") == "ok":
+        ok += 1
+    else:
+        bad += 1
+print(f"[gate] 应有 {n_want} 帧；ok {ok}，非ok {bad}")
+# 少量单帧失败是正常的（质量检查会拦下退化文本），成批失败一定是环境问题
+if ok < n_want * 0.98:
+    raise SystemExit(f"!! 只有 {ok}/{n_want} 帧成功 —— 判定为环境故障（显存/权重/路径），"
+                     f"\n   删掉本片输出后重投：rm '{out}' 然后 sbatch --array={sys.argv[0] and ''}<本片> "
+                     f"--export=ALL,...,NSHARDS=<总片数>")
+PY
+
 echo "=== shard $SHARD 完成 ==="
