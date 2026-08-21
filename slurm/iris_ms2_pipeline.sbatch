@@ -60,6 +60,22 @@ TRAIN_MANIFEST="${TRAIN_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_train_day2seq_clip75_20
 [[ -f "$TEST_MANIFEST" ]]  || { echo "!! 找不到 test manifest $TEST_MANIFEST"; exit 1; }
 case "$SEL_PROMPT" in empty|correct) ;; *) echo "!! SEL_PROMPT 只能是 empty 或 correct"; exit 1 ;; esac
 
+# 一份结果属于哪张卷子，必须写进它的目录名。
+# 2026-08-21：标签原本是 ${RUN}_test_s${STEP}_${PROMPT}，不含 manifest，而下面的
+# 跳过逻辑正是按这个名字判断"已经跑过"。换一张卷子重跑就会命中上一张卷子的结果，
+# 整条作业三秒跳完并把旧数原样打印出来。同一条臂要在 day/rainy/night 三份 test 上
+# 跑时，这会静默产出三份相同的错数。
+# 指纹取 manifest 内容的 sha256 前 8 位：换清单必然换目录，改名不换内容则不变。
+fingerprint() {
+  local path="$1"
+  [[ -z "$path" ]] && { echo "dflt"; return; }
+  sha256sum "$path" | cut -c1-8
+}
+VAL_FP="$(fingerprint "${VAL_MANIFEST:-}")"
+TEST_FP="$(fingerprint "$TEST_MANIFEST")"
+VAL_PREFIX="${RUN}_val_${VAL_FP}"
+TEST_PREFIX="${RUN}_test_${TEST_FP}"
+
 mkdir -p "$CONV_DIR"
 cd "$IRIS_REPO"
 git log --oneline -1
@@ -73,6 +89,7 @@ echo "test 臂       = $TEST_PROMPTS"
 # 在热像 caption 还是 RGB caption 下选出来的。
 echo "val manifest = ${VAL_MANIFEST:-<脚本默认：RGB caption>}"
 echo "test manifest= $TEST_MANIFEST"
+echo "指纹          = val:$VAL_FP  test:$TEST_FP  (进入结果目录名)"
 echo "============"
 
 run_eval() {  # tag ckpt prompt stride [manifest]
@@ -104,17 +121,17 @@ done
 
 # --- 2. val 逐点评估 -------------------------------------------------------
 for s in $STEPS; do
-  run_eval "${RUN}_val_s${s}" "$CONV_DIR/step${s}_weights.pt" "$SEL_PROMPT" "$VAL_STRIDE" "${VAL_MANIFEST:-}"
+  run_eval "${VAL_PREFIX}_s${s}" "$CONV_DIR/step${s}_weights.pt" "$SEL_PROMPT" "$VAL_STRIDE" "${VAL_MANIFEST:-}"
 done
 
 # --- 3. 按 val 选最佳（机械的一步，不需要人） -------------------------------
-BEST=$(python - "$IRIS_RUNS/eval" "$RUN" $STEPS <<'PY'
+BEST=$(python - "$IRIS_RUNS/eval" "$VAL_PREFIX" $STEPS <<'PY'
 import json, sys
-root, run, steps = sys.argv[1], sys.argv[2], [int(x) for x in sys.argv[3:]]
+root, prefix, steps = sys.argv[1], sys.argv[2], [int(x) for x in sys.argv[3:]]
 scored = {}
 for s in steps:
     try:
-        scored[s] = json.load(open(f'{root}/{run}_val_s{s}/eval_eval.json'))['abs_rel']
+        scored[s] = json.load(open(f'{root}/{prefix}_s{s}/eval_eval.json'))['abs_rel']
     except Exception:
         pass
 if not scored:
@@ -133,7 +150,7 @@ echo ">>> 选中 step $BEST"
 
 # --- 4. test 评估 ----------------------------------------------------------
 for p in $TEST_PROMPTS; do
-  run_eval "${RUN}_test_s${BEST}_${p}" "$CONV_DIR/step${BEST}_weights.pt" "$p" 1 "$TEST_MANIFEST"
+  run_eval "${TEST_PREFIX}_s${BEST}_${p}" "$CONV_DIR/step${BEST}_weights.pt" "$p" 1 "$TEST_MANIFEST"
 done
 
 # --- 5. 逐帧配对：所有两两组合 ----------------------------------------------
@@ -148,19 +165,19 @@ for ((i = 0; i < ${#ARMS[@]}; i++)); do
     echo
     echo "=== 逐帧配对：$b − $a ==="
     python tools/compare_route_evals.py \
-      "$IRIS_RUNS/eval/${RUN}_test_s${BEST}_${a}/eval_eval_per_sample.csv" \
-      "$IRIS_RUNS/eval/${RUN}_test_s${BEST}_${b}/eval_eval_per_sample.csv"
+      "$IRIS_RUNS/eval/${TEST_PREFIX}_s${BEST}_${a}/eval_eval_per_sample.csv" \
+      "$IRIS_RUNS/eval/${TEST_PREFIX}_s${BEST}_${b}/eval_eval_per_sample.csv"
   done
 done
 
 # --- 6. 汇总 ---------------------------------------------------------------
-echo "=== 最终结果（test 16-08-46 / 2543 帧，官方协议，condition_latent=mode）==="
-python - "$IRIS_RUNS/eval" "$RUN" "$BEST" $TEST_PROMPTS <<'PY'
+echo "=== 最终结果（test $(basename "$TEST_MANIFEST") / $(wc -l < "$TEST_MANIFEST") 帧，官方协议，condition_latent=mode）==="
+python - "$IRIS_RUNS/eval" "$TEST_PREFIX" "$BEST" $TEST_PROMPTS <<'PY'
 import json, sys
-root, run, best, prompts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+root, prefix, best, prompts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
 for p in prompts:
-    m = json.load(open(f'{root}/{run}_test_s{best}_{p}/eval_eval.json'))
+    m = json.load(open(f'{root}/{prefix}_s{best}_{p}/eval_eval.json'))
     print(f"  {run} / {p:<8} abs_rel={m['abs_rel']:.5f}  rmse={m['rmse']:.3f}  a1={m['a1']:.4f}")
-print("\n  对照（同卷，空 prompt）：b 线 0.08843 / 3.956 / 0.9071"
-      "；b+天空损失 0.08487 / 3.816 / 0.9142")
+# 这里原本并排打印 b 线 0.08843 的对照。那两个数是在另一条 test 序列上测的，
+# 换卷子之后并排就是串卷 —— 删掉，对照留给结果文档去做。
 PY
