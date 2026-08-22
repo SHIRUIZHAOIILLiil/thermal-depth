@@ -33,6 +33,8 @@
 #   TRAIN_MANIFEST   默认 clip75_20260728（19,949 帧，≤75 token）
 #   MAX_TRAIN_STEPS  默认 20000（Iris 的步数）。SMOKE 时会被覆盖
 #   SMOKE=1          20 步就退，只为验开关是否生效
+#   SEED             训练随机种子，默认 42。换种子必须同时换 RUN_TAG，否则
+#                    两个种子写进同一个输出目录、并被 resume 逻辑接上。
 #   RUN_TAG          覆盖输出目录名
 #
 # ⚠️ lr 3e-05 是 Iris 从 SD2-base 起训的量级。START=ckpt 那一臂沿用它是

@@ -58,7 +58,7 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   --gradient_accumulation_steps=$GAS \
   --gradient_checkpointing \
   --max_grad_norm=1 \
-  --seed=42 \
+  --seed="${SEED:-42}" \
   --max_train_steps="${MAX_TRAIN_STEPS:-20000}" \
   --learning_rate=3e-05 \
   --lr_scheduler="constant" --lr_warmup_steps=0 \
