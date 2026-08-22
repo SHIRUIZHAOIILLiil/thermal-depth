@@ -8,7 +8,12 @@
 #SBATCH --output=%x-%A_%a.out
 #SBATCH --error=%x-%A_%a.err
 #
-# 用 InternVL3-8B 重新生成 MS2 热像 caption（prompt 版本默认 thermal_depth_v3_1）。
+# 用 InternVL3-8B 生成 MS2 caption。
+#
+#   MODALITY=thermal（默认）  caption 描述模型自己的输入，prompt 默认 thermal_depth_v3_1
+#   MODALITY=rgb             caption 描述配对的可见光相机，prompt 默认 rgb_depth_v1
+#
+# 后者是刻意的跨模态对照：模型吃热像、caption 却来自另一台相机。不是笔误。
 #
 # 为什么要上集群：本机 RTX 5090 实测 1.62 s/帧，28,302 帧约 12.6 小时，
 # 而且用户的居住环境不适合长时间跑本机。分片后每片约 1.3 小时。
@@ -50,7 +55,15 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 conda activate caption
 
 SPLIT="${SPLIT:?SPLIT 未设置 —— 取值 train / val / test}"
-PROMPT_VERSION="${PROMPT_VERSION:-thermal_depth_v3_1}"
+# generate_captions.py 只认 rgb / thermal，并且校验 prompt 版本要与模态匹配，
+# 所以默认 prompt 必须跟着模态走 —— 拿热像的 prompt 去 caption RGB 图会被拒。
+MODALITY="${MODALITY:-thermal}"
+case "$MODALITY" in
+  thermal) DEFAULT_PROMPT="thermal_depth_v3_1" ;;
+  rgb)     DEFAULT_PROMPT="rgb_depth_v1" ;;
+  *) echo "!! MODALITY 只能是 thermal 或 rgb"; exit 1 ;;
+esac
+PROMPT_VERSION="${PROMPT_VERSION:-$DEFAULT_PROMPT}"
 CAPTION_REPO="${CAPTION_REPO:-$SCRATCH/captioning}"
 CAPTION_SCRIPT="$CAPTION_REPO/scripts/generate_captions.py"
 INPUT_MANIFEST="${INPUT_MANIFEST:-$SCRATCH/manifests/capinput/ms2_${SPLIT}_capinput_20260818.jsonl}"
@@ -107,6 +120,10 @@ print(f"[shard] 首帧已验证：{probe}", flush=True)
 PY
 
 echo "=== split=$SPLIT prompt=$PROMPT_VERSION shard=$SHARD/$NSHARDS ==="
+# 只有热像需要指定渲染方式；给 RGB 传这个参数没有意义。
+RENDER_ARGS=""
+[[ "$MODALITY" == "thermal" ]] && RENDER_ARGS="--thermal-render ${THERMAL_RENDER:-grayscale}"
+echo "=== 模态=$MODALITY  prompt=$PROMPT_VERSION ==="
 echo "=== 输出 -> $OUT_ROOT ==="
 
 # ⚠️ 等显存真的空出来再加载模型。
@@ -145,8 +162,8 @@ echo "[gpu] 空闲 ${free:-?} MiB，开始加载模型"
 srun python "$CAPTION_SCRIPT" \
   --manifest "$SHARD_MANIFEST" \
   --output-dir "$OUT_ROOT" \
-  --input-modality thermal \
-  --thermal-render grayscale \
+  --input-modality "$MODALITY" \
+  $RENDER_ARGS \
   --models internvl3_8b \
   --prompt-type "$PROMPT_VERSION" \
   --source-tag "${SPLIT}_shard${SHARD}of${NSHARDS}" \
@@ -157,7 +174,7 @@ srun python "$CAPTION_SCRIPT" \
 # 2026-08-20 就这么中招：scancel 之后立刻重投，新任务被调度到显存还没释放的卡上，
 # 三个分片瞬间失败 3,120 帧，日志无报错、退出码为零，只有耗时 12 秒露了馅。
 # 所以这里自己判失败率 —— 让作业**响亮地失败**，别把空产物留给下游。
-OUT_FILE="$OUT_ROOT/captions_${SPLIT}_shard${SHARD}of${NSHARDS}_internvl3_8b_thermal_${PROMPT_VERSION}.jsonl"
+OUT_FILE="$OUT_ROOT/captions_${SPLIT}_shard${SHARD}of${NSHARDS}_internvl3_8b_${MODALITY}_${PROMPT_VERSION}.jsonl"
 python - "$OUT_FILE" "$SHARD_MANIFEST" <<'PY'
 import json, sys
 out, want = sys.argv[1], sys.argv[2]
