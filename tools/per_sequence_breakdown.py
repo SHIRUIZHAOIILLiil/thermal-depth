@@ -89,17 +89,30 @@ def main() -> int:
     if args.verify_against:
         # Recombining the per-sequence means must reproduce the pooled number. If it
         # does not, the grouping is wrong and every per-sequence figure is suspect.
+        #
+        # The key must include the manifest fingerprint. Without it, one arm's day,
+        # rain and night sequences collapse into a single group and get compared
+        # against whichever pooled row happened to be read last -- which is how this
+        # check first reported a drift of 0.26 while the grouping was in fact correct.
         pooled = {}
         with args.verify_against.open(encoding="utf-8", newline="") as handle:
-            for row in csv.DictReader(handle):
+            reader = csv.DictReader(handle)
+            if "manifest_fp" not in (reader.fieldnames or []):
+                raise SystemExit(
+                    f"{args.verify_against} has no manifest_fp column; regenerate it "
+                    f"with tools/collect_eval_grid.py"
+                )
+            for row in reader:
                 if row.get("split") != "test":
                     continue
-                pooled[(row["arm"], row["step"], row["prompt"])] = row
+                pooled[(row["arm"], row["step"], row["prompt"], row["manifest_fp"])] = row
         worst = 0.0
         checked = 0
-        groups: dict[tuple[str, str, str], list[dict]] = {}
+        groups: dict[tuple[str, str, str, str], list[dict]] = {}
         for row in rows:
-            groups.setdefault((row["arm"], row["step"], row["prompt"]), []).append(row)
+            groups.setdefault(
+                (row["arm"], row["step"], row["prompt"], row["manifest_fp"]), []
+            ).append(row)
         for key, group in groups.items():
             if key not in pooled:
                 continue
