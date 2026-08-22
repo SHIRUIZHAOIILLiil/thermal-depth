@@ -177,7 +177,7 @@ import json, sys
 root, prefix, best, prompts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
 for p in prompts:
     m = json.load(open(f'{root}/{prefix}_s{best}_{p}/eval_eval.json'))
-    print(f"  {run} / {p:<8} abs_rel={m['abs_rel']:.5f}  rmse={m['rmse']:.3f}  a1={m['a1']:.4f}")
+    print(f"  {prefix} / {p:<8} abs_rel={m['abs_rel']:.5f}  rmse={m['rmse']:.3f}  a1={m['a1']:.4f}")
 # 这里原本并排打印 b 线 0.08843 的对照。那两个数是在另一条 test 序列上测的，
 # 换卷子之后并排就是串卷 —— 删掉，对照留给结果文档去做。
 PY
