@@ -125,7 +125,12 @@ def main() -> int:
         for row in read_jsonl(path):
             if row.get("status") != "ok" or not (row.get("caption") or "").strip():
                 continue
-            source = row.get("input_path") or row.get("thermal_path") or ""
+            # The manifest is keyed by its thermal path, so a caption has to be
+            # matched by the frame it describes, not by the image it was read
+            # from.  For a thermal caption the two are the same field and the
+            # order never mattered; for an RGB caption `input_path` points at
+            # the visible-light camera and matches nothing.
+            source = row.get("thermal_path") or row.get("input_path") or ""
             if not source:
                 continue
             version = row.get("prompt_version", "")
