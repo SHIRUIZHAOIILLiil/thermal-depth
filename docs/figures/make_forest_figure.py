@@ -33,12 +33,15 @@ ROOT = Path(__file__).resolve().parents[2]
 # contrast that matters is between the two arms inside one question.
 COMPARISONS = ("content", "presence")
 CONDITIONS = ("day", "rain", "night")
-ARMS = (("iris_ms2_full8_thermalcap", "caption-trained"),
-        ("iris_ms2_full8_nocap", "caption-free"))
+ARMS = (("iris_ms2_full8_nocap", "caption-free"),
+        ("iris_ms2_full8_thermalcap", "thermal caption"),
+        ("iris_ms2_full8_rgbcap", "RGB caption"))
 
+# Short enough to sit over its own panel without running into the next one; the
+# full statement of each question belongs in the caption.
 QUESTION = {
-    "content": "Content: this frame's caption vs. another frame's",
-    "presence": "Presence: a real caption vs. no caption",
+    "content": "Content: own vs. another caption",
+    "presence": "Presence: caption vs. none",
 }
 
 
@@ -46,9 +49,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--stats", type=Path,
-                        default=ROOT / "docs" / "data" / "paired_stats_20260823.csv")
+                        default=ROOT / "docs" / "data" / "paired_stats_threearm_20260824.csv")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "docs" / "figures")
     parser.add_argument("--metric", default="abs_rel")
+    parser.add_argument("--comparisons", nargs="*", default=None,
+                        help="Subset of content/presence/total. The teaser shows content "
+                             "only, because that is the question the paper is about.")
+    parser.add_argument("--conditions", nargs="*", default=None)
+    parser.add_argument("--name", default="forest_effects",
+                        help="Output stem, so a subset does not overwrite the full figure.")
+    parser.add_argument("--width", type=float, default=7.1)
     parser.add_argument("--step", default=None,
                         help="Restrict to one checkpoint per arm; default keeps the "
                              "selected one and drops the sensitivity re-run.")
@@ -76,13 +86,15 @@ def load(path: Path, metric: str) -> dict:
 def main() -> int:
     args = parse_args()
     rows = load(args.stats, args.metric)
+    comparisons = tuple(args.comparisons) if args.comparisons else COMPARISONS
+    conditions = tuple(args.conditions) if args.conditions else CONDITIONS
 
     labels, blocks, iids, points, marks = [], [], [], [], []
     separators = []
-    for comparison in COMPARISONS:
+    for comparison in comparisons:
         if labels:
             separators.append(len(labels) - 0.5)
-        for condition in CONDITIONS:
+        for condition in conditions:
             for arm_key, arm_name in ARMS:
                 row = rows.get((arm_key, condition, comparison))
                 if row is None:
@@ -93,47 +105,50 @@ def main() -> int:
                 iids.append((float(row["iid_ci95_low"]), float(row["iid_ci95_high"])))
                 marks.append(row["separable_from_zero"] == "True")
 
-    # Two panels with independent x-axes.  Presence effects are five to ten times
-    # the size of content effects, so one shared axis squeezes the content block --
-    # the paper's main claim -- into an unreadable sliver.  The scale difference is
-    # itself worth stating, so the caption says it in words instead.
+    # Side by side, not stacked.  Nine rows per question is tall in one column and
+    # short across two, and the row labels are the same in both panels, so only the
+    # left one carries them.  Independent x-axes: presence effects run five to ten
+    # times larger than content effects and would flatten them on a shared scale.
     split = int(separators[0] + 0.5) if separators else len(labels)
-    groups = [(0, split), (split, len(labels))]
-    heights = [g[1] - g[0] for g in groups]
+    groups = [(0, split), (split, len(labels))] if len(comparisons) > 1 else [(0, len(labels))]
 
     fig, axes = plt.subplots(
-        2, 1, figsize=(6.6, 0.36 * len(labels) + 1.5),
-        gridspec_kw={"height_ratios": heights, "hspace": 0.62},
+        1, len(groups), figsize=(args.width, 0.26 * (groups[0][1] - groups[0][0]) + 1.25),
+        gridspec_kw={"wspace": 0.08}, squeeze=False,
     )
+    axes = axes[0]
 
-    for ax, (lo, hi), comparison in zip(axes, groups, COMPARISONS):
+    for ax, (lo, hi), comparison in zip(axes, groups, comparisons):
         ax.axvline(0, color="0.35", lw=0.9, zorder=1)
         for y, i in enumerate(range(lo, hi)):
             # The frame-level interval sits behind in a warm tone -- it must not be
             # confusable with a block interval that failed to clear zero, which is grey.
-            ax.plot(iids[i], (y, y), color="#e8c39a", lw=5.0, solid_capstyle="butt", zorder=2)
-            ok = marks[i]
-            colour = "#1f5fa0" if ok else "#8c8c8c"
-            ax.plot(blocks[i], (y, y), color=colour, lw=1.8, solid_capstyle="butt", zorder=3)
-            ax.plot([points[i]], [y], "o", ms=4.4, color=colour, zorder=4)
+            ax.plot(iids[i], (y, y), color="#e8c39a", lw=4.6, solid_capstyle="butt", zorder=2)
+            colour = "#1f5fa0" if marks[i] else "#8c8c8c"
+            ax.plot(blocks[i], (y, y), color=colour, lw=1.7, solid_capstyle="butt", zorder=3)
+            ax.plot([points[i]], [y], "o", ms=4.0, color=colour, zorder=4)
 
         ax.set_yticks(range(hi - lo))
-        ax.set_yticklabels([labels[i] for i in range(lo, hi)], fontsize=8.5)
         ax.invert_yaxis()
-        ax.set_ylim(hi - lo - 0.45, -0.55)
-        ax.set_title(QUESTION[comparison], fontsize=9, style="italic",
-                     color="0.2", loc="left", pad=6)
-        ax.tick_params(axis="x", labelsize=8)
+        ax.set_ylim(hi - lo - 0.45, -0.6)
+        ax.set_title(QUESTION[comparison], fontsize=8.5, style="italic",
+                     color="0.2", loc="left", pad=5)
+        ax.tick_params(axis="x", labelsize=7.5)
         for side in ("top", "right", "left"):
             ax.spines[side].set_visible(False)
 
-    axes[0].set_xlabel("AbsRel, permuted $-$ matched   (positive: the frame's own caption is better)",
-                       fontsize=8.5)
-    axes[1].set_xlabel("AbsRel, permuted $-$ empty   (positive: having text is worse)",
-                       fontsize=8.5)
+    axes[0].set_yticklabels([labels[i] for i in range(*groups[0])], fontsize=8)
+    if len(axes) > 1:
+        axes[1].set_yticklabels([])
+        axes[1].tick_params(axis="y", length=0)
+    XLABEL = {"content": "AbsRel, permuted $-$ matched",
+              "presence": "AbsRel, permuted $-$ empty",
+              "total": "AbsRel, matched $-$ empty"}
+    for ax, comparison in zip(axes, comparisons):
+        ax.set_xlabel(XLABEL[comparison], fontsize=8)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    destination = args.output_dir / "forest_effects.pdf"
+    destination = args.output_dir / (args.name + ".pdf")
     fig.savefig(destination, bbox_inches="tight")
     print(f"{len(labels)} rows  ->  {destination}")
     print(f"  separable at block 200: {sum(marks)}/{len(marks)}")
