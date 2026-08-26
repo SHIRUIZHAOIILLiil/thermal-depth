@@ -47,6 +47,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prefix", default="",
                         help="Column-name prefix, for the baseline CSVs whose columns "
                              "are '<align>_abs_rel'. Empty for ours.")
+    parser.add_argument(
+        "--write-subset",
+        type=Path,
+        default=None,
+        help=(
+            "Also write each result restricted to the official frames, as "
+            "<dir>/<eval dir name>_official_<env>_per_sample.csv. Downstream paired "
+            "statistics should run on these rather than on the full-frame files: the "
+            "table reports the official subset, and a moving-block bootstrap over ten "
+            "times the frames is ten times the work for a number nobody prints."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -79,6 +91,15 @@ def main() -> int:
                   f"{len(subset)} of {len(wanted)}")
         extra = len(rows) - len(subset)
         print(f"    ({extra} frames outside the official subset were dropped)\n")
+
+        if args.write_subset is not None:
+            args.write_subset.mkdir(parents=True, exist_ok=True)
+            out = args.write_subset / f"{path.parent.name}_official_{args.test_env}_per_sample.csv"
+            with out.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+                writer.writeheader()
+                writer.writerows(subset)
+            print(f"    -> {out}\n")
     return 0
 
 
