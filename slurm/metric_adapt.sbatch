@@ -21,7 +21,10 @@
 #   METRIC_NORM     必填。metric_prep 产出的 metric_norm_train.json
 #   INIT_CKPT       必填。起点权重（step20000_weights.pt）
 #   TRAIN_MANIFEST  必填。官方 8 序列 train 清单，**必须与起点那条臂训练时同一份**
-#   PSEUDO_DIR      默认 train_full 的 calibrated_pseudo_depth
+#   PSEUDO_DIR      默认 official_train 的 calibrated_pseudo_depth
+#                   ⚠️ 原默认值写的是 train_full，那个目录在集群上不存在 —— 官方 8
+#                   序列那三条臂用的一直是 official_train。指向不存在路径的默认值，
+#                   唯一作用是让忘记传 PSEUDO_DIR 的提交排完队再失败。
 #   LR              默认 1e-6
 #   STEPS           默认 4000
 #   LAMBDA_METRIC / LAMBDA_DENSE / LAMBDA_RECON   默认 1.0 / 1.0 / 1.0
@@ -83,7 +86,7 @@ export MODEL_NAME
 export OUTPUT_DIR="$IRIS_RUNS/iris_ms2/$TAG"
 export MS2_MANIFEST="$TRAIN_MANIFEST"
 export MS2_ROOT="$IRIS_MS2_ROOT"
-export PSEUDO_GT_DIR="${PSEUDO_DIR:-$IRIS_RUNS/pseudo_gt/train_full/calibrated_pseudo_depth}"
+export PSEUDO_GT_DIR="${PSEUDO_DIR:-$IRIS_RUNS/pseudo_gt/official_train/calibrated_pseudo_depth}"
 export METRIC_NORM_JSON="$METRIC_NORM"
 export INIT_UNET_FROM="$INIT_CKPT"
 export LAMBDA_METRIC
@@ -96,7 +99,12 @@ export MAIN_PORT="$MAIN_PROCESS_PORT"
 export METRIC_LOG_EVERY="${METRIC_LOG_EVERY:-200}"
 export DATALOADER_WORKERS
 
-[[ -d "$PSEUDO_GT_DIR" ]] || { echo "!! 找不到伪 GT 目录: $PSEUDO_GT_DIR"; exit 1; }
+[[ -d "$PSEUDO_GT_DIR" ]] || {
+  echo "!! 找不到伪 GT 目录: $PSEUDO_GT_DIR"
+  echo "!! $IRIS_RUNS/pseudo_gt/ 下现有的是："
+  ls -1 "$IRIS_RUNS/pseudo_gt/" 2>/dev/null | sed 's/^/!!   /'
+  exit 1
+}
 mkdir -p "$OUTPUT_DIR"
 
 echo "--- 本次配置 ---"
