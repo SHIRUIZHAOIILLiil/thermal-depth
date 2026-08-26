@@ -6,7 +6,109 @@
 模型处在有竞争力的工作点上才说明问题——否则那 0.002 可能只是在补自己的短板。把我们的
 臂放到已发表基线旁边，是为了证明这个效应发生在一个像样的位置上。
 
-所以这份文档回答一个问题：**怎样才算把我们的数和别人的数放在了同一张表里。**
+所以这份文档回答两个问题：**我们重新训练的是什么**，以及**怎样才算把我们的数和别人的
+数放进了同一张表**。
+
+---
+
+## 0. 我们训练了什么
+
+### 0.1 起点与可训部分
+
+| | |
+|---|---|
+| 基座 | `jingheya/lotus-depth-g-v2-1-disparity`（Lotus-G，SD2 系） |
+| 可训 | **只有 U-Net**（867.6 M 参数） |
+| 冻结 | VAE、CLIP text encoder |
+| `conv_in` | 已是 8 通道，**不做** 4→8 扩展（那是从 SD2-base 起训才需要的） |
+| 训练脚本 | `lotus/train_iris_ms2_g.py` —— Iris 自己那份 trainer 的复制件，**只换数据集，超参一个没动** |
+
+### 0.2 配方（`lotus/train_scripts/train_iris_ms2_g_depth.sh`）
+
+```
+batch 4 × 梯度累积 3 = 有效 12      lr 3e-5，constant，warmup 0
+timestep 999（固定，单次前向）      max_train_steps 20000
+mixed precision fp16                 grad clip 1.0
+8-bit Adam                           gradient checkpointing
+random_flip                          seed 42（第二个种子 43）
+```
+
+⚠️ `random_flip` 会翻转图像和深度图但**不翻转 caption 文本**，所以"左边有辆车"可能
+描述的是翻转后的右边。这是 Iris 原本的行为，我们沿用而不是悄悄改掉。
+
+### 0.3 目标：稠密补全深度图
+
+```
+每个像素：  有激光 → 用激光
+            无激光 → 用标定后的 AnyThermal 伪深度
+            全图 clip 到 [1e-3, 80] m
+再逐帧 trunc_disparity 归一化（该帧 1/depth 的 Q2/Q98 映到 [-1,1]）
+```
+
+**为什么必须稠密**：Iris 把深度图当成一整张图 VAE 编码，latent 的有效掩码是无效掩码
+做 8×8 max-pool——**一个坏像素废掉整个 latent cell**。MS2 激光只覆盖约 25% 的帧，
+稀疏图会废掉几乎全部 cell。补全之后每个 cell 都存活，这正是这条线成立的前提。
+
+### 0.4 目标函数：两支路 latent MSE
+
+```
+L = anno_loss + rgb_loss
+
+anno_loss :  MSE(U-Net 的 x0 latent, VAE(稠密目标).sample())，只在有效 latent cell 上
+rgb_loss  :  热像重建支路，同样在 latent 空间
+```
+
+**没有任何图像空间的损失，也没有任何 teacher。** 预训练权重只当初始化和冻结特征提取器用。
+
+### 0.5 三条臂
+
+官方 8 条训练序列，除 caption 外配方完全相同：
+
+| 臂 | 帧数 | caption |
+|---|---|---|
+| `iris_ms2_full8_nocap` | 76,547 | 每帧空串（无文本对照） |
+| `iris_ms2_full8_thermalcap` | 75,688 | InternVL3-8B，prompt `thermal_depth_v3_1`，**从热像生成** |
+| `iris_ms2_full8_rgbcap` | 76,534 | InternVL3-8B，prompt `rgb_depth_v1`，**从 RGB 生成** |
+
+caption 一律 ≤75 CLIP token（超长会被 tokenizer 截断，截掉的正是句尾那半句近远排序）。
+
+⚠️ **三条臂的训练帧集不完全相同**，最多差 859 帧（1.1%），原因是 caption 生成在不同帧
+上失败。明细见 `docs/data/EXCLUDED_FRAMES.md`。每一条跨臂结论都带着这个。
+
+第二个种子（43）：`nocap_s43`、`thermalcap_s43` 已完成，`rgbcap_s43` 训练中。
+
+### 0.6 选 checkpoint
+
+官方 3 条验证序列，14,249 帧按 stride 4 抽成 3,563 帧，取 **val AbsRel 最小**。
+
+⚠️ **prompt 与 caption 来源必须与该臂训练时一致**——用它没训过的文本分布挑权重，
+挑出来的不是这条臂最好的那个。
+
+选中的结果：
+
+| 臂 | seed 42 | seed 43 |
+|---|---|---|
+| nocap | 12000 | 20000 |
+| thermalcap | **20000** | 4000 |
+| rgbcap | 20000 | 训练中 |
+
+⚠️ **各臂选中的步数不同**，所以两条臂差的不只是 caption，还有训练长度。这是"每条臂用
+自己的 val 曲线选冠军"这个规则的必然结果，是正规做法，但必须写进方法。
+
+### 0.7 推理
+
+单次 U-Net 前向，`t=999`，直接取 x0 作为答案；输入图的 latent 取后验的 **mode**。
+这是本项目全部历史数字的口径。多步去噪是**双重分布外**（这条线只在 t=999 微调过，
+它出发的 Lotus-G 权重也只在 t=999 训过），只能当排除性对照读。
+
+### 0.8 基线：我们没有重训
+
+DORN / BTS / AdaBins / NeWCRF 用的是 `UkcheolShin/SupDepth4Thermal` 发布的权重原样加载
+（`depth_net.` 前缀剥掉，`strict=True`，张量数 660/736/973/513 逐个吻合）。我们只在自己
+机器上重跑推理和评估，不碰它们的训练。
+
+⚠️ **训练预算不对等**：论文自述训练集 26K 对，我们是 75,688 帧。这个差异在我们这一边，
+必须披露。（他们发布的配置里 `train.sample_step: 1` 与 26K 这个数对不上，未解决。）
 
 ---
 
