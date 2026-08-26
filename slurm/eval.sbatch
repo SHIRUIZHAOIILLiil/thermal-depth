@@ -70,6 +70,20 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
 [[ -f "$CKPT" ]] || { echo "!! 找不到 checkpoint: $CKPT"; exit 1; }
 
+# ⚠️ STEPS 在这个仓库里有三个互不相容的含义：这里是**去噪步数**（1 = 历史口径），
+# iris_ms2_pipeline.sbatch 里是**要评的 checkpoint 步数列表**，metric_adapt.sbatch
+# 里是**训练步数**。用 `export STEPS=...` 提交过其中一个之后，那个值会留在登录
+# shell 里，被下一次 `--export=ALL` 原样带进来。2026-08-26 就是这么把 STEPS=4000
+# 送进了去噪循环，scheduler 上限 1000，作业排完队才死。
+# 去噪步数超过 50 从来不是本意，所以这里当作串味处理，而不是当作请求。
+if [[ -n "${STEPS:-}" ]] && (( STEPS > 50 )); then
+  echo "!! STEPS=$STEPS 作为去噪步数不合理（scheduler 上限 1000，历史口径是 1）。"
+  echo "!! 这个值多半是上一次提交 iris_ms2_pipeline.sbatch 或 metric_adapt.sbatch"
+  echo "!! 时 export 的，留在了你的 shell 里。先 \`unset STEPS\` 再投，"
+  echo "!! 或者把赋值写成命令前缀（VAR=x sbatch ...）而不是 export。"
+  exit 1
+fi
+
 OUT="$IRIS_RUNS/eval/$TAG"
 mkdir -p "$OUT"
 
