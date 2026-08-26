@@ -47,6 +47,19 @@ def parse_args() -> argparse.Namespace:
         help="Directories of <id>.npy raw predictions. The first one is the reference "
              "every other is paired against.",
     )
+    parser.add_argument(
+        "--sky-mask-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory of <id>.png sky masks from tools/build_sky_masks.py. Given one, "
+            "the region measured is the mask instead of the top rows -- which is the "
+            "only way the number means 'sky'. On MS2 daytime the top 32 rows are not "
+            "mostly sky: where lidar returns in that band at all, its median is 12.5 m, "
+            "i.e. buildings and overhanging branches. A band reading cannot separate "
+            "'sky judged near' from 'near object judged correctly'; a mask reading can."
+        ),
+    )
     parser.add_argument("--band", type=int, default=32,
                         help="Rows counted from the top. 32 is ~17-21 degrees above the "
                              "optical axis on MS2 thermal, i.e. sky unless something tall "
@@ -138,7 +151,22 @@ def main() -> None:
     for index, row in enumerate(rows):
         gt = np.asarray(Image.open(args.data_root / row["depth_path"]), dtype=np.float32)
         gt = gt / args.depth_scale
-        band = slice(0, args.band)
+        if args.sky_mask_dir is not None:
+            mask_path = args.sky_mask_dir / f"{row['id']}.png"
+            if not mask_path.exists():
+                missing.append(f"skymask:{row['id']}")
+                continue
+            region = np.asarray(Image.open(mask_path)) > 127
+            if region.shape != gt.shape:
+                raise SystemExit(
+                    f"{row['id']}: sky mask {region.shape} vs GT {gt.shape}"
+                )
+            if not region.any():                    # a frame with no sky is normal
+                continue
+        else:
+            region = np.zeros(gt.shape, dtype=bool)
+            region[: args.band] = True
+        band = region
         for path, label in specs:
             npy = path / f"{row['id']}.npy"
             if not npy.exists():
