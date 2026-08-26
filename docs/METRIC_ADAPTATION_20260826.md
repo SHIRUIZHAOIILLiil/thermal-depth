@@ -266,8 +266,62 @@ TRAIN_MANIFEST=$IRIS_MANIFEST_DIR/ms2_train_official8_thermalcap_v3_1_untrimmed_
 - 微调之前：我们的输出没有单位，**无法进入基线那一列**。
 - 微调之后：输出是米制逆深度，可以走 `align=none`（无 GT）或 `align=median`
   （1 参数，与 DORN 那四行同尺）。
-- ⚠️ 主线的 caption 结论是在**未适配**的 checkpoint 上测的。适配会改变权重，
-  所以适配后的模型是**另一个模型**——caption 的结论要么在它上面重测，要么明确说明
-  那两张表来自不同的 checkpoint。这一点在论文里不能含糊。
+### 8.1 决定：三条臂全部适配（2026-08-27）
+
+适配会改权重，所以适配后是**另一个模型**。曾考虑过"caption 表留在原模型、度量表用
+适配后模型"的折中，**已否决**：那样两张表来自不同的 checkpoint，审稿人一定会问
+"caption 在你们那个能横向对比的模型上还成立吗"，而我们没有答案。
+
+所以 **nocap / thermalcap / rgbcap 三条臂各自适配**，整张表建在同一代模型上。
+
+#### 三条铁律
+
+**① 三条臂共用同一套 `q_lo/q_hi`。** 常数是**数据集**的属性（训练集激光的深度分布），
+不是模型的属性。若每条臂各拟合一套，三条臂的输出就在**不同的单位里**，彼此不可比——
+那正好毁掉这次适配要建立的东西。共用的这一套拟合自 thermalcap 清单（75,688 帧），
+另两条臂的清单差 ≤1.1% 帧，对分位数的影响远小于已观察到的 0.8% 拟合间差异。
+
+**② 每条臂在自己的训练条件下适配。** nocap 喂空串、thermalcap 喂热像 caption、
+rgbcap 喂 RGB caption，清单也各用各的。适配阶段**不改 caption 条件**，只隔离几何/尺度。
+
+**③ 适配配方三条臂完全一致。** 同 lr、同步数、同 λ、同常数。三条臂之间的差异必须
+只剩下它们原本就有的那些（caption、以及各自起点 checkpoint 的步数）。
+
+#### 起点
+
+| 臂 | 起点 checkpoint | 原选点依据 |
+|---|---|---|
+| `iris_ms2_full8_nocap` | step **12000** | val AbsRel 最小，`empty` prompt |
+| `iris_ms2_full8_thermalcap` | step **20000** | val AbsRel 最小，`correct` prompt |
+| `iris_ms2_full8_rgbcap` | step **20000** | val AbsRel 最小，`correct` prompt |
+
+⚠️ 三条臂起点步数不同，这是"每条臂用自己的 val 曲线选冠军"的既有后果，适配不改变
+也不加剧它，但要跟着结论一起写。
+
+#### λ_metric 的定法（事先写下）
+
+**λ 只在 thermalcap 臂上用 val 选一次，然后三条臂共用。** 每条臂各选各的 λ 会让
+三条臂的目标函数不同，又一次毁掉可比性。
+
+投 4 次训练：
+
+| 臂 | λ_metric |
+|---|---|
+| thermalcap | **1** 与 **20** ← 用这两条的 val metric AbsRel 选 λ |
+| nocap | 1 |
+| rgbcap | 1 |
+
+λ=1 是导师"轻触"指示的直接实现，也是主候选；λ=20 是梯度量级持平的那个点，作为
+灵敏度检查。**若 λ=20 在 val 上明显更好，另两条臂按 λ=20 重投**（再两次训练）。
+
+选点用 **val 的 metric AbsRel**（`align=none` + `global_norm`），不是 SSI 的——
+这一阶段优化的就是那个量，用 SSI 曲线挑度量臂的冠军，挑的是另一门考试的第一名。
+
+#### 适配后要出的两张表
+
+**主表（横向对比）**：适配后的 thermalcap 臂 vs 四个基线，`align=none`（都不用 GT）
+以及 `align=median`（1 参数，与基线原本口径同尺）。
+
+**消融表**：适配后的三条臂互相比，回答"caption 在能横向对比的这一代模型上还起不起作用"。
 
 相关：`docs/COMPARISON_PROTOCOL_20260826.md`

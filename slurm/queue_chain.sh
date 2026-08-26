@@ -12,6 +12,7 @@
 #   A  已发表基线，全帧口径          3 个作业，各约 1 小时，无依赖
 #   B  seed 43 的 RGB caption 评估    3 个作业，串行，等训练结束
 #   C  天空规则（改目标）训练 + 评估  掩码 → 训练 → 3 个评估，串行
+#   D  度量微调                      4 次训练，无依赖，可并行
 #
 # ── 环境变量 ────────────────────────────────────────────────────────
 #   SKYMASK_JOB    已经在跑的掩码作业号。不设＝本脚本提交一个新的
@@ -51,6 +52,12 @@ TEST_R_NIGHT="$M/ms2_test_night3_rgbcap_20260823.jsonl"
 TEST_R_RAIN="$M/ms2_test_rainy3_rgbcap_20260823.jsonl"
 PSEUDO="$IRIS_RUNS/pseudo_gt/official_train/calibrated_pseudo_depth"
 SKYMASKS="$IRIS_RUNS/sky_masks/skymask_official8/masks"
+METRIC_NORM_JSON="$IRIS_RUNS/metric_adapt/metric_norm_train.json"
+CONV="$IRIS_RUNS/iris_ms2"
+CKPT_NOCAP="$CONV/iris_ms2_full8_nocap/converted/step12000_weights.pt"
+CKPT_THERMAL="$CONV/iris_ms2_full8_thermalcap/converted/step20000_weights.pt"
+CKPT_RGB="$CONV/iris_ms2_full8_rgbcap/converted/step20000_weights.pt"
+TRAIN_NOCAP="$M/ms2_train_official8_nocap_20260821.jsonl"
 
 # ── 提交前的存在性检查 ──────────────────────────────────────────────
 missing=0
@@ -59,6 +66,9 @@ for f in "$TRAIN_THERMAL" "$TRAIN_RGB" "$VAL_THERMAL" "$VAL_RGB" \
          "$TEST_T_DAY" "$TEST_T_NIGHT" "$TEST_T_RAIN" \
          "$TEST_R_DAY" "$TEST_R_NIGHT" "$TEST_R_RAIN"; do check "$f"; done
 check "$PSEUDO"
+if ! skipped D; then
+  for f in "$METRIC_NORM_JSON" "$CKPT_NOCAP" "$CKPT_THERMAL" "$CKPT_RGB" "$TRAIN_NOCAP"; do check "$f"; done
+fi
 (( missing == 0 )) || { echo "!! 有路径不存在，一个作业都没提交。"; exit 1; }
 echo "[check] 10 份清单 + 伪 GT 目录都在"
 
@@ -142,6 +152,27 @@ if skipped C; then echo "  (跳过)"; else
       --export=ALL,STEPS,RUN=iris_ms2_full8_thermalcap_sky,SEL_PROMPT=correct,TEST_PROMPTS=correct,TRAIN_MANIFEST=$TRAIN_THERMAL,VAL_MANIFEST=$VAL_THERMAL,TEST_MANIFEST=$2 \
       "$REPO/slurm/iris_ms2_pipeline.sbatch")
   done
+fi
+
+echo
+echo "=========== D：度量微调（三条臂 + 一次 λ 灵敏度）==========="
+# 让三条臂都输出米制逆深度，整张表才能建在同一代模型上。
+# ⚠️ 三条臂共用同一套 q_lo/q_hi —— 常数是数据集的属性不是模型的属性，各拟合一套
+#    会让三条臂的输出落在不同单位里，正好毁掉这次适配要建立的可比性。
+# ⚠️ λ 只在 thermalcap 上用 val 选一次然后三条臂共用；每臂各选各的会让目标函数不同。
+if skipped D; then echo "  (跳过)"; else
+  unset STEPS   # metric_adapt.sbatch 里 STEPS 是训练步数，别把 B/C 的值带进来
+  # 臂名 起点checkpoint 训练清单 caption开关 lambda
+  while read -r tag ckpt manifest nocap lam; do
+    [[ -z "$tag" ]] && continue
+    extra=""; [[ "$nocap" == "1" ]] && extra=",NO_CAPTIONS=1"
+    submit "度量微调 $tag (lambda=$lam)" -J "ma_$tag" --time=12:00:00       --export=ALL,METRIC_NORM=$METRIC_NORM_JSON,INIT_CKPT=$ckpt,TRAIN_MANIFEST=$manifest,LAMBDA_METRIC=$lam,LR=1e-6,STEPS=4000,RUN_TAG=metric_${tag}$extra       "$REPO/slurm/metric_adapt.sbatch" >/dev/null
+  done <<EOF
+thermal_lm1   $CKPT_THERMAL  $TRAIN_THERMAL  0  1
+thermal_lm20  $CKPT_THERMAL  $TRAIN_THERMAL  0  20
+nocap_lm1     $CKPT_NOCAP    $TRAIN_NOCAP    1  1
+rgbcap_lm1    $CKPT_RGB      $TRAIN_RGB      0  1
+EOF
 fi
 
 echo

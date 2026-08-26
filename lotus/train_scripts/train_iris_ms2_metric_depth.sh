@@ -25,9 +25,12 @@
 #   LAMBDA_METRIC / LAMBDA_DENSE / LAMBDA_RECON   default 1.0 / 1.0 / 1.0
 #   LEARNING_RATE       default 1e-6
 #   MAX_TRAIN_STEPS     default 4000
-#   NO_CAPTIONS=1       no-text ablation. NOT for the main run: the checkpoint
-#                       being adapted was trained with captions, and the task is
-#                       to isolate geometry, not to change the text condition.
+#   NO_CAPTIONS=1       Feed the empty string, for adapting the caption-free arm.
+#                       ⚠️ Must match the condition the checkpoint being adapted
+#                       was TRAINED under -- the adaptation isolates geometry and
+#                       scale, so it must not also change the text condition.
+#                       Set it for iris_ms2_full8_nocap; leave it off for the two
+#                       captioned arms.
 
 export MODEL_NAME="${MODEL_NAME:?set MODEL_NAME}"
 export MS2_MANIFEST="${MS2_MANIFEST:?set MS2_MANIFEST}"
