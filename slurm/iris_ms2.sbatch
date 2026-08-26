@@ -29,7 +29,11 @@
 #                    `class_embed_type`（Lotus 正靠它塞任务嵌入），且两者都会换掉 VAE，
 #                    而两臂共用同一个 VAE 正是这个对照成立的前提。
 #   NO_CAPTIONS=1    无文本消融臂（每帧喂空串）。不设＝按 Iris 用真 caption 训练。
-#   PSEUDO_DIR       calibrated_pseudo_depth 目录，默认 train_full
+#   PSEUDO_DIR       calibrated_pseudo_depth 目录，默认 official_train
+#                    ⚠️ 2026-08-26：默认值原本是 train_full，而盘上那个目录并不存在
+#                    —— 官方 8 序列那三条臂用的一直是 official_train。一个指向不存在
+#                    路径的默认值，唯一的作用是让每次忘记传 PSEUDO_DIR 的提交排完队
+#                    再失败。改成实际在用的那个。
 #   TRAIN_MANIFEST   默认 clip75_20260728（19,949 帧，≤75 token）
 #   MAX_TRAIN_STEPS  默认 20000（Iris 的步数）。SMOKE 时会被覆盖
 #   SMOKE=1          20 步就退，只为验开关是否生效
@@ -85,14 +89,20 @@ export MODEL_NAME
 export OUTPUT_DIR="$IRIS_RUNS/iris_ms2/$TAG"
 export MS2_MANIFEST="${TRAIN_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_train_day2seq_clip75_20260728.jsonl}"
 export MS2_ROOT="$IRIS_MS2_ROOT"
-export PSEUDO_GT_DIR="${PSEUDO_DIR:-$IRIS_RUNS/pseudo_gt/train_full/calibrated_pseudo_depth}"
+export PSEUDO_GT_DIR="${PSEUDO_DIR:-$IRIS_RUNS/pseudo_gt/official_train/calibrated_pseudo_depth}"
 export MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-20000}"
 export CKPT_STEP="${CKPT_STEP:-1000}"
 export MAIN_PORT="$MAIN_PROCESS_PORT"
 export NO_CAPTIONS="${NO_CAPTIONS:-0}"
 
 [[ -f "$MS2_MANIFEST" ]]     || { echo "!! 找不到 manifest: $MS2_MANIFEST"; exit 1; }
-[[ -d "$PSEUDO_GT_DIR" ]]    || { echo "!! 找不到伪 GT 目录: $PSEUDO_GT_DIR"; exit 1; }
+[[ -d "$PSEUDO_GT_DIR" ]]    || {
+  echo "!! 找不到伪 GT 目录: $PSEUDO_GT_DIR"
+  echo "!! $IRIS_RUNS/pseudo_gt/ 下现有的是："
+  ls -1 "$IRIS_RUNS/pseudo_gt/" 2>/dev/null | sed 's/^/!!   /'
+  echo "!! 用 PSEUDO_DIR=<其中之一>/calibrated_pseudo_depth 显式指定。"
+  exit 1
+}
 mkdir -p "$OUTPUT_DIR"
 
 echo "--- 本次配置 ---"
