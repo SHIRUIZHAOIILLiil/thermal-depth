@@ -73,6 +73,25 @@ for m in ${MODELS//,/ }; do
   [[ -f "$CKPT_DIR/MS2_MD_${f}_THR_ckpt.ckpt" ]] || { echo "!! 缺 MS2_MD_${f}_THR_ckpt.ckpt"; exit 1; }
 done
 
+# 三个架构在构造时会去取 ImageNet 初始化，而 GPU 节点没有外网。预热是在登录节点
+# 做的，但登录节点没有 common.sh 导出的 TORCH_HOME，缓存会落进 ~/.cache/torch —— 而
+# 这里的 TORCH_HOME 指向 scratch，两个路径对不上，作业就会在排队几小时之后倒在下载上。
+# 2026-08-26 实测踩过一次。宁可现在三秒钟退出，也别烧掉一个队列窗口。
+HUB="$TORCH_HOME/hub"
+missing=()
+[[ -d "$HUB/checkpoints" ]] || missing+=("$HUB/checkpoints")
+compgen -G "$HUB/checkpoints/resnext101_32x8d-*.pth" >/dev/null || missing+=("resnext101 (BTS)")
+compgen -G "$HUB/checkpoints/tf_efficientnet_b5_ap-*.pth" >/dev/null || missing+=("tf_efficientnet_b5_ap (AdaBins)")
+compgen -G "$HUB/rwightman_gen-efficientnet-pytorch*" >/dev/null || missing+=("rwightman/gen-efficientnet-pytorch (AdaBins, torch.hub)")
+if (( ${#missing[@]} )); then
+  echo "!! TORCH_HOME=$TORCH_HOME 里缺这些预热产物："
+  printf '!!   %s\n' "${missing[@]}"
+  echo "!! 在登录节点跑一次 --build-only，并且**先 export TORCH_HOME=$TORCH_HOME**；"
+  echo "!! 或者把已有的搬过去： mkdir -p $TORCH_HOME && cp -r ~/.cache/torch/hub $TORCH_HOME/"
+  exit 1
+fi
+echo "[check] torch hub 缓存就位于 $HUB"
+
 mkdir -p "$OUT_DIR"
 cd "$IRIS_REPO"
 git log --oneline -1
