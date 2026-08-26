@@ -25,7 +25,17 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/env.sh" >/dev/null
 REPO="${IRIS_REPO:-$HOME/Iris}"
 SKIP="${SKIP:-}"
 DRY="${DRY_RUN:-0}"
-DRY_ID=0
+# dry 模式的假作业号必须跨子 shell 递增：submit 是在 $( ) 里调用的，子 shell
+# 的变量自增传不回来，于是每一环都拿到同一个号，依赖链看起来是错的而实际不是。
+# dry 跑存在的意义就是验证这条链，所以计数器落到文件上。
+DRY_COUNTER="$(mktemp)"; echo 0 > "$DRY_COUNTER"
+trap 'rm -f "$DRY_COUNTER"' EXIT
+
+# 这几个名字在本仓库的不同作业脚本里含义不同（STEPS 尤其：pipeline 里是
+# checkpoint 步数、eval 里是去噪步数、metric_adapt 里是训练步数）。登录 shell
+# 里只要 export 过一次就会被 --export=ALL 带进来。本脚本自己会显式设它需要的，
+# 所以先清干净，别把上一次提交的值带进这一批。
+unset STEPS TAG CKPT ROUTE CAPTION_MODE SAVE_RAW VAL_STRIDE       RUN SEL_PROMPT TEST_PROMPTS TEST_MANIFEST VAL_MANIFEST TRAIN_MANIFEST       SEED RUN_TAG PSEUDO_DIR SKY_MASKS MAX_SAMPLES SAVE_MASKS MANIFEST       METRIC_NORM INIT_CKPT SMOKE LIMIT TEST_ENV SAMPLE_STEP OUT_DIR 2>/dev/null || true
 skipped() { [[ ",$SKIP," == *",$1,"* ]]; }
 
 M="$IRIS_MANIFEST_DIR"
@@ -55,11 +65,11 @@ echo "[check] 10 份清单 + 伪 GT 目录都在"
 submit() {  # submit <描述> <sbatch 参数...>   -> 打印并回显 job id
   local desc="$1"; shift
   if [[ "$DRY" == "1" ]]; then
-    DRY_ID=$((DRY_ID + 1))
+    local n=$(( $(cat "$DRY_COUNTER") + 1 )); echo "$n" > "$DRY_COUNTER"
     echo "[dry] $desc" >&2
     echo "      sbatch $*" >&2
     echo "      环境: STEPS=${STEPS:-<未设>}" >&2
-    echo "9$(printf '%05d' $DRY_ID)"
+    echo "9$(printf '%05d' "$n")"
     return
   fi
   local out
