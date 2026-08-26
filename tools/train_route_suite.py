@@ -62,7 +62,11 @@ for path in (ROOT, LOTUS_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from ms2_eval.official_protocol import evaluate_sample  # noqa: E402
+from ms2_eval.official_protocol import evaluate_sample, official_valid_mask  # noqa: E402
+from tools.metric_depth_norm import MetricNorm  # noqa: E402
+
+# Written into --fit-global-affine artifacts and checked when one is loaded.
+GLOBAL_AFFINE_SCHEMA = "iris.global_affine_calibration.v1"
 from models.anythermal_lotus_v2 import thermal_to_lotus_input  # noqa: E402
 from models.anythermal_lotus_v2_4 import seeded_noise  # noqa: E402
 from models.anythermal_lotus_model import extract_anythermal_feature_pyramid  # noqa: E402
@@ -508,6 +512,87 @@ def parse_args() -> argparse.Namespace:
         default="eval",
         help="Names the output files: eval_<tag>.json and eval_<tag>_per_sample.csv.",
     )
+
+    # ---- metric evaluation (2026-08-26) ----------------------------------- #
+    # Everything above this block reads the model affine-invariantly: a scale and
+    # a shift are fitted to the test GT of every frame before any metric is
+    # computed. That is the right exam for a relative model and the wrong one for
+    # a metric claim, so the two live side by side and are never merged.
+    parser.add_argument(
+        "--align-mode",
+        choices=("ssi_disparity", "ssi", "median", "none"),
+        default="ssi_disparity",
+        help=(
+            "How the prediction is brought to metres before the official metrics. "
+            "ssi_disparity (default) is the historical path: a per-frame affine fitted "
+            "to TEST GT -- every published number in this project used it. 'none' fits "
+            "nothing and needs --metric-source to say how the raw output becomes an "
+            "inverse depth. 'ssi' and 'median' are the upstream BMSD variants, exposed "
+            "for completeness."
+        ),
+    )
+    parser.add_argument(
+        "--metric-source",
+        choices=("raw_inverse", "global_norm", "global_affine"),
+        default=None,
+        help=(
+            "With --align-mode none, how the decoded [0,1] output y becomes metric "
+            "inverse depth q, hence depth 1/q:\n"
+            "  raw_inverse    q = y. No constants at all -- a units sanity check on a "
+            "checkpoint that was never trained to be metric, not a result.\n"
+            "  global_norm    q = q_lo + y*(q_hi - q_lo), from --metric-norm. This is "
+            "the metric-adapted model's own convention, and the constants come from the "
+            "TRAIN split.\n"
+            "  global_affine  q = a*y + b, from --global-affine. One (a, b) fitted once "
+            "on TRAIN predictions and frozen -- the calibration baseline.\n"
+            "None of the three reads GT at inference. All three are affine in y, so the "
+            "evaluator records the (a, b) it actually used and where they came from."
+        ),
+    )
+    parser.add_argument(
+        "--metric-norm",
+        type=Path,
+        default=None,
+        help="tools/fit_metric_norm.py artifact. Required by --metric-source global_norm.",
+    )
+    parser.add_argument(
+        "--global-affine",
+        type=Path,
+        default=None,
+        help="tools/train_route_suite.py --fit-global-affine artifact. Required by --metric-source global_affine.",
+    )
+    parser.add_argument(
+        "--fit-global-affine",
+        type=Path,
+        default=None,
+        help=(
+            "Fit one dataset-level affine q ~ a*y + b on the manifest given by "
+            "--val-manifest, write it here, and exit without evaluating. That manifest "
+            "must be the TRAIN split: the whole point of the baseline is that the "
+            "calibration never sees val or test. Requires --eval-checkpoint."
+        ),
+    )
+    parser.add_argument(
+        "--fit-affine-split-list",
+        type=Path,
+        default=None,
+        help=(
+            "train_list.txt. Required by --fit-global-affine and checked row by row. "
+            "Not advisory: the manifests in this project carry a `split` field that "
+            "says 'train' on test manifests too, so the sequence list is the only "
+            "trustworthy statement of which split a file actually holds."
+        ),
+    )
+    parser.add_argument(
+        "--fit-affine-stride",
+        type=int,
+        default=20,
+        help=(
+            "Frame stride for --fit-global-affine. Two parameters fitted over ~4k "
+            "frames x 40k lidar pixels is already 1.5e8 constraints; the default trades "
+            "an unmeasurable amount of precision for a job that finishes in an hour."
+        ),
+    )
     parser.add_argument("--smoke-updates", type=int, default=None)
     parser.add_argument("--overfit-steps", type=int, default=None)
     parser.add_argument(
@@ -519,7 +604,46 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def validate_metric_args(args: argparse.Namespace) -> None:
+    """Guards for the metric evaluation path. Loud, because every failure mode
+    here is a number that looks plausible and means something else."""
+    if args.align_mode != "ssi_disparity" and args.eval_checkpoint is None and args.fit_global_affine is None:
+        raise ValueError(
+            "--align-mode is an evaluation knob; training always validates under "
+            "ssi_disparity so the epoch curve stays comparable with every run before it."
+        )
+    if args.align_mode == "none":
+        if args.metric_source is None:
+            raise ValueError(
+                "--align-mode none needs --metric-source: with no fit to GT, something "
+                "has to say how the decoded [0,1] output becomes an inverse depth."
+            )
+    elif args.metric_source is not None:
+        raise ValueError(
+            f"--metric-source is only read under --align-mode none; got --align-mode "
+            f"{args.align_mode}, where the affine is fitted to GT instead."
+        )
+    if args.metric_source == "global_norm" and args.metric_norm is None:
+        raise ValueError("--metric-source global_norm needs --metric-norm")
+    if args.metric_source == "global_affine" and args.global_affine is None:
+        raise ValueError("--metric-source global_affine needs --global-affine")
+    if args.metric_source != "global_norm" and args.metric_norm is not None:
+        raise ValueError("--metric-norm is only read by --metric-source global_norm")
+    if args.metric_source != "global_affine" and args.global_affine is not None:
+        raise ValueError("--global-affine is only read by --metric-source global_affine")
+    if args.fit_global_affine is not None:
+        if args.eval_checkpoint is None:
+            raise ValueError("--fit-global-affine needs the checkpoint to fit, via --eval-checkpoint")
+        if args.fit_affine_stride <= 0:
+            raise ValueError("--fit-affine-stride must be positive")
+        if args.fit_affine_split_list is None:
+            raise ValueError("--fit-global-affine needs --fit-affine-split-list (train_list.txt)")
+    elif args.fit_affine_split_list is not None:
+        raise ValueError("--fit-affine-split-list is only read by --fit-global-affine")
+
+
 def validate_args(args: argparse.Namespace) -> None:
+    validate_metric_args(args)
     if args.epochs <= 0:
         raise ValueError("--epochs must be positive.")
     if args.micro_batch_size != 1:
@@ -1171,6 +1295,85 @@ def permute_captions(rows: list[dict], seed: int) -> dict:
     }
 
 
+EVALUATION_LABELS = {
+    "ssi_disparity": "affine_invariant",
+    "ssi": "affine_invariant_depth_space",
+    "median": "metric_median_scaled",
+    "none": "metric_no_test_alignment",
+}
+# Smallest inverse depth let through the reciprocal. Deliberately far below
+# 1/max_depth so that a prediction beyond the evaluation range still reaches
+# `official_depth_errors`' own clamp and is counted there, rather than being
+# silently pinned to 80 m here where nothing would report it.
+INVERSE_DEPTH_FLOOR = 1e-6
+
+
+def resolve_metric_affine(args) -> dict | None:
+    """The (a, b) turning a decoded [0, 1] prediction into inverse depth, 1/m.
+
+    All three sources are the same affine `q = a*y + b`; they differ only in
+    where the two numbers came from, so the evaluator resolves them once here
+    and records the provenance beside the result.  None of them reads GT.
+    """
+    if args.align_mode != "none":
+        return None
+    if args.metric_source == "raw_inverse":
+        return {
+            "metric_source": "raw_inverse",
+            "a": 1.0,
+            "b": 0.0,
+            "provenance": {
+                "note": "no calibration: the decoded [0,1] output is read as 1/m directly",
+            },
+        }
+    if args.metric_source == "global_norm":
+        norm = MetricNorm.load(args.metric_norm)
+        a, b = norm.as_affine()
+        return {
+            "metric_source": "global_norm",
+            "a": a,
+            "b": b,
+            "provenance": {
+                "artifact": str(args.metric_norm),
+                "source_split": norm.source_split,
+                "source_manifest": norm.source_manifest,
+                "q_lo": norm.q_lo,
+                "q_hi": norm.q_hi,
+                "quantiles": [norm.quantile_lo, norm.quantile_hi],
+                "valid_pixels": norm.valid_pixels,
+                "frames": norm.frames,
+            },
+        }
+    payload = json.loads(Path(args.global_affine).read_text(encoding="utf-8"))
+    if payload.get("schema") != GLOBAL_AFFINE_SCHEMA:
+        raise SystemExit(f"{args.global_affine}: schema {payload.get('schema')!r}")
+    if payload.get("source_split") != "train":
+        raise SystemExit(
+            f"{args.global_affine} was fitted on {payload.get('source_split')!r}; the "
+            "calibration baseline may only be fitted on train."
+        )
+    return {
+        "metric_source": "global_affine",
+        "a": float(payload["a"]),
+        "b": float(payload["b"]),
+        "provenance": {"artifact": str(args.global_affine), **payload},
+    }
+
+
+def prediction_to_depth(pred_y: np.ndarray, metric: dict, args) -> tuple[np.ndarray, int, int]:
+    """Decoded [0, 1] -> metres, with no GT anywhere in the arithmetic.
+
+    Returns `(depth, non_positive_pixels, floored_pixels)`.  The only clamp is
+    the positivity floor; the evaluation-range clamp stays where it has always
+    been, inside `official_depth_errors`, so its counters keep meaning what they
+    have always meant.
+    """
+    q = metric["a"] * pred_y.astype(np.float64) + metric["b"]
+    non_positive = int(np.count_nonzero(q <= 0))
+    floored = int(np.count_nonzero(q < INVERSE_DEPTH_FLOOR))
+    return 1.0 / np.maximum(q, INVERSE_DEPTH_FLOOR), non_positive, floored
+
+
 @torch.no_grad()
 def run_validation(
     model: RouteModel,
@@ -1180,6 +1383,7 @@ def run_validation(
     per_sample: list | None = None,
     raw_dir: Path | None = None,
     donors: dict | None = None,
+    metric: dict | None = None,
 ) -> dict:
     model.set_train(False)
     accumulator: dict[str, float] = {}
@@ -1207,13 +1411,24 @@ def run_validation(
         pred = prediction[None, None]
         if pred.shape[-2:] != gt_metres.shape:
             pred = F.interpolate(pred, gt_metres.shape, mode="bilinear", align_corners=False)
+        pred_y = pred[0, 0].float().cpu().numpy()
+        if args.align_mode == "none":
+            # The whole of the metric path: two frozen numbers and a reciprocal.
+            # `gt_metres` is not read until `evaluate_sample`, and then only to
+            # score. Nothing above this line has touched it.
+            pred_for_eval, non_positive, floored = prediction_to_depth(pred_y, metric, args)
+        else:
+            pred_for_eval, non_positive, floored = pred_y, 0, 0
         metrics = evaluate_sample(
-            pred[0, 0].float().cpu().numpy(),
+            pred_for_eval,
             gt_metres,
-            align="ssi_disparity",
+            align=args.align_mode,
             min_depth=args.eval_min_depth,
             max_depth=args.eval_max_depth,
         )
+        if args.align_mode == "none":
+            metrics["non_positive_inverse_depth"] = non_positive
+            metrics["inverse_depth_floored"] = floored
         for key, value in metrics.items():
             if isinstance(value, (int, float)) and key != "align_mode":
                 accumulator[key] = accumulator.get(key, 0.0) + float(value)
@@ -1231,6 +1446,112 @@ def run_validation(
 # --------------------------------------------------------------------------- #
 # checkpoints
 # --------------------------------------------------------------------------- #
+
+
+@torch.no_grad()
+def fit_global_affine(model: RouteModel, rows: list[dict], prompts: dict, args, output: Path) -> None:
+    """One dataset-level `q_GT ~ a*y + b`, fitted on TRAIN predictions and frozen.
+
+    The baseline this answers is: how much of the metric gap closes with a single
+    calibration of the existing network, no retraining at all?  If the adapted
+    model cannot beat this, the adaptation bought nothing that a lookup table
+    would not have.
+
+    Fitted by accumulating the five sufficient statistics of a least-squares
+    line, so every valid pixel of every visited frame contributes exactly once
+    and nothing is held in memory.  One fit over the pooled pixels -- not a fit
+    per frame averaged afterwards, which is a different and much weaker
+    constraint, and not the per-frame fit the affine-invariant path uses.
+    """
+    model.set_train(False)
+    sequences = sorted({row["sequence"] for row in rows})
+    allowed = {
+        line.strip().lstrip("_")
+        for line in args.fit_affine_split_list.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    stray = [s for s in sequences if s.lstrip("_") not in allowed]
+    if stray:
+        raise SystemExit(
+            f"These sequences are not in {args.fit_affine_split_list.name}: {stray}\n"
+            "The calibration baseline may only be fitted on the training split."
+        )
+    print(
+        f"[affine] fitting on {len(rows)} TRAIN frames over {len(sequences)} sequences, "
+        f"stride {args.fit_affine_stride}",
+        flush=True,
+    )
+    s_pp = s_p = s_n = s_pq = s_q = 0.0
+    frames_used = 0
+    for position, row in enumerate(rows):
+        image_tensor, _ = load_input_tensor(row, model.modality, args)
+        if args.val_caption_mode == "empty":
+            prompt = prompts["empty"]
+        elif args.val_caption_mode == "fixed":
+            prompt = prompts["fixed"]
+        else:
+            prompt = model.encode_prompt(row["caption"])
+        prediction = model.predict_disparity(row, image_tensor, prompt)
+        gt_metres = np.asarray(Image.open(row["depth_path"]), dtype=np.float32) / args.depth_scale
+        pred = prediction[None, None]
+        if pred.shape[-2:] != gt_metres.shape:
+            pred = F.interpolate(pred, gt_metres.shape, mode="bilinear", align_corners=False)
+        y = pred[0, 0].float().cpu().numpy().astype(np.float64)
+        valid = official_valid_mask(gt_metres, args.eval_min_depth, args.eval_max_depth)
+        if not valid.any():
+            continue
+        p = y[valid]
+        q = 1.0 / gt_metres[valid].astype(np.float64)
+        s_pp += float(np.sum(p * p))
+        s_p += float(np.sum(p))
+        s_n += float(p.size)
+        s_pq += float(np.sum(p * q))
+        s_q += float(np.sum(q))
+        frames_used += 1
+        if (position + 1) % 200 == 0:
+            print(f"[affine]   {position + 1}/{len(rows)} frames, {int(s_n):,} pixels", flush=True)
+
+    det = s_pp * s_n - s_p * s_p
+    if det <= 0 or not np.isfinite(det):
+        raise SystemExit(f"Degenerate global affine fit (det={det})")
+    a = (s_n * s_pq - s_p * s_q) / det
+    b = (-s_p * s_pq + s_pp * s_q) / det
+    if not np.isfinite(a) or not np.isfinite(b):
+        raise SystemExit(f"Global affine fit produced non-finite (a, b) = ({a}, {b})")
+    payload = {
+        "schema": GLOBAL_AFFINE_SCHEMA,
+        "a": float(a),
+        "b": float(b),
+        "form": "q_inverse_depth_per_metre = a * y_decoded + b",
+        "source_split": "train",
+        "source_manifest": str(args.val_manifest),
+        "frame_stride": args.fit_affine_stride,
+        "frames_visited": len(rows),
+        "frames_used": frames_used,
+        "sequences": sequences,
+        "valid_pixels": int(s_n),
+        "checkpoint": str(args.eval_checkpoint),
+        "route": args.route,
+        "caption_mode": args.val_caption_mode,
+        "condition_latent": args.condition_latent,
+        "num_inference_steps": args.num_inference_steps,
+        "eval_min_depth": args.eval_min_depth,
+        "eval_max_depth": args.eval_max_depth,
+        "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "note": (
+            "One affine for the whole dataset, fitted on pooled TRAIN lidar pixels and "
+            "frozen. Applied unchanged to val and test. No val or test GT entered this fit."
+        ),
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(
+        f"[affine] a={a:.6f} b={b:.6f} 1/m over {int(s_n):,} pixels from {frames_used} frames\n"
+        f"[affine] y=0 -> {1.0 / max(b, INVERSE_DEPTH_FLOOR):.2f} m, "
+        f"y=1 -> {1.0 / max(a + b, INVERSE_DEPTH_FLOOR):.2f} m\n"
+        f"[affine] -> {output}",
+        flush=True,
+    )
 
 
 def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args, output: Path) -> None:
@@ -1297,13 +1618,32 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
         raw_dir.mkdir(parents=True, exist_ok=True)
         print(f"[eval] saving raw predictions to {raw_dir}", flush=True)
 
+    metric = resolve_metric_affine(args)
+    label = EVALUATION_LABELS[args.align_mode]
+    if metric is not None:
+        print(
+            f"[eval] {label} / {metric['metric_source']}: "
+            f"q = {metric['a']:.6f} * y + {metric['b']:.6f} 1/m "
+            f"(y=0 -> {1.0 / max(metric['b'], INVERSE_DEPTH_FLOOR):.2f} m, "
+            f"y=1 -> {1.0 / max(metric['a'] + metric['b'], INVERSE_DEPTH_FLOOR):.2f} m). "
+            f"No GT is read before the metrics.",
+            flush=True,
+        )
+    else:
+        print(f"[eval] {label}: per-frame affine fitted to the evaluated split's GT", flush=True)
+
     per_sample: list[dict] = []
     started = time.time()
     metrics = run_validation(
-        model, val_rows, prompts, args, per_sample=per_sample, raw_dir=raw_dir, donors=donors
+        model, val_rows, prompts, args, per_sample=per_sample, raw_dir=raw_dir,
+        donors=donors, metric=metric,
     )
     metrics.update(
         {
+            "evaluation_mode": label,
+            "align_mode": args.align_mode,
+            "metric_calibration": metric,
+            "test_gt_used_for_fitting": args.align_mode != "none",
             "route": args.route,
             "checkpoint": str(args.eval_checkpoint),
             "checkpoint_epoch": checkpoint.get("epoch"),
@@ -1321,20 +1661,48 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
             "condition_latent": args.condition_latent,
             "environment": environment_fingerprint(model.device),
             "elapsed_seconds": time.time() - started,
-            "protocol": "official BMSD ssi_disparity, min_depth 1e-3, max_depth 80",
+            "protocol": (
+                f"official BMSD {args.align_mode}, min_depth {args.eval_min_depth}, "
+                f"max_depth {args.eval_max_depth}"
+            ),
         }
     )
-    (output / f"eval_{args.eval_tag}.json").write_text(
-        json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    with (output / f"eval_{args.eval_tag}_per_sample.csv").open("w", encoding="utf-8", newline="") as handle:
+    # An affine-invariant run keeps the historical filenames, so every consumer
+    # of eval_<tag>.json -- iris_ms2_pipeline.sbatch's skip logic included --
+    # goes on reading what it always read. A metric run writes beside it under
+    # its own label: the two exams are not interchangeable and must never land
+    # on the same path.
+    # The label alone is not enough to name the file. raw_inverse, global_affine
+    # and global_norm are all `metric_no_test_alignment`, and on their first
+    # outing all three landed on one path and silently overwrote each other --
+    # three different exams, one filename, last writer wins. The calibration
+    # source is part of what a result is, so it is part of what it is called.
+    suffix = "" if args.align_mode == "ssi_disparity" else f"_{label}"
+    if metric is not None:
+        suffix += f"_{metric['metric_source']}"
+    json_path = output / f"eval_{args.eval_tag}{suffix}.json"
+    csv_path = output / f"eval_{args.eval_tag}{suffix}_per_sample.csv"
+    if json_path.exists():
+        old = json.loads(json_path.read_text(encoding="utf-8"))
+        previous = old.get("evaluation_mode")
+        previous_source = (old.get("metric_calibration") or {}).get("metric_source")
+        current_source = metric["metric_source"] if metric else None
+        if (previous, previous_source) != (label, current_source) and previous is not None:
+            raise SystemExit(
+                f"{json_path} already holds a {previous!r}/{previous_source!r} result and "
+                f"this run is {label!r}/{current_source!r}. Refusing to overwrite one exam "
+                "with the other; change --eval-tag or the output directory."
+            )
+    json_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(per_sample[0]))
         writer.writeheader()
         writer.writerows(per_sample)
     print(
-        f"[eval] abs_rel {metrics['abs_rel']:.4f}  rmse {metrics['rmse']:.3f}  "
+        f"[eval] {label}: abs_rel {metrics['abs_rel']:.4f}  sq_rel {metrics['sq_rel']:.4f}  "
+        f"rmse {metrics['rmse']:.3f}  rmse_log {metrics['rmse_log']:.4f}  "
         f"a1 {metrics['a1']:.4f}  ({metrics['val_samples']} frames, "
-        f"{metrics['elapsed_seconds'] / 60:.1f} min) -> eval_{args.eval_tag}.json",
+        f"{metrics['elapsed_seconds'] / 60:.1f} min) -> {json_path.name}",
         flush=True,
     )
 
@@ -1447,6 +1815,17 @@ def main() -> None:
     if args.val_caption_mode == "fixed":
         prompts["fixed"] = model.encode_prompt(args.val_caption_text)
     caption_rng = random.Random(args.seed + 424242)
+
+    if args.fit_global_affine is not None:
+        checkpoint = torch.load(args.eval_checkpoint.resolve(), map_location="cpu", weights_only=False)
+        if checkpoint.get("route") != args.route:
+            raise SystemExit(
+                f"Checkpoint route {checkpoint.get('route')!r} does not match --route {args.route!r}"
+            )
+        model.load_state_dicts(checkpoint["state_dicts"], str(args.eval_checkpoint))
+        rows = val_rows[:: args.fit_affine_stride]
+        fit_global_affine(model, rows, prompts, args, args.fit_global_affine)
+        return
 
     if args.eval_checkpoint is not None:
         run_evaluation(model, val_rows, prompts, args, output)

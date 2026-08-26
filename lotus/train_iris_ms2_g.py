@@ -42,6 +42,7 @@ prompt stays empty, as in the original.
 """
 
 import argparse
+import copy
 import logging
 import math
 import os
@@ -86,6 +87,20 @@ from utils.image_utils import concatenate_images, colorize_depth_map
 from utils.ms2_thermal_dataset import MS2ThermalDataset, MS2ThermalTransform, collate_fn_ms2
 
 from eval import evaluation_depth, evaluation_normal
+
+# MS2 metric adaptation: the one place the inverse-depth convention lives.
+import sys as _sys
+_IRIS_ROOT = Path(__file__).resolve().parents[1]
+if str(_IRIS_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_IRIS_ROOT))
+from tools.metric_depth_norm import (  # noqa: E402
+    MetricNorm,
+    decoded_to_inverse,
+    depth_to_inverse,
+    inverse_to_depth,
+    nonfinite_count,
+    range_line,
+)
 
 import tensorboard
 
@@ -335,6 +350,91 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
     del pipeline
     torch.cuda.empty_cache()
 
+# --------------------------------------------------------------------------- #
+# metric GT adaptation (2026-08-26)
+# --------------------------------------------------------------------------- #
+
+
+def decode_metric_inverse_depth(metric_vae, x0_latent, norm):
+    """The U-Net's x0 latent -> metric inverse depth, in 1/m.
+
+    Two steps, both taken from code that already exists rather than reinvented:
+
+      1. `decode_to_disparity` (tools/train_ms2_joint_gt_v3.py:420) -- decode,
+         channel-mean, `/ 2 + 0.5`.  That is `y`, the decoder's [-1, 1] output
+         re-expressed on [0, 1], and it is exactly what every evaluation in this
+         project has read off this model.
+      2. `decoded_to_inverse` (tools/metric_depth_norm.py) -- `q = q_lo + y*(q_hi - q_lo)`.
+
+    Nothing is clamped here.  The clamp belongs on the reporting path, where it
+    is a numerical guard; on the loss path it would zero the gradient of exactly
+    the pixels that are most wrong.
+    """
+    device_type = x0_latent.device.type
+    # The surrounding step runs under accelerate's autocast. Decoding inside it
+    # would put this back in fp16 and undo the whole point of the fp32 copy.
+    with torch.autocast(device_type=device_type, enabled=False):
+        decoded = metric_vae.decode(
+            x0_latent.float() / metric_vae.config.scaling_factor, return_dict=False
+        )[0]
+    y = decoded.float().mean(dim=1, keepdim=True) / 2.0 + 0.5   # (B, 1, H, W) in [0, 1]
+    return y, decoded_to_inverse(y, norm)
+
+
+def metric_inverse_depth_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm):
+    """Masked L1 between predicted and measured inverse depth, in 1/m.
+
+        L = mean_{i in M} |q_hat_i - q_GT_i|,     M = official valid lidar mask
+
+    `gt_depth` is the *sparse* lidar in metres and `gt_valid` its mask; the
+    completed dense map is deliberately not used here.  Completion is a model's
+    opinion about where the sensor did not measure, and the term whose job is to
+    fix absolute scale should not be anchored to an opinion.
+
+    The sparse map is never VAE-encoded.  Its zeros are holes, not depth, and a
+    latent cell pools 8x8 pixels -- encoding it would spread the holes over the
+    whole target, which is the confirmed V1 bug recorded in AGENTS.md.
+    """
+    y, q_hat = decode_metric_inverse_depth(metric_vae, x0_latent, norm)
+    if q_hat.shape[-2:] != gt_depth.shape[-2:]:
+        raise RuntimeError(
+            f"Prediction {tuple(q_hat.shape[-2:])} and lidar {tuple(gt_depth.shape[-2:])} "
+            "disagree on resolution"
+        )
+    mask = gt_valid > 0.5
+    count = int(mask.sum())
+    stats = {
+        "decoded_min": float(y.detach().min()),
+        "decoded_max": float(y.detach().max()),
+        "q_hat_min": float(q_hat.detach().min()),
+        "q_hat_max": float(q_hat.detach().max()),
+        "q_hat_nonfinite": nonfinite_count(q_hat.detach()),
+        "q_hat_non_positive": int((q_hat.detach() <= 0).sum()),
+        "lidar_pixels": count,
+    }
+    if stats["q_hat_nonfinite"]:
+        raise RuntimeError(f"Predicted inverse depth has {stats['q_hat_nonfinite']} NaN/Inf values")
+    if not count:
+        # A whole batch without a single lidar return is possible in principle
+        # and must not become a division by zero. It contributes nothing rather
+        # than aborting the run.
+        return x0_latent.new_zeros(()), 0, stats
+    q_gt, _ = depth_to_inverse(gt_depth, norm, valid=mask)
+    loss = (q_hat[mask] - q_gt[mask]).abs().mean()
+    with torch.no_grad():
+        depth_hat, clip_report = inverse_to_depth(q_hat.detach(), norm)
+        stats["depth_hat_min"] = float(depth_hat.min())
+        stats["depth_hat_max"] = float(depth_hat.max())
+        stats["depth_hat_clip"] = str(clip_report)
+        # AbsRel on the measured pixels, with no alignment of any kind. This is
+        # the training-time read of the number the metric evaluation reports, so
+        # the curve and the final table are talking about the same quantity.
+        gt_m = gt_depth[mask]
+        pred_m = depth_hat[mask]
+        stats["metric_abs_rel"] = float(((pred_m - gt_m).abs() / gt_m).mean())
+    return loss, count, stats
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     parser.add_argument(
@@ -438,9 +538,96 @@ def parse_args():
     parser.add_argument(
         "--norm_type",
         type=str,
-        choices=['instnorm','truncnorm','perscene_norm','disparity','trunc_disparity'],
+        choices=['instnorm','truncnorm','perscene_norm','disparity','trunc_disparity',
+                 'global_metric_disparity'],
         default='trunc_disparity',
-        help='The normalization type for the depth prediction'
+        help=(
+            'The normalization type for the depth prediction. Every option but the '
+            'last normalises each frame by its own statistics and therefore removes '
+            'absolute scale; global_metric_disparity uses two constants frozen from '
+            'the training split and needs --metric_norm_json.'
+        )
+    )
+
+    # ---- metric GT adaptation (2026-08-26) -------------------------------- #
+    # A second training mode, off unless --metric_adaptation is passed. It changes
+    # three things and nothing else: the target's normalisation becomes global,
+    # a masked image-space L1 against real lidar is added, and the U-Net starts
+    # from a named checkpoint rather than from the base repository.
+    parser.add_argument(
+        "--metric_adaptation",
+        action="store_true",
+        help=(
+            "Turn on the metric adaptation stage. Implies --norm_type "
+            "global_metric_disparity and requires --metric_norm_json."
+        ),
+    )
+    parser.add_argument(
+        "--metric_norm_json",
+        type=str,
+        default=None,
+        help=(
+            "Artifact from tools/fit_metric_norm.py holding q_lo/q_hi. Estimated on "
+            "the training split only; loading one whose source_split is not 'train' "
+            "raises."
+        ),
+    )
+    parser.add_argument(
+        "--init_unet_from",
+        type=str,
+        default=None,
+        help=(
+            "Start the U-Net from this checkpoint instead of --pretrained_model_name_or_path's. "
+            "Takes a train_route_suite.py payload (.pt with state_dicts.unet), which is "
+            "what tools/convert_iris_ms2_checkpoint.py writes, or a diffusers unet/ "
+            "directory. The rest of the pipeline still comes from --pretrained_model_name_or_path."
+        ),
+    )
+    parser.add_argument(
+        "--lambda_metric",
+        type=float,
+        default=1.0,
+        help=(
+            "Weight on the masked image-space L1 against real lidar inverse depth. "
+            "This is the term that fixes absolute scale; nothing else in the objective "
+            "can, because both latent terms are scored against maps the same global "
+            "normalisation produced."
+        ),
+    )
+    parser.add_argument(
+        "--lambda_dense",
+        type=float,
+        default=1.0,
+        help=(
+            "Weight on the existing latent MSE against the completed dense target "
+            "(the old `anno_loss`). 1.0 leaves it exactly as the base run had it."
+        ),
+    )
+    parser.add_argument(
+        "--lambda_recon",
+        type=float,
+        default=1.0,
+        help=(
+            "Weight on the existing thermal reconstruction branch (the old `rgb_loss`). "
+            "1.0 leaves it exactly as the base run had it; the objective is not "
+            "silently changed by turning metric adaptation on."
+        ),
+    )
+    parser.add_argument(
+        "--metric_decode_grad_ckpt",
+        type=lambda v: str(v).lower() not in ("0", "false", "no"),
+        default=True,
+        help=(
+            "Gradient-checkpoint the fp32 decoder used by the metric loss. On by "
+            "default: without it the decode of a 4x3x256x640 batch in fp32 with "
+            "graph retained is the largest allocation in the step."
+        ),
+    )
+    parser.add_argument(
+        "--metric_log_every",
+        type=int,
+        default=200,
+        help="Steps between predicted inverse-depth / metric-depth range reports.",
     )
     parser.add_argument(
         "--random_flip",
@@ -642,6 +829,35 @@ def parse_args():
     # MS2: the manifest, the root and the pseudo GT directory are all required,
     # so argparse has already enforced what this block used to check.
 
+    if args.metric_adaptation:
+        if not args.metric_norm_json:
+            raise ValueError("--metric_adaptation needs --metric_norm_json")
+        if args.norm_type not in ("trunc_disparity", "global_metric_disparity"):
+            raise ValueError(
+                f"--metric_adaptation cannot run with --norm_type {args.norm_type}: the "
+                "target has to be the globally normalised one."
+            )
+        # Implied rather than required on the command line, so a stale script
+        # cannot half-enable the mode.
+        args.norm_type = "global_metric_disparity"
+        if args.lambda_metric <= 0:
+            raise ValueError(
+                "--lambda_metric must be positive under --metric_adaptation: it is the "
+                "only term that carries measured absolute scale."
+            )
+    else:
+        if args.metric_norm_json:
+            raise ValueError("--metric_norm_json only means anything with --metric_adaptation")
+        if args.norm_type == "global_metric_disparity":
+            raise ValueError("--norm_type global_metric_disparity requires --metric_adaptation")
+        if (args.lambda_dense, args.lambda_recon) != (1.0, 1.0):
+            # Outside the metric stage this trainer must stay the recipe that
+            # produced every published checkpoint, term for term.
+            raise ValueError(
+                "--lambda_dense / --lambda_recon may only leave 1.0 under "
+                "--metric_adaptation; the base recipe's objective is fixed."
+            )
+
     # default to using the same revision for the non-ema model if not specified
     if args.non_ema_revision is None:
         args.non_ema_revision = args.revision
@@ -789,6 +1005,44 @@ def main():
             "(SD2-base) or 8 (a trained Lotus-G checkpoint)."
         )
 
+    # MS2 metric adaptation: continue from a named checkpoint rather than from the
+    # base repository's weights. Done here, after the conv_in shape is settled and
+    # before `accelerator.prepare`, so the loaded tensors are the ones the
+    # optimizer is built over.
+    if args.init_unet_from:
+        init_path = Path(args.init_unet_from)
+        if not init_path.exists():
+            raise FileNotFoundError(f"--init_unet_from: no such path {init_path}")
+        if init_path.is_dir():
+            source = UNet2DConditionModel.from_pretrained(
+                init_path, subfolder="unet" if (init_path / "unet").is_dir() else None,
+                in_channels=8, low_cpu_mem_usage=False, device_map=None,
+            )
+            init_state = source.state_dict()
+            provenance = f"diffusers directory {init_path}"
+            del source
+        else:
+            payload = torch.load(init_path, map_location="cpu", weights_only=False)
+            if "state_dicts" not in payload or "unet" not in payload["state_dicts"]:
+                raise ValueError(
+                    f"{init_path} carries {sorted(payload)}; expected a "
+                    "train_route_suite.py payload with state_dicts.unet"
+                )
+            init_state = payload["state_dicts"]["unet"]
+            provenance = (
+                f"{init_path} (route {payload.get('route')}, step {payload.get('epoch')}, "
+                f"caption_mode {payload.get('caption_mode')})"
+            )
+        # strict: a silent key mismatch here is a run that trains the wrong
+        # tensors and only shows it as a bad metric hours later.
+        missing, unexpected = unet.load_state_dict(init_state, strict=False)
+        if missing or unexpected:
+            raise ValueError(
+                f"--init_unet_from key mismatch: {len(missing)} missing "
+                f"{missing[:5]}, {len(unexpected)} unexpected {unexpected[:5]}"
+            )
+        logger.info(f"U-Net initialised from {provenance}")
+
     # Freeze vae and text_encoder and set unet to trainable
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
@@ -872,6 +1126,11 @@ def main():
     # `--prob_hypersim` no longer have anything to mix and are ignored; the loop
     # below reads from this single loader.
     # -------------------- Dataset: MS2 thermal --------------------
+    metric_norm = None
+    if args.metric_adaptation:
+        metric_norm = MetricNorm.load(args.metric_norm_json)
+        logger.info(f"Metric adaptation: {metric_norm.summary()}")
+        logger.info(f"  constants from {metric_norm.source_manifest}")
     transform_ms2 = MS2ThermalTransform(random_flip=args.random_flip)
     train_dataset_ms2 = MS2ThermalDataset(
         args.ms2_manifest,
@@ -881,6 +1140,7 @@ def main():
         norm_type=args.norm_type,
         truncnorm_min=args.truncnorm_min,
         use_captions=not args.no_captions,
+        metric_norm=metric_norm,
     )
     train_dataloader_ms2 = torch.utils.data.DataLoader(
         train_dataset_ms2,
@@ -920,6 +1180,35 @@ def main():
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
         args.mixed_precision = accelerator.mixed_precision
+
+    # The metric loss is the first thing in this trainer that needs a gradient to
+    # travel back through the VAE decoder, and `vae` is about to become fp16
+    # under the shipped recipe. An fp16 backward through this decoder underflows
+    # the gradient to exactly zero on most steps -- measured on the route-suite
+    # line (tools/train_route_suite.py:899), which is why that file keeps an fp32
+    # decoder copy for exactly this purpose. Same fix here: a decode-only fp32
+    # copy, still frozen. Taken *before* the cast below, so it holds the weights
+    # `from_pretrained` loaded rather than an fp16 round trip of them. The
+    # encoder is dropped because the metric term never encodes.
+    metric_vae = None
+    if args.metric_adaptation:
+        metric_vae = copy.deepcopy(vae).to(device=accelerator.device, dtype=torch.float32)
+        metric_vae.encoder = None
+        metric_vae.requires_grad_(False)
+        if args.metric_decode_grad_ckpt:
+            # diffusers only honours checkpointing while the module reports
+            # training mode. AutoencoderKL has no dropout and no batch norm, so
+            # train() changes nothing about what it computes -- verified by the
+            # round-trip check in tools/smoke_metric_adaptation.py, which runs
+            # the decode both ways and compares.
+            metric_vae.enable_gradient_checkpointing()
+            metric_vae.train()
+        else:
+            metric_vae.eval()
+        logger.info(
+            f"Metric loss decoder: fp32 copy of the VAE decoder, "
+            f"gradient checkpointing {'on' if args.metric_decode_grad_ckpt else 'off'}"
+        )
 
     # Move text_encode and vae to gpu and cast to weight_dtype
     text_encoder.to(accelerator.device, dtype=weight_dtype)
@@ -970,6 +1259,22 @@ def main():
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     logger.info(f"  Unet timestep = {args.timestep}")
+    if args.metric_adaptation:
+        logger.info("  --- metric GT adaptation ---")
+        logger.info(f"  Init U-Net from = {args.init_unet_from}")
+        logger.info(f"  Constants       = {metric_norm.summary()}")
+        logger.info(
+            f"  Loss            = {args.lambda_metric} * L_metric(sparse lidar, image space) "
+            f"+ {args.lambda_dense} * L_dense(completed target, latent) "
+            f"+ {args.lambda_recon} * L_I(thermal reconstruction, latent)"
+        )
+        _probe_lidar = [float(e["gt_valid_values"].mean()) for e in _probe]
+        logger.info(
+            f"  {len(_probe)}-frame probe: lidar covers "
+            f"{min(_probe_lidar) * 100:.1f}-{max(_probe_lidar) * 100:.1f}% of pixels "
+            f"(this is what L_metric is averaged over)"
+        )
+        logger.info(f"  {train_dataset_ms2.clip_summary()}")
     logger.info(f"  Task name: {args.task_name}")
     logger.info(f"  Is Full Evaluation?: {args.FULL_EVALUATION}")
     logger.info(f"Output Workspace: {args.output_dir}")
@@ -1033,6 +1338,7 @@ def main():
         train_loss = 0.0
         log_ann_loss = 0.0
         log_rgb_loss = 0.0
+        log_metric_loss = 0.0
 
         for _ in range(len(train_dataloader_ms2)):
             batch = next(iter_ms2)
@@ -1166,7 +1472,21 @@ def main():
                 # Compute loss
                 anno_loss = F.mse_loss(model_pred[:bsz_per_task][valid_mask_down_anno].float(), target[:bsz_per_task][valid_mask_down_anno].float(), reduction="mean")
                 rgb_loss = F.mse_loss(model_pred[bsz_per_task:][valid_mask_down_rgb].float(), target[bsz_per_task:][valid_mask_down_rgb].float(), reduction="mean")
-                loss = anno_loss + rgb_loss
+                # L = lambda_dense * L_dense + lambda_recon * L_I + lambda_metric * L_metric
+                # At the default weights of 1 and metric adaptation off this is
+                # `anno_loss + rgb_loss`, term for term, as it has always been.
+                loss = args.lambda_dense * anno_loss + args.lambda_recon * rgb_loss
+                metric_loss = loss.new_zeros(())
+                metric_stats = None
+                if args.metric_adaptation:
+                    metric_loss, metric_pixels, metric_stats = metric_inverse_depth_loss(
+                        metric_vae,
+                        model_pred[:bsz_per_task],
+                        batch["gt_depth_values"].to(accelerator.device),
+                        batch["gt_valid_values"].to(accelerator.device),
+                        metric_norm,
+                    )
+                    loss = loss + args.lambda_metric * metric_loss
 
                 # Gather loss
                 avg_anno_loss = accelerator.gather(anno_loss.repeat(args.train_batch_size)).mean()
@@ -1174,6 +1494,12 @@ def main():
                 avg_rgb_loss = accelerator.gather(rgb_loss.repeat(args.train_batch_size)).mean()
                 log_rgb_loss += avg_rgb_loss.item() / args.gradient_accumulation_steps
                 train_loss = log_ann_loss + log_rgb_loss
+                if args.metric_adaptation:
+                    avg_metric_loss = accelerator.gather(
+                        metric_loss.detach().repeat(args.train_batch_size)
+                    ).mean()
+                    log_metric_loss += avg_metric_loss.item() / args.gradient_accumulation_steps
+                    train_loss = train_loss + log_metric_loss
 
                 # Backpropagate
                 accelerator.backward(loss)
@@ -1183,23 +1509,56 @@ def main():
                 lr_scheduler.step()
                 optimizer.zero_grad()
             
-            logs = {"SL": loss.detach().item(), 
-                    "SL_A": anno_loss.detach().item(), 
-                    "SL_R": rgb_loss.detach().item(), 
+            logs = {"SL": loss.detach().item(),
+                    "SL_A": anno_loss.detach().item(),
+                    "SL_R": rgb_loss.detach().item(),
                     "lr": lr_scheduler.get_last_lr()[0]}
+            if args.metric_adaptation:
+                # SL_M is the raw term; the run's own gate is that it falls, and
+                # that mAbsRel -- unaligned, on measured pixels -- falls with it.
+                logs["SL_M"] = metric_loss.detach().item()
+                logs["mAbsRel"] = metric_stats.get("metric_abs_rel", float("nan"))
             progress_bar.set_postfix(**logs)
         
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
-                accelerator.log({"train_loss": train_loss,
-                                "anno_loss": log_ann_loss,
-                                "rgb_loss": log_rgb_loss},
-                                 step=global_step)
+                tracked = {"train_loss": train_loss,
+                           "anno_loss": log_ann_loss,
+                           "rgb_loss": log_rgb_loss}
+                if args.metric_adaptation:
+                    tracked["metric_loss"] = log_metric_loss
+                    if metric_stats is not None:
+                        tracked["metric_abs_rel"] = metric_stats.get("metric_abs_rel", float("nan"))
+                accelerator.log(tracked, step=global_step)
                 train_loss = 0.0
                 log_ann_loss = 0.0
                 log_rgb_loss = 0.0
+                log_metric_loss = 0.0
+
+                # Step 3's range logging. Cheap, and the only way a scale that has
+                # quietly drifted out of the represented band becomes visible
+                # before the evaluation says so hours later.
+                if (
+                    args.metric_adaptation
+                    and metric_stats is not None
+                    and args.metric_log_every > 0
+                    and global_step % args.metric_log_every == 0
+                    and accelerator.is_main_process
+                ):
+                    logger.info(
+                        f"[metric step {global_step}] "
+                        f"decoded y [{metric_stats['decoded_min']:.4f}, {metric_stats['decoded_max']:.4f}] "
+                        f"| q_hat [{metric_stats['q_hat_min']:.5f}, {metric_stats['q_hat_max']:.5f}] 1/m "
+                        f"| D_hat [{metric_stats['depth_hat_min']:.2f}, {metric_stats['depth_hat_max']:.2f}] m "
+                        f"| nonfinite {metric_stats['q_hat_nonfinite']} "
+                        f"non-positive {metric_stats['q_hat_non_positive']} "
+                        f"| lidar px {metric_stats['lidar_pixels']:,} "
+                        f"| unaligned AbsRel {metric_stats['metric_abs_rel']:.5f}"
+                    )
+                    logger.info(f"[metric step {global_step}] {metric_stats['depth_hat_clip']}")
+                    logger.info(f"[metric step {global_step}] {train_dataset_ms2.clip_summary()}")
 
                 checkpointing_steps = args.checkpointing_steps
                 validation_steps = args.validation_steps

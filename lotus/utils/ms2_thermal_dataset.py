@@ -44,6 +44,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from models.anythermal_lotus_v2 import thermal_to_lotus_input  # noqa: E402
+from tools.metric_depth_norm import depth_to_unit  # noqa: E402
 
 
 class MS2ThermalTransform:
@@ -53,12 +54,20 @@ class MS2ThermalTransform:
     def __init__(self, random_flip):
         self.random_flip = random_flip
 
-    def __call__(self, image, depth):
-        """image (3,h,w) in [-1,1]; depth (1,h,w) in metres."""
+    def __call__(self, image, depth, *extra):
+        """image (3,h,w) in [-1,1]; depth (1,h,w) in metres.
+
+        `extra` holds any further pixel-aligned map that must move with the
+        image -- the sparse lidar depth and its mask, once the metric loss needs
+        them.  A map left out of this call would keep the unflipped geometry and
+        supervise the prediction against a mirrored scene on half the steps,
+        which is the kind of bug that costs a training run rather than a crash.
+        """
         if self.random_flip and torch.rand(1) > 0.5:
             image = TF.hflip(image)
             depth = torch.flip(depth, [-1])
-        return image, depth
+            extra = tuple(torch.flip(item, [-1]) for item in extra)
+        return (image, depth, *extra)
 
 
 class MS2ThermalDataset(Dataset):
@@ -74,6 +83,7 @@ class MS2ThermalDataset(Dataset):
         d_min=1e-3,
         d_max=80.0,
         use_captions=True,
+        metric_norm=None,
     ):
         """
         Args:
@@ -83,6 +93,12 @@ class MS2ThermalDataset(Dataset):
             norm_type: as in vkitti_dataset; Iris's scripts pass trunc_disparity.
             use_captions: False feeds every frame the empty string, which is the
                 no-text ablation, not a missing-data fallback.
+            metric_norm: a `tools.metric_depth_norm.MetricNorm`. Required by, and
+                only used by, norm_type="global_metric_disparity". Its two
+                constants come from the training split and never move, which is
+                what gives the target -- and therefore the model -- absolute
+                scale. Every other norm_type normalises each frame separately
+                and cannot.
         """
         self.ms2_root = Path(ms2_root)
         self.pseudo_gt_dir = Path(pseudo_gt_dir)
@@ -94,6 +110,31 @@ class MS2ThermalDataset(Dataset):
         self.d_min = d_min
         self.d_max = d_max
         self.use_captions = use_captions
+        self.metric_norm = metric_norm
+        if norm_type == "global_metric_disparity":
+            if metric_norm is None:
+                raise ValueError(
+                    "norm_type='global_metric_disparity' needs metric_norm; fit it "
+                    "with tools/fit_metric_norm.py on the training split."
+                )
+            if (metric_norm.min_depth, metric_norm.max_depth) != (d_min, d_max):
+                # The constants were estimated under one validity range; using
+                # them under another silently changes which pixels they describe.
+                raise ValueError(
+                    f"metric_norm range ({metric_norm.min_depth}, {metric_norm.max_depth}) "
+                    f"does not match the dataset's ({d_min}, {d_max})"
+                )
+            if metric_norm.depth_scale != depth_scale:
+                raise ValueError(
+                    f"metric_norm depth_scale {metric_norm.depth_scale} != {depth_scale}"
+                )
+        # Clip accounting for the global target, accumulated over the epoch.
+        # The quantiles are 2/98, so about 4% of pixels are expected to land on a
+        # bound; a much larger share means the constants no longer describe what
+        # is being fed, and that has to be visible rather than inferred.
+        self.clip_low = 0
+        self.clip_high = 0
+        self.clip_total = 0
 
         self.rows = []
         with open(manifest_path, "r", encoding="utf-8") as handle:
@@ -131,18 +172,27 @@ class MS2ThermalDataset(Dataset):
         Where lidar spoke, lidar wins; the pseudo map fills the rest. Out-of-range
         pseudo depth is clipped rather than dropped: this map is encoded as one
         image, so there is nowhere to drop a pixel to.
+
+        Returns `(dense, real_depth, real_mask)`. The last two are the *sparse*
+        lidar, which the latent objective never needed but the metric loss does:
+        the metric anchor may only be read where the sensor actually measured,
+        and the completed map cannot say where that was once the two are mixed.
         """
         gt = np.asarray(Image.open(row["depth_path"]), dtype=np.float32) / self.depth_scale
         real = np.isfinite(gt) & (gt > self.d_min) & (gt < self.d_max)
-        pseudo_path = self.pseudo_gt_dir / f"{row['id']}.npy"
-        if not pseudo_path.is_file():
+        pseudo_path = self.pseudo_gt_dir / f"{row['id']}.npy" if self.pseudo_gt_dir else None
+        if pseudo_path is None or not pseudo_path.is_file():
             # A missing file would quietly turn the target back into sparse lidar.
             raise FileNotFoundError(f"No pseudo depth for {row['id']}: {pseudo_path}")
         pseudo = np.load(pseudo_path, allow_pickle=False).astype(np.float32)
         if pseudo.shape != gt.shape:
             raise ValueError(f"{row['id']}: pseudo {pseudo.shape} vs GT {gt.shape}")
         dense = np.clip(np.where(real, gt, pseudo), self.d_min, self.d_max)
-        return torch.from_numpy(dense)[None]  # (1, h, w)
+        return (
+            torch.from_numpy(dense)[None],                       # (1, h, w) metres
+            torch.from_numpy(np.where(real, gt, 0.0))[None],     # (1, h, w) metres, 0 = no lidar
+            torch.from_numpy(real.astype(np.float32))[None],     # (1, h, w) 1 = lidar
+        )
 
     def __getitem__(self, idx):
         row = self.rows[idx]
@@ -154,15 +204,20 @@ class MS2ThermalDataset(Dataset):
             raise RuntimeError(f"Constant thermal conversion: {row['id']}")
         image = thermal.tensor[0]  # (3, h, w) in [-1, 1]
 
-        depth = self._completed_depth(row)
+        depth, gt_depth, gt_mask = self._completed_depth(row)
         if self.transform:
-            image, depth = self.transform(image, depth)
+            image, depth, gt_depth, gt_mask = self.transform(image, depth, gt_depth, gt_mask)
 
         valid_mask_raw = self._get_valid_mask(depth).clone()
         sky_mask_raw = self._get_sky_mask(depth).clone()
         example["valid_mask_values"] = valid_mask_raw
         example["sky_mask_values"] = sky_mask_raw
         example["pixel_values"] = image
+        # Sparse real lidar, in metres, and where it exists. The metric loss
+        # reads these two and nothing else; every other target in this file has
+        # been through a normalisation that removed absolute scale.
+        example["gt_depth_values"] = gt_depth
+        example["gt_valid_values"] = gt_mask
 
         # --- verbatim from vkitti_dataset.py so every norm_type matches Iris ---
         valid_mask = valid_mask_raw & (depth > 0)
@@ -188,6 +243,16 @@ class MS2ThermalDataset(Dataset):
             disparity_max = torch.quantile(disparity[valid_mask], self.truncnorm_max)
             disparity_norm = ((disparity - disparity_min) / (disparity_max - disparity_min + 1e-5) - 0.5) * 2.0
             depth_norm = disparity_norm
+        elif self.norm_type == "global_metric_disparity":
+            # The one branch whose two constants do not come from this frame.
+            # Same functional form as trunc_disparity directly above -- the
+            # quantiles are simply taken once, on the training split, and frozen
+            # (tools/fit_metric_norm.py). That is what leaves absolute scale in
+            # the target, and it is the whole of the representational change.
+            depth_norm, _, report = depth_to_unit(depth, self.metric_norm)
+            self.clip_low += report.clipped_low
+            self.clip_high += report.clipped_high
+            self.clip_total += report.total
         else:
             raise TypeError(f"Not supported normalization type: {self.norm_type}. ")
 
@@ -206,6 +271,22 @@ class MS2ThermalDataset(Dataset):
         # latent cell -- 64 supervised pixels lost to one. VKITTI's depth is
         # rendered rather than clipped and never lands on the bound.
         return torch.logical_and((depth >= self.d_min), (depth < self.d_max)).bool()
+
+    def clip_summary(self) -> str:
+        """What the global normalisation has clipped so far, for the log."""
+        if self.norm_type != "global_metric_disparity":
+            return f"{self.norm_type}: per-frame normalisation, no global clip to report"
+        if not self.clip_total:
+            return "global_metric_disparity: nothing normalised yet"
+        share = (self.clip_low + self.clip_high) / self.clip_total * 100
+        return (
+            f"global_metric_disparity target clip to [-1,1] "
+            f"(q outside [{self.metric_norm.q_lo:.6f}, {self.metric_norm.q_hi:.6f}] 1/m, i.e. "
+            f"depth outside [{self.metric_norm.depth_at_q_hi:.2f}, "
+            f"{self.metric_norm.depth_at_q_lo:.2f}] m): "
+            f"{self.clip_low:,} far + {self.clip_high:,} near of {self.clip_total:,} "
+            f"pixels ({share:.2f}%)"
+        )
 
     def _get_sky_mask(self, depth: torch.Tensor):
         # Completion clipped everything past d_max to exactly d_max, which is how
@@ -236,11 +317,19 @@ def collate_fn_ms2(examples):
     sky_mask_values = torch.stack([example["sky_mask_values"] for example in examples])
     sky_mask_values = sky_mask_values.to(memory_format=torch.contiguous_format).float()
 
+    gt_depth_values = torch.stack([example["gt_depth_values"] for example in examples])
+    gt_depth_values = gt_depth_values.to(memory_format=torch.contiguous_format).float()
+
+    gt_valid_values = torch.stack([example["gt_valid_values"] for example in examples])
+    gt_valid_values = gt_valid_values.to(memory_format=torch.contiguous_format).float()
+
     return {
         "pixel_values": pixel_values,
         "depth_values": depth_values,
         "valid_mask_values": valid_mask_values,
         "sky_mask_values": sky_mask_values,
+        "gt_depth_values": gt_depth_values,
+        "gt_valid_values": gt_valid_values,
         "image_pathes": image_pathes,
         "depth_pathes": depth_pathes,
         "text_descriptions": text_descriptions,
