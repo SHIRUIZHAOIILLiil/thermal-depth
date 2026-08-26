@@ -25,6 +25,7 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/env.sh" >/dev/null
 REPO="${IRIS_REPO:-$HOME/Iris}"
 SKIP="${SKIP:-}"
 DRY="${DRY_RUN:-0}"
+DRY_ID=0
 skipped() { [[ ",$SKIP," == *",$1,"* ]]; }
 
 M="$IRIS_MANIFEST_DIR"
@@ -54,9 +55,11 @@ echo "[check] 10 份清单 + 伪 GT 目录都在"
 submit() {  # submit <描述> <sbatch 参数...>   -> 打印并回显 job id
   local desc="$1"; shift
   if [[ "$DRY" == "1" ]]; then
+    DRY_ID=$((DRY_ID + 1))
     echo "[dry] $desc" >&2
     echo "      sbatch $*" >&2
-    echo "000000"
+    echo "      环境: STEPS=${STEPS:-<未设>}" >&2
+    echo "9$(printf '%05d' $DRY_ID)"
     return
   fi
   local out
@@ -86,6 +89,7 @@ if skipped B; then echo "  (跳过)"; else
     echo "  !! 没找到在跑的 f8rgb_s43。若训练已结束，用 RGBCAP_JOB=0 表示无需等待。"
     exit 1
   fi
+  export STEPS="2000 4000 8000 12000 20000"
   dep="$RGBCAP_JOB"
   # 串行而非并行：pipeline 会跳过已有结果，所以第一个作业做完 val 选点之后，
   # 后两个直接复用，不重复算那 5 个 checkpoint 的 val。
@@ -93,7 +97,7 @@ if skipped B; then echo "  (跳过)"; else
     set -- $spec
     depflag=(); [[ "$dep" != "0" ]] && depflag=(--dependency=afterok:$dep)
     dep=$(submit "rgbcap_s43 评估 $1" -J "r43_$1" --time=03:00:00 "${depflag[@]}" \
-      --export=ALL,RUN=iris_ms2_full8_rgbcap_s43,STEPS="2000 4000 8000 12000 20000",SEL_PROMPT=correct,TEST_PROMPTS=correct,TRAIN_MANIFEST=$TRAIN_RGB,VAL_MANIFEST=$VAL_RGB,TEST_MANIFEST=$2 \
+      --export=ALL,STEPS,RUN=iris_ms2_full8_rgbcap_s43,SEL_PROMPT=correct,TEST_PROMPTS=correct,TRAIN_MANIFEST=$TRAIN_RGB,VAL_MANIFEST=$VAL_RGB,TEST_MANIFEST=$2 \
       "$REPO/slurm/iris_ms2_pipeline.sbatch")
   done
 fi
@@ -120,11 +124,12 @@ if skipped C; then echo "  (跳过)"; else
     --export=ALL,SEED=42,RUN_TAG=iris_ms2_full8_thermalcap_sky,TRAIN_MANIFEST=$TRAIN_THERMAL,PSEUDO_DIR=$PSEUDO,SKY_MASKS=$SKYMASKS \
     "$REPO/slurm/iris_ms2.sbatch")
 
+  export STEPS="2000 4000 8000 12000 16000 20000"
   dep="$TRAIN_JOB"
   for spec in "day $TEST_T_DAY" "night $TEST_T_NIGHT" "rain $TEST_T_RAIN"; do
     set -- $spec
     dep=$(submit "天空臂评估 $1" -J "sky_$1" --time=03:00:00 --dependency=afterok:$dep \
-      --export=ALL,RUN=iris_ms2_full8_thermalcap_sky,STEPS="2000 4000 8000 12000 16000 20000",SEL_PROMPT=correct,TEST_PROMPTS=correct,TRAIN_MANIFEST=$TRAIN_THERMAL,VAL_MANIFEST=$VAL_THERMAL,TEST_MANIFEST=$2 \
+      --export=ALL,STEPS,RUN=iris_ms2_full8_thermalcap_sky,SEL_PROMPT=correct,TEST_PROMPTS=correct,TRAIN_MANIFEST=$TRAIN_THERMAL,VAL_MANIFEST=$VAL_THERMAL,TEST_MANIFEST=$2 \
       "$REPO/slurm/iris_ms2_pipeline.sbatch")
   done
 fi
