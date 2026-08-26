@@ -11,17 +11,14 @@ conda activate iris
 # home 只有 65GB / 150万 inode，写满会拖垮整个登录节点。
 : "${SCRATCH:?SCRATCH 未定义 —— 确认已在 Aire 上运行}"
 
-export IRIS_REPO="${IRIS_REPO:-$HOME/Iris}"
-export IRIS_DATA="${IRIS_DATA:-$SCRATCH/data}"
-export IRIS_RUNS="${IRIS_RUNS:-$SCRATCH/runs}"
+# 路径变量集中在 env.sh，登录节点也 source 得了那一份（这里不行：上面的
+# set -euo pipefail 和 module load 不该进交互 shell）。两边共用一处定义，
+# 就不会再出现「提交时展开成空串、作业里却是对的」这种不一致。
+source "${IRIS_REPO:-$HOME/Iris}/slurm/env.sh"
 
-# train_route_suite.py 读这两个变量覆盖它的本地硬编码默认值
-# （/mnt/e/dataset/ms2 和 /mnt/e/project/thermal-depth/...）。不设时保持本地行为。
-export IRIS_MS2_ROOT="${IRIS_MS2_ROOT:-$IRIS_DATA/ms2}"
-export IRIS_MANIFEST_DIR="${IRIS_MANIFEST_DIR:-$SCRATCH/manifests/sequence_level_internvl3_8b}"
-
-export HF_HOME="${HF_HOME:-$SCRATCH/hf_cache}"
-export TORCH_HOME="${TORCH_HOME:-$SCRATCH/torch_cache}"
+# 其中 IRIS_MS2_ROOT / IRIS_MANIFEST_DIR 是 train_route_suite.py 用来覆盖它那两个
+# 本地硬编码默认值的（/mnt/e/dataset/ms2 和 /mnt/e/project/thermal-depth/...）；
+# 不设时保持本地行为。
 
 mkdir -p "$IRIS_RUNS" "$HF_HOME" "$TORCH_HOME"
 
