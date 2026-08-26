@@ -25,6 +25,12 @@
 #   CKPT            必填。要标定的 checkpoint（.pt，route_suite 格式）
 #   OUT_DIR         默认 $IRIS_RUNS/metric_adapt
 #   NORM_STRIDE     常数拟合的抽帧步长，默认 1（全部）。改了会写进产物
+#   QUANT_LO/HI     分位数，默认 0.005 / 0.995。
+#                   ⚠️ 这两个数决定模型能表达的深度带；带外的像素在训练目标里被压到
+#                   边界上，而**近端的代价远大于远端** —— AbsRel 的分母是真实深度，
+#                   一个 3m 的像素被压到 5m 是 68% 的相对误差，70m 被压到 57m 只有 19%。
+#                   Q0.02/0.98 时两端各 2%，合计约 0.017 的 AbsRel，盖得过要测的效应。
+#                   输出文件名带上分位数，两次不同的拟合不会互相覆盖。
 #   AFFINE_STRIDE   仿射拟合的抽帧步长，默认 20
 #   CAPTION_MODE    仿射拟合时喂的 prompt，默认 correct
 #                   ⚠️ 必须与这条臂**被评估时**用的 prompt 一致 —— (a,b) 是在某个
@@ -41,6 +47,8 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 : "${CKPT:?必须指定 CKPT（要标定的 checkpoint）}"
 OUT_DIR="${OUT_DIR:-$IRIS_RUNS/metric_adapt}"
 NORM_STRIDE="${NORM_STRIDE:-1}"
+QUANT_LO="${QUANT_LO:-0.005}"
+QUANT_HI="${QUANT_HI:-0.995}"
 AFFINE_STRIDE="${AFFINE_STRIDE:-20}"
 CAPTION_MODE="${CAPTION_MODE:-correct}"
 SPLIT_LIST="${SPLIT_LIST:-$IRIS_MS2_ROOT/train_list.txt}"
@@ -53,7 +61,7 @@ mkdir -p "$OUT_DIR"
 cd "$IRIS_REPO"
 git log --oneline -1
 
-NORM_JSON="$OUT_DIR/metric_norm_train.json"
+NORM_JSON="$OUT_DIR/metric_norm_train_q${QUANT_LO}-${QUANT_HI}.json"
 AFFINE_JSON="$OUT_DIR/global_affine_train.json"
 
 echo "=== 配置 ==="
@@ -61,6 +69,7 @@ echo "train manifest = $TRAIN_MANIFEST  ($(wc -l < "$TRAIN_MANIFEST") 帧)"
 echo "checkpoint     = $CKPT"
 echo "序列白名单     = $SPLIT_LIST"
 echo "caption mode   = $CAPTION_MODE  (须与该臂被评估时一致)"
+echo "分位数         = $QUANT_LO / $QUANT_HI"
 echo "输出           = $NORM_JSON"
 echo "                 $AFFINE_JSON"
 echo "============"
@@ -75,6 +84,7 @@ else
     --split-list "$SPLIT_LIST" \
     --output "$NORM_JSON" \
     --frame-stride "$NORM_STRIDE" \
+    --quantile-lo "$QUANT_LO" --quantile-hi "$QUANT_HI" \
     --notes "official 8 training sequences, thermal-view lidar, official validity range"
 fi
 
