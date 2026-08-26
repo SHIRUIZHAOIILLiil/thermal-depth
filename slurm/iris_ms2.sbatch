@@ -29,6 +29,11 @@
 #                    `class_embed_type`（Lotus 正靠它塞任务嵌入），且两者都会换掉 VAE，
 #                    而两臂共用同一个 VAE 正是这个对照成立的前提。
 #   NO_CAPTIONS=1    无文本消融臂（每帧喂空串）。不设＝按 Iris 用真 caption 训练。
+#   SKY_MASKS        天空掩码目录（tools/build_sky_masks.py 的 masks/）。不设＝关闭。
+#                    设了就启用优先级规则：激光 > 天空掩码 > 伪深度，天空像素的目标
+#                    被改写成 d_max=80m。这不是加损失项，是修目标 —— 实测稠密补全图
+#                    在天空里中位数只有 26.8m，而模型忠实地学成了 24.5m。
+#                    ⚠️ 掩码必须覆盖 TRAIN_MANIFEST 的每一帧，缺一帧就报错退出。
 #   PSEUDO_DIR       calibrated_pseudo_depth 目录，默认 official_train
 #                    ⚠️ 2026-08-26：默认值原本是 train_full，而盘上那个目录并不存在
 #                    —— 官方 8 序列那三条臂用的一直是 official_train。一个指向不存在
@@ -94,8 +99,21 @@ export MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-20000}"
 export CKPT_STEP="${CKPT_STEP:-1000}"
 export MAIN_PORT="$MAIN_PROCESS_PORT"
 export NO_CAPTIONS="${NO_CAPTIONS:-0}"
+export SKY_MASK_DIR="${SKY_MASKS:-}"
 
 [[ -f "$MS2_MANIFEST" ]]     || { echo "!! 找不到 manifest: $MS2_MANIFEST"; exit 1; }
+if [[ -n "$SKY_MASK_DIR" ]]; then
+  [[ -d "$SKY_MASK_DIR" ]] || { echo "!! 找不到天空掩码目录: $SKY_MASK_DIR"; exit 1; }
+  n_masks=$(ls "$SKY_MASK_DIR" | wc -l)
+  n_frames=$(wc -l < "$MS2_MANIFEST")
+  echo "sky masks = $SKY_MASK_DIR  ($n_masks 张 / manifest $n_frames 帧)"
+  (( n_masks >= n_frames )) || {
+    echo "!! 掩码数少于 manifest 帧数 —— 训练会在第一帧缺掩码时报错退出。"
+    echo "!! 用 MAX_SAMPLES=0 SAVE_MASKS=1 对同一份 manifest 重出掩码。"
+    exit 1
+  }
+fi
+
 [[ -d "$PSEUDO_GT_DIR" ]]    || {
   echo "!! 找不到伪 GT 目录: $PSEUDO_GT_DIR"
   echo "!! $IRIS_RUNS/pseudo_gt/ 下现有的是："
@@ -108,6 +126,7 @@ mkdir -p "$OUTPUT_DIR"
 echo "--- 本次配置 ---"
 echo "start     = $START ($MODEL_NAME)"
 echo "captions  = $([[ "$NO_CAPTIONS" == "1" ]] && echo off || echo on)"
+echo "sky rule  = $([[ -n "$SKY_MASK_DIR" ]] && echo "on ($SKY_MASK_DIR)" || echo off)"
 echo "manifest  = $MS2_MANIFEST"
 echo "pseudo gt = $PSEUDO_GT_DIR"
 echo "steps     = $MAX_TRAIN_STEPS (ckpt every $CKPT_STEP)"

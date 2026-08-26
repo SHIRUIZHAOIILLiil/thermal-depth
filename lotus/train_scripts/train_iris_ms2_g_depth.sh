@@ -43,6 +43,10 @@ export CKPT_STEP="${CKPT_STEP:-1000}"
 CAPTION_FLAG=""
 [[ "${NO_CAPTIONS:-0}" == "1" ]] && CAPTION_FLAG="--no_captions"
 
+# 天空优先级规则（激光 > 天空掩码 > 伪深度）。不设＝关闭，基线配方不变。
+SKY_FLAG=""
+[[ -n "${SKY_MASK_DIR:-}" ]] && SKY_FLAG="--sky_mask_dir=$SKY_MASK_DIR"
+
 accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision="fp16" \
   --main_process_port="${MAIN_PORT:-13224}" \
   train_iris_ms2_g.py \
@@ -51,6 +55,7 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   --ms2_root=$MS2_ROOT \
   --pseudo_gt_dir=$PSEUDO_GT_DIR \
   $CAPTION_FLAG \
+  $SKY_FLAG \
   --random_flip \
   --norm_type=$NORMTYPE \
   --dataloader_num_workers=0 \

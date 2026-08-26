@@ -84,6 +84,7 @@ class MS2ThermalDataset(Dataset):
         d_max=80.0,
         use_captions=True,
         metric_norm=None,
+        sky_mask_dir=None,
     ):
         """
         Args:
@@ -99,6 +100,23 @@ class MS2ThermalDataset(Dataset):
                 what gives the target -- and therefore the model -- absolute
                 scale. Every other norm_type normalises each frame separately
                 and cannot.
+            sky_mask_dir: Mask2Former sky masks from tools/build_sky_masks.py.
+                Given one, the completed target's sky pixels are overwritten with
+                `d_max` rather than keeping the pseudo network's guess there.
+
+                This corrects the target, it does not add a term. Measured over
+                312 training frames (tools/audit_sky_vs_pseudo.py), the completed
+                target puts its sky at a median of 26.8 m -- 36.9% of sky pixels
+                under 20 m, only 0.3% at the cap -- and the trained model reads
+                24.5 m up there. The model is reproducing what it was taught, not
+                drifting. Sky is where a monocular estimate has least to go on and
+                where the physical prior is strongest, so the order is: lidar,
+                then the segmentation, then the estimate.
+
+                Precedence rather than a weighted average, because the two signals
+                are not both right and there is no ratio worth picking between
+                them. A pixel carrying lidar keeps its lidar value whatever the
+                mask says.
         """
         self.ms2_root = Path(ms2_root)
         self.pseudo_gt_dir = Path(pseudo_gt_dir)
@@ -111,6 +129,16 @@ class MS2ThermalDataset(Dataset):
         self.d_max = d_max
         self.use_captions = use_captions
         self.metric_norm = metric_norm
+        self.sky_mask_dir = Path(sky_mask_dir) if sky_mask_dir else None
+        if self.sky_mask_dir is not None and not self.sky_mask_dir.is_dir():
+            raise FileNotFoundError(f"No sky mask directory at {self.sky_mask_dir}")
+        # How much of the target the sky rule actually rewrote, accumulated over
+        # the epoch. A rule that fires on almost nothing and a rule that fires on
+        # a quarter of the frame are different experiments, and only the log can
+        # tell them apart afterwards.
+        self.sky_override_pixels = 0
+        self.sky_override_total = 0
+        self.sky_frames_without_sky = 0
         if norm_type == "global_metric_disparity":
             if metric_norm is None:
                 raise ValueError(
@@ -188,6 +216,23 @@ class MS2ThermalDataset(Dataset):
         if pseudo.shape != gt.shape:
             raise ValueError(f"{row['id']}: pseudo {pseudo.shape} vs GT {gt.shape}")
         dense = np.clip(np.where(real, gt, pseudo), self.d_min, self.d_max)
+        if self.sky_mask_dir is not None:
+            mask_path = self.sky_mask_dir / f"{row['id']}.png"
+            if not mask_path.is_file():
+                # build_sky_masks.py --save-masks writes a file for every frame,
+                # all-zero ones included, so a missing file means the mask set
+                # does not cover this manifest rather than "this frame has no sky".
+                raise FileNotFoundError(f"No sky mask for {row['id']}: {mask_path}")
+            sky = np.asarray(Image.open(mask_path)) > 127
+            if sky.shape != dense.shape:
+                raise ValueError(f"{row['id']}: sky mask {sky.shape} vs target {dense.shape}")
+            # Lidar first: where the sensor spoke, the mask does not get a vote.
+            override = sky & ~real
+            dense = np.where(override, self.d_max, dense)
+            self.sky_override_pixels += int(override.sum())
+            self.sky_override_total += int(override.size)
+            if not sky.any():
+                self.sky_frames_without_sky += 1
         return (
             torch.from_numpy(dense)[None],                       # (1, h, w) metres
             torch.from_numpy(np.where(real, gt, 0.0))[None],     # (1, h, w) metres, 0 = no lidar
@@ -271,6 +316,20 @@ class MS2ThermalDataset(Dataset):
         # latent cell -- 64 supervised pixels lost to one. VKITTI's depth is
         # rendered rather than clipped and never lands on the bound.
         return torch.logical_and((depth >= self.d_min), (depth < self.d_max)).bool()
+
+    def sky_summary(self) -> str:
+        """What the sky precedence rule rewrote. Empty when the rule is off."""
+        if self.sky_mask_dir is None:
+            return "sky rule off: the completed target keeps the pseudo depth everywhere"
+        if not self.sky_override_total:
+            return f"sky rule on ({self.sky_mask_dir.name}): nothing read yet"
+        share = self.sky_override_pixels / self.sky_override_total * 100
+        return (
+            f"sky rule on ({self.sky_mask_dir.name}): rewrote "
+            f"{self.sky_override_pixels:,} of {self.sky_override_total:,} target pixels "
+            f"({share:.2f}%) to {self.d_max:.0f} m; "
+            f"{self.sky_frames_without_sky} frames had no sky at all"
+        )
 
     def clip_summary(self) -> str:
         """What the global normalisation has clipped so far, for the log."""

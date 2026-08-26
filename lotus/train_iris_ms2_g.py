@@ -486,6 +486,19 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--sky_mask_dir",
+        type=str,
+        default=None,
+        help=(
+            "Mask2Former sky masks from tools/build_sky_masks.py. Given one, the "
+            "completed target's sky pixels are rewritten to d_max instead of keeping "
+            "the pseudo network's guess. Measured, that guess is 26.8 m at the median "
+            "and the trained model reproduces it at 24.5 m, so this corrects the "
+            "target rather than adding a constraint on top of it. Lidar keeps "
+            "precedence over the mask."
+        ),
+    )
+    parser.add_argument(
         "--no_captions",
         action="store_true",
         help=(
@@ -1141,6 +1154,7 @@ def main():
         truncnorm_min=args.truncnorm_min,
         use_captions=not args.no_captions,
         metric_norm=metric_norm,
+        sky_mask_dir=args.sky_mask_dir,
     )
     train_dataloader_ms2 = torch.utils.data.DataLoader(
         train_dataset_ms2,
@@ -1250,6 +1264,7 @@ def main():
     logger.info(f"  Num examples MS2 = {len(train_dataset_ms2)}")
     logger.info(f"  Completed depth from = {args.pseudo_gt_dir}")
     logger.info(f"  Normalisation = {args.norm_type} (truncnorm_min {args.truncnorm_min})")
+    logger.info(f"  {train_dataset_ms2.sky_summary()}")
     logger.info(f"  {len(_probe)}-frame probe: input {tuple(_probe[0]['pixel_values'].shape)}, "
                 f"target covers {min(_covered) * 100:.1f}-{max(_covered) * 100:.1f}% of pixels, "
                 f"{_captioned}/{len(_probe)} carry a caption")
