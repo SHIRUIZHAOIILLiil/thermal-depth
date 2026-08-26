@@ -76,6 +76,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def region_label(args) -> str:
+    """What was actually measured. A header saying "top 32 rows" while a mask is
+    in use is the worst kind of wrong label: the numbers under it are right, so
+    nothing looks broken, and the line is what ends up copied into a caption."""
+    if args.sky_mask_dir is not None:
+        return f"sky mask from {args.sky_mask_dir.name}"
+    return f"top {args.band} rows"
+
+
 def read_manifest(path: Path, gt_view: str) -> list[dict]:
     key = "rgb_depth_path" if gt_view == "rgb" else "thermal_depth_path"
     rows = []
@@ -198,7 +207,7 @@ def main() -> None:
     if not shared:
         raise SystemExit("No frame is present in every prediction directory.")
     print(f"\n{len(shared)} frames scored in all {len(specs)} directories "
-          f"(band = top {args.band} rows, no valid mask)\n")
+          f"(region = {region_label(args)}, no valid mask)\n")
 
     header = f"{'model':>28} {'band median':>12} {'band p90':>10} {'frac < ' + str(args.near_threshold) + 'm':>12}"
     print(header)
@@ -235,7 +244,8 @@ def main() -> None:
     (args.output_dir / "sky_band_summary.json").write_text(
         json.dumps({"band_rows": args.band, "frames": len(shared),
                     "gt_view": args.gt_view, "manifest": str(args.manifest),
-                    "align": "official ssi_disparity, no valid mask on the band",
+                    "region": region_label(args),
+                    "align": "official ssi_disparity, no valid mask on the region",
                     "per_model": summary,
                     "gt_band_median_m": float(np.median(finite)),
                     "paired_vs": reference, "comparisons": comparisons},
