@@ -78,8 +78,14 @@ LR="${LR:-1e-6}"
 TAG="${RUN_TAG:-metric_adapt_lm${LAMBDA_METRIC}_lr${LR}}"
 if [[ "${SMOKE:-0}" == "1" ]]; then
   TAG="smoke_$TAG"
-  STEPS="${STEPS:-20}"
+  # ⚠️ 无条件覆盖，不是 ${STEPS:-20}。SMOKE 的含义就是"20 步"，而 STEPS 这个名字在
+  # 本仓库的三个作业脚本里含义不同（这里是训练步数，iris_ms2_pipeline 里是要评的
+  # checkpoint 步数，eval 里是去噪步数），登录 shell 里 export 过一次就会被
+  # --export=ALL 带进来。2026-08-27 就是这么让一次"20 步冒烟"跑成了 4000 步的全量，
+  # 40 分钟墙钟到点被砍。想要别的冒烟长度用 SMOKE_STEPS。
+  STEPS="${SMOKE_STEPS:-20}"
   CKPT_STEP=20
+  echo "[smoke] 强制 STEPS=$STEPS（忽略环境里可能残留的 STEPS）"
 fi
 
 export MODEL_NAME
