@@ -51,6 +51,16 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 : "${TEST_MANIFEST:?必须指定 TEST_MANIFEST}"
 
 STEPS="${STEPS:-500 1000 2000 3000 4000}"
+# ⚠️ STEPS 在本仓库三个作业脚本里含义不同（这里是要评的 checkpoint 步数，
+# eval.sbatch 里是去噪步数，metric_adapt.sbatch 里是训练步数），而 --export=ALL
+# 会把登录 shell 里残留的值原样带进来。2026-08-27 这个根因咬了 8 次，其中 3 次是
+# STEPS。这里每一个值都必须对应一个真实存在的 checkpoint 目录，所以直接查。
+for s in $STEPS; do
+  [[ "$s" =~ ^[0-9]+$ ]] || {
+    echo "!! STEPS 里的 '$s' 不是数字 —— 多半是从别的脚本串过来的值。先 unset STEPS。"
+    exit 1
+  }
+done
 PROMPT="${PROMPT:-correct}"
 VAL_STRIDE="${VAL_STRIDE:-4}"
 ROUTE="${ROUTE:-b_thermal_unet}"
@@ -98,6 +108,17 @@ if [[ -n "${ADAPT_RUN:-}" ]]; then
   CONV_DIR="$RUN_DIR/converted"
   [[ -d "$RUN_DIR" ]] || { echo "!! 找不到 $RUN_DIR"; exit 1; }
   mkdir -p "$CONV_DIR"
+
+  missing_ckpt=0
+  for s in $STEPS; do
+    [[ -d "$RUN_DIR/checkpoint-$s" ]] || { echo "!! 没有 $RUN_DIR/checkpoint-$s"; missing_ckpt=1; }
+  done
+  (( missing_ckpt == 0 )) || {
+    echo "!! $RUN_DIR 下实际有的是："
+    ls -1 "$RUN_DIR" | grep '^checkpoint-' | sort -t- -k2 -n | sed 's/^/!!   /'
+    echo "!! 用 STEPS=\"...\" 传实际存在的步数。一个作业都没提交。"
+    exit 1
+  }
 
   for s in $STEPS; do
     target="$CONV_DIR/step${s}_weights.pt"
