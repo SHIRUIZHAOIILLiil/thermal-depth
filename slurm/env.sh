@@ -22,6 +22,12 @@ export IRIS_MANIFEST_DIR="${IRIS_MANIFEST_DIR:-$SCRATCH/manifests/sequence_level
 export HF_HOME="${HF_HOME:-$SCRATCH/hf_cache}"
 export TORCH_HOME="${TORCH_HOME:-$SCRATCH/torch_cache}"
 
+# 作业的 stdout 是重定向到文件的，所以 Python 默认走块缓冲：logger.info 的输出会
+# 攒在缓冲区里，直到进程退出才出现。于是一个正常训练中的作业，从 .out 看起来像是
+# 卡在了数据集初始化那一行 —— 2026-08-27 为此查了一轮。
+# print(flush=True) 和 tqdm（走 stderr）不受影响，正是这两者能看见而别的看不见的原因。
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+
 # 只在交互式 shell 里打印。作业 source 它的时候这些行只会污染日志。
 if [[ $- == *i* ]]; then
   printf 'IRIS env:\n'
