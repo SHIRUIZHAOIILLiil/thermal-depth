@@ -163,6 +163,7 @@ class MS2ThermalDataset(Dataset):
         self.clip_low = 0
         self.clip_high = 0
         self.clip_total = 0
+        self.clip_frames = 0
 
         self.rows = []
         with open(manifest_path, "r", encoding="utf-8") as handle:
@@ -298,6 +299,7 @@ class MS2ThermalDataset(Dataset):
             self.clip_low += report.clipped_low
             self.clip_high += report.clipped_high
             self.clip_total += report.total
+            self.clip_frames += 1
         else:
             raise TypeError(f"Not supported normalization type: {self.norm_type}. ")
 
@@ -317,6 +319,17 @@ class MS2ThermalDataset(Dataset):
         # rendered rather than clipped and never lands on the bound.
         return torch.logical_and((depth >= self.d_min), (depth < self.d_max)).bool()
 
+    def reset_clip_counters(self) -> None:
+        """Zero the clip accounting, so a caller can measure a known set of frames.
+
+        The counters cannot accumulate across a training epoch: with
+        `num_workers > 0` each worker gets its own copy of this object and its
+        increments never return to the main process. So the only honest use is
+        to reset, read a bounded set of frames in the main process, and report
+        that -- which is what the startup probe does.
+        """
+        self.clip_low = self.clip_high = self.clip_total = self.clip_frames = 0
+
     def sky_summary(self) -> str:
         """What the sky precedence rule rewrote. Empty when the rule is off."""
         if self.sky_mask_dir is None:
@@ -332,16 +345,25 @@ class MS2ThermalDataset(Dataset):
         )
 
     def clip_summary(self) -> str:
-        """What the global normalisation has clipped so far, for the log."""
+        """How much of the target the global normalisation pinned to a bound.
+
+        ⚠️ Counts only the frames read **in this process**. With
+        `num_workers > 0` each worker holds its own copy of this dataset and its
+        increments never come back, so calling this from the training loop
+        reports the startup probe's frames for ever and looks like a counter
+        that has frozen. Read it once, after a known set of frames, and say how
+        many that was -- which is what the frame count below is for.
+        """
         if self.norm_type != "global_metric_disparity":
             return f"{self.norm_type}: per-frame normalisation, no global clip to report"
         if not self.clip_total:
             return "global_metric_disparity: nothing normalised yet"
         share = (self.clip_low + self.clip_high) / self.clip_total * 100
         return (
-            f"global_metric_disparity target clip to [-1,1] "
-            f"(q outside [{self.metric_norm.q_lo:.6f}, {self.metric_norm.q_hi:.6f}] 1/m, i.e. "
-            f"depth outside [{self.metric_norm.depth_at_q_hi:.2f}, "
+            f"global_metric_disparity target clip to [-1,1] over {self.clip_frames} frames "
+            f"read in this process (q outside "
+            f"[{self.metric_norm.q_lo:.6f}, {self.metric_norm.q_hi:.6f}] 1/m, i.e. depth "
+            f"outside [{self.metric_norm.depth_at_q_hi:.2f}, "
             f"{self.metric_norm.depth_at_q_lo:.2f}] m): "
             f"{self.clip_low:,} far + {self.clip_high:,} near of {self.clip_total:,} "
             f"pixels ({share:.2f}%)"
