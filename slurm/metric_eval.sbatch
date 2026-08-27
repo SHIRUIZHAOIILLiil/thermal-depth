@@ -32,6 +32,8 @@
 #   STEPS           适配臂要评的步数，默认 "500 1000 2000 3000 4000"
 #   PROMPT          默认 correct（与起点那条臂训练时一致）
 #   VAL_STRIDE      默认 4
+#   SKIP_BASE=1     跳过前三行（只依赖原 checkpoint，换适配臂不会变）。
+#                   换一条臂重评时用，省掉 1.5 小时的重复计算。
 #
 # ── 用法 ────────────────────────────────────────────────────────────
 #   BASE_CKPT=... ADAPT_RUN=metric_adapt_lm1.0_lr1e-6 \
@@ -98,9 +100,15 @@ AFFINE_ARGS=(--global-affine "$GLOBAL_AFFINE")
 
 # --- 行 1/2/4：原 checkpoint，test 上直接评 -------------------------------
 BASE_PREFIX="base_test_${TEST_FP}"
+if [[ "${SKIP_BASE:-0}" == "1" ]]; then
+  # 那三行只依赖原 checkpoint，换一条适配臂它们一个字都不会变。全帧 test 每条
+  # 30 分钟，重算三遍是 1.5 小时的纯浪费。汇总仍然从已有的目录读。
+  echo "[skip] SKIP_BASE=1 —— 三行基线沿用已有结果 ($BASE_PREFIX)"
+else
 run_eval "${BASE_PREFIX}_raw"    "$BASE_CKPT" "$TEST_MANIFEST" 1 none raw_inverse
 run_eval "${BASE_PREFIX}_affine" "$BASE_CKPT" "$TEST_MANIFEST" 1 none global_affine "${AFFINE_ARGS[@]}"
 run_eval "${BASE_PREFIX}_ssi"    "$BASE_CKPT" "$TEST_MANIFEST" 1 ssi_disparity ""
+fi
 
 # --- 行 3：适配臂，先在 val 上选点，再上 test ------------------------------
 if [[ -n "${ADAPT_RUN:-}" ]]; then
