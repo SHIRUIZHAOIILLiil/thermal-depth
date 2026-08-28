@@ -1447,38 +1447,43 @@ def main():
                 
                 valid_mask_down_rgb = torch.ones_like(target_latents[bsz_per_task:]).to(target_latents.device).bool()
 
-                # Sample noise that we'll add to the latents
-                noise = torch.randn_like(target_latents)
-                
-                if args.noise_offset:
-                    # https://www.crosslabs.org//blog/diffusion-with-offset-noise
-                    noise += args.noise_offset * torch.randn(
-                        (target_latents.shape[0], target_latents.shape[1], 1, 1), device=target_latents.device
-                    )
-                if args.input_perturbation:
-                    new_noise = noise + args.input_perturbation * torch.randn_like(noise)
-                
                 # Set timestep
+                # Hoisted above the noise block so the G path can keep it while the
+                # D path skips everything else. It draws no random numbers, so G's
+                # random stream is unchanged by the move.
                 timesteps = torch.tensor([args.timestep], device=target_latents.device).repeat(bsz)
                 timesteps = timesteps.long()
-                
-                # Add noise to the latents according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                if args.input_perturbation:
-                    noisy_latents = noise_scheduler.add_noise(target_latents, new_noise, timesteps)
-                else:
-                    noisy_latents = noise_scheduler.add_noise(target_latents, noise, timesteps)
 
-                # Concatenate rgb and depth
                 # The single architectural difference between the two backbones.
-                # G conditions on [image latent, noisy target latent]; D is the
-                # direct variant and sees the image latent alone. `noisy_latents`
-                # stays computed either way so the RNG draw per step is identical
-                # across backbones -- one fewer thing that differs between the runs
-                # the paper compares.
+                # G conditions on [image latent, target latent noised at this
+                # timestep]; D is the direct variant and sees the image latent
+                # alone. train_iris_d.py:1125 computes no noise at all, so the
+                # block below is skipped rather than computed and discarded --
+                # the D path then draws exactly the random numbers upstream draws,
+                # and this branch can be described as following the upstream
+                # Lotus-D training path with only the thermal/data changes on top.
                 if args.backbone == "d":
                     unet_input = rgb_latents
                 else:
+                    # Sample noise that we'll add to the latents
+                    noise = torch.randn_like(target_latents)
+
+                    if args.noise_offset:
+                        # https://www.crosslabs.org//blog/diffusion-with-offset-noise
+                        noise += args.noise_offset * torch.randn(
+                            (target_latents.shape[0], target_latents.shape[1], 1, 1), device=target_latents.device
+                        )
+                    if args.input_perturbation:
+                        new_noise = noise + args.input_perturbation * torch.randn_like(noise)
+
+                    # Add noise to the latents according to the noise magnitude at each timestep
+                    # (this is the forward diffusion process)
+                    if args.input_perturbation:
+                        noisy_latents = noise_scheduler.add_noise(target_latents, new_noise, timesteps)
+                    else:
+                        noisy_latents = noise_scheduler.add_noise(target_latents, noise, timesteps)
+
+                    # Concatenate rgb and depth
                     unet_input = torch.cat(
                         [rgb_latents, noisy_latents], dim=1
                     )
