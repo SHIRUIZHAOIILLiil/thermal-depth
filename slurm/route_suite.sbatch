@@ -133,6 +133,11 @@ ARGS=(
 # 预取完成后权重都在 $HF_HOME；缺失就立即失败，而不是六个作业并发重下 4 GB
 [[ "${LOCAL_FILES_ONLY:-1}" == "1" ]] && ARGS+=(--local-files-only)
 
+# 底座与权重路径必须一起给，评估器自己会挡住两个错配组合。
+# 不设＝Lotus-G，与改动前一致。
+[[ -n "${LOTUS_MODEL:-}" ]] && ARGS+=(--lotus-model-path "$LOTUS_MODEL")
+[[ -n "${BACKBONE:-}" ]]    && ARGS+=(--backbone "$BACKBONE")
+
 # MiDaS 的多尺度梯度匹配项。不设＝关闭，与既有全部结果同口径。
 # 逐点 L1 让"边界抹平"比"锐利但错位"便宜（合成阶跃上 0.0385 vs 0.0729），
 # 而 AbsRel/RMSE 同为逐点平均，会奖励同一种投机 —— 这一项给它标价。
