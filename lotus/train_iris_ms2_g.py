@@ -81,7 +81,7 @@ from diffusers.utils import check_min_version, deprecate
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
-from pipeline import LotusGPipeline
+from pipeline import LotusDPipeline, LotusGPipeline
 from utils.image_utils import concatenate_images, colorize_depth_map
 # MS2: Hypersim and VKITTI are replaced by the MS2 thermal dataset.
 from utils.ms2_thermal_dataset import MS2ThermalDataset, MS2ThermalTransform, collate_fn_ms2
@@ -317,7 +317,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
     # Load pipeline
     scheduler = DDIMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
     scheduler.register_to_config(prediction_type=args.prediction_type)
-    pipeline = LotusGPipeline.from_pretrained(
+    pipeline = (LotusDPipeline if args.backbone == "d" else LotusGPipeline).from_pretrained(
         args.pretrained_model_name_or_path,
         scheduler=scheduler,
         vae=accelerator.unwrap_model(vae),
@@ -560,6 +560,29 @@ def parse_args():
             'absolute scale; global_metric_disparity uses two constants frozen from '
             'the training split and needs --metric_norm_json.'
         )
+    )
+
+    # ---- backbone selection (2026-08-28) ---------------------------------- #
+    # Lotus ships two variants. They differ in exactly one thing: what conv_in is
+    # fed. G is generative and takes [image latent, noisy target latent] (8 ch);
+    # D is the direct variant and takes the image latent alone (4 ch). Both
+    # released checkpoints carry the task switcher, so the two-branch loss, the
+    # captions, the pseudo-GT and every downstream stage are shared between them.
+    #
+    # This is a flag rather than a forked trainer on purpose: the claim we are
+    # after is "the caption effect reproduces on a second backbone", and that is
+    # only true if the two runs differ in the backbone and in nothing else. Two
+    # copies of this file would drift silently and void that comparison.
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        choices=["g", "d"],
+        default="g",
+        help=(
+            "Which Lotus variant the weights are. 'g' (default) reproduces the "
+            "existing behaviour line for line. 'd' skips the 4->8 conv_in "
+            "expansion and conditions on the image latent alone."
+        ),
     )
 
     # ---- metric GT adaptation (2026-08-26) -------------------------------- #
@@ -988,7 +1011,31 @@ def main():
     # doubling it again would build a 16-channel layer that no longer matches the
     # weights it was seeded from. Which of the two we started from is logged, since
     # that is the single difference between the two runs of this line.
-    if unet.conv_in.in_channels == 4:
+    # A Lotus-D checkpoint and SD2-base both arrive with 4 channels, so the shape
+    # alone cannot tell them apart. --backbone is what decides, and the name check
+    # below is a cheap guard for the one mismatch shapes cannot catch: asking for
+    # 'g' while handing over the D checkpoint would expand its conv_in to 8 and
+    # train a silently wrong model.
+    _repo = str(args.pretrained_model_name_or_path).lower()
+    if args.backbone == "g" and "depth-d" in _repo:
+        raise ValueError(
+            f"--backbone g with {args.pretrained_model_name_or_path}: that looks "
+            "like a Lotus-D checkpoint. Pass --backbone d."
+        )
+    if args.backbone == "d" and "depth-g" in _repo:
+        raise ValueError(
+            f"--backbone d with {args.pretrained_model_name_or_path}: that looks "
+            "like a Lotus-G checkpoint. Pass --backbone g."
+        )
+
+    if args.backbone == "d":
+        if unet.conv_in.in_channels != 4:
+            raise ValueError(
+                f"--backbone d expects conv_in to have 4 input channels, got "
+                f"{unet.conv_in.in_channels}."
+            )
+        logger.info("backbone=d: conv_in stays at 4 input channels, no expansion.")
+    elif unet.conv_in.in_channels == 4:
         logger.info("conv_in has 4 input channels: applying Lotus's 4->8 expansion.")
         _weight = unet.conv_in.weight.clone()
         _bias = unet.conv_in.bias.clone()
@@ -1091,7 +1138,10 @@ def main():
                 model = models.pop()
 
                 # load diffusers style into model
-                load_model = UNet2DConditionModel.from_pretrained(input_dir, subfolder="unet", in_channels=8)
+                load_model = UNet2DConditionModel.from_pretrained(
+                    input_dir, subfolder="unet",
+                    in_channels=(4 if args.backbone == "d" else 8),
+                )
                 model.register_to_config(**load_model.config)
 
                 model.load_state_dict(load_model.state_dict())
@@ -1291,6 +1341,8 @@ def main():
         )
         logger.info(f"  {train_dataset_ms2.clip_summary()}")
     logger.info(f"  Task name: {args.task_name}")
+    logger.info(f"  Backbone: lotus-{args.backbone} "
+                f"(conv_in {4 if args.backbone == 'd' else 8} channels)")
     logger.info(f"  Is Full Evaluation?: {args.FULL_EVALUATION}")
     logger.info(f"Output Workspace: {args.output_dir}")
 
@@ -1418,9 +1470,18 @@ def main():
                     noisy_latents = noise_scheduler.add_noise(target_latents, noise, timesteps)
 
                 # Concatenate rgb and depth
-                unet_input = torch.cat(
-                    [rgb_latents, noisy_latents], dim=1
-                )
+                # The single architectural difference between the two backbones.
+                # G conditions on [image latent, noisy target latent]; D is the
+                # direct variant and sees the image latent alone. `noisy_latents`
+                # stays computed either way so the RNG draw per step is identical
+                # across backbones -- one fewer thing that differs between the runs
+                # the paper compares.
+                if args.backbone == "d":
+                    unet_input = rgb_latents
+                else:
+                    unet_input = torch.cat(
+                        [rgb_latents, noisy_latents], dim=1
+                    )
 
 
                 # Get text descriptions from batch
@@ -1628,7 +1689,7 @@ def main():
     if accelerator.is_main_process:
         unet = unwrap_model(unet)
 
-        pipeline = LotusGPipeline.from_pretrained(
+        pipeline = (LotusDPipeline if args.backbone == "d" else LotusGPipeline).from_pretrained(
             args.pretrained_model_name_or_path,
             text_encoder=text_encoder,
             vae=vae,

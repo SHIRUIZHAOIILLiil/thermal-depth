@@ -67,8 +67,13 @@ START="${START:-ckpt}"
 case "$START" in
   sd2)  MODEL_NAME="stabilityai/stable-diffusion-2-base" ;;
   ckpt) MODEL_NAME="jingheya/lotus-depth-g-v2-1-disparity" ;;
-  *)    echo "!! START 只能是 sd2 或 ckpt，收到 '$START'"; exit 1 ;;
+  # Lotus 的 direct 变体。conv_in 是 4 通道而不是 8 —— 这是两个底座唯一的架构差别，
+  # 任务开关、双分支 loss、caption、伪 GT、评估协议全部共用。BACKBONE 跟着 START 走，
+  # 不单独暴露，免得两者对不上。
+  lotus_d) MODEL_NAME="jingheya/lotus-depth-d-v2-0-disparity"; BACKBONE=d ;;
+  *)    echo "!! START 只能是 sd2 / ckpt / lotus_d，收到 '$START'"; exit 1 ;;
 esac
+BACKBONE="${BACKBONE:-g}"
 
 # 权重不在缓存里就立刻停，别等 from_pretrained 去下载 —— SD2-base 已被 Stability
 # 下架（见上），那条路只会走到一个看不懂的 401 traceback，而这时排队已经花掉几小时。
@@ -86,11 +91,16 @@ TAG="${RUN_TAG:-iris_ms2_$START}"
 [[ "${NO_CAPTIONS:-0}" == "1" && -z "${RUN_TAG:-}" ]] && TAG="${TAG}_nocap"
 if [[ "${SMOKE:-0}" == "1" ]]; then
   TAG="smoke_$TAG"
-  MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-20}"
+  # ⚠️ 无条件覆盖，不是 ${MAX_TRAIN_STEPS:-20}。登录 shell 里 export 过一次，
+  # --export=ALL 就会把它带进来，于是「20 步冒烟」跑成全量、墙钟到点被砍。
+  # 2026-08-27 在 metric_adapt.sbatch 上正是这么栽的。别的长度用 SMOKE_STEPS。
+  MAX_TRAIN_STEPS="${SMOKE_STEPS:-20}"
   CKPT_STEP=20
+  echo "[smoke] 强制 MAX_TRAIN_STEPS=$MAX_TRAIN_STEPS（忽略环境里可能残留的值）"
 fi
 
 export MODEL_NAME
+export BACKBONE
 export OUTPUT_DIR="$IRIS_RUNS/iris_ms2/$TAG"
 export MS2_MANIFEST="${TRAIN_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_train_day2seq_clip75_20260728.jsonl}"
 export MS2_ROOT="$IRIS_MS2_ROOT"

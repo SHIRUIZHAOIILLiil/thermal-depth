@@ -121,6 +121,11 @@ def parse_args() -> argparse.Namespace:
         default=Path(os.environ.get("IRIS_MS2_ROOT", "/mnt/e/dataset/ms2")),
     )
     parser.add_argument("--lotus-model-path", default="jingheya/lotus-depth-g-v2-1-disparity")
+    # Which Lotus variant --lotus-model-path is. G conditions on
+    # [image latent, noisy target latent]; D is the direct variant and takes the
+    # image latent alone. Must match what the checkpoint was trained as -- see the
+    # same flag in lotus/train_iris_ms2_g.py.
+    parser.add_argument("--backbone", choices=["g", "d"], default="g")
     parser.add_argument("--anythermal-model-path", default="theairlabcmu/AnyThermal")
 
     parser.add_argument("--epochs", type=int, default=20)
@@ -992,9 +997,22 @@ class RouteModel:
         self.trains_adapter = train_adapter
         self.trains_unet = train_unet
 
-        from pipeline import LotusGPipeline  # noqa: E402
+        from pipeline import LotusDPipeline, LotusGPipeline  # noqa: E402
 
-        self.lotus = LotusGPipeline.from_pretrained(
+        _repo = str(args.lotus_model_path).lower()
+        if args.backbone == "g" and "depth-d" in _repo:
+            raise SystemExit(
+                f"--backbone g with {args.lotus_model_path}: that is a Lotus-D "
+                "checkpoint. Pass --backbone d."
+            )
+        if args.backbone == "d" and "depth-g" in _repo:
+            raise SystemExit(
+                f"--backbone d with {args.lotus_model_path}: that is a Lotus-G "
+                "checkpoint. Pass --backbone g."
+            )
+        _pipeline_cls = LotusDPipeline if args.backbone == "d" else LotusGPipeline
+
+        self.lotus = _pipeline_cls.from_pretrained(
             args.lotus_model_path,
             torch_dtype=frozen_dtype,
             local_files_only=args.local_files_only,
@@ -1140,6 +1158,11 @@ class RouteModel:
             scale=float(self.lotus.scheduler.init_noise_sigma),
         )
         steps = max(1, int(getattr(self.args, "num_inference_steps", 1)))
+        if steps > 1 and getattr(self.args, "backbone", "g") == "d":
+            raise SystemExit(
+                "--num-inference-steps > 1 with --backbone d: Lotus-D is a direct "
+                "single-step predictor, there is no denoising trajectory to unroll."
+            )
         if steps == 1:
             timesteps = [torch.full((1,), self.args.timestep, device=self.device, dtype=torch.long)]
         else:
@@ -1159,8 +1182,14 @@ class RouteModel:
             latents = noise
         for timestep in timesteps:
             latent_input = self.lotus.scheduler.scale_model_input(latents, timestep).detach()
+            # The one architectural difference, mirroring train_iris_ms2_g.py:
+            # G is fed [image latent, noisy target latent], D the image latent alone.
+            unet_input = (
+                condition if self.args.backbone == "d"
+                else torch.cat([condition, latent_input], dim=1)
+            )
             x0 = self.unet(
-                torch.cat([condition, latent_input], dim=1).to(unet_dtype),
+                unet_input.to(unet_dtype),
                 timestep,
                 encoder_hidden_states=prompt.to(unet_dtype),
                 class_labels=task_embedding(1, self.device, unet_dtype),

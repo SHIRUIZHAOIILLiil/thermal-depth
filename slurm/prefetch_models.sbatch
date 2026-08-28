@@ -24,6 +24,9 @@ from huggingface_hub import snapshot_download
 
 REPOS = [
     "jingheya/lotus-depth-g-v2-1-disparity",  # 六条线都要
+    # 第二底座。Iris Table 1 里五个数据集赢四个，且与 G 同族单步，
+    # 只有 conv_in 4 vs 8 之差。START=lotus_d 要它。
+    "jingheya/lotus-depth-d-v2-0-disparity",
     "theairlabcmu/AnyThermal",                # 只有 d1 / d2 要
     # 天空掩码（Jasmine 附录 C.3 的 sky loss 要它）。取 Cityscapes 版：
     # 它的标签集里有 sky，域也是行车场景。约 1.6 GB。

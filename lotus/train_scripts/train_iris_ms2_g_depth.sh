@@ -10,6 +10,11 @@
 #                                                       conv_in expanded 4->8
 #   MODEL_NAME=jingheya/lotus-depth-g-v2-1-disparity -> the trained Lotus-G
 #                                                       checkpoint, expansion skipped
+#   MODEL_NAME=jingheya/lotus-depth-d-v2-0-disparity -> the trained Lotus-D
+#                                                       checkpoint, needs BACKBONE=d
+#
+# BACKBONE (g|d, default g) must agree with MODEL_NAME. The trainer refuses the
+# two mismatched combinations rather than training a silently wrong model.
 #
 # NO_CAPTIONS=1 runs the no-text ablation of the same recipe.
 
@@ -47,6 +52,9 @@ CAPTION_FLAG=""
 SKY_FLAG=""
 [[ -n "${SKY_MASK_DIR:-}" ]] && SKY_FLAG="--sky_mask_dir=$SKY_MASK_DIR"
 
+# g（默认）与改动前逐字等价；d 走 Lotus 的 direct 变体，conv_in 保持 4 通道。
+BACKBONE_FLAG="--backbone=${BACKBONE:-g}"
+
 accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision="fp16" \
   --main_process_port="${MAIN_PORT:-13224}" \
   train_iris_ms2_g.py \
@@ -56,6 +64,7 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   --pseudo_gt_dir=$PSEUDO_GT_DIR \
   $CAPTION_FLAG \
   $SKY_FLAG \
+  $BACKBONE_FLAG \
   --random_flip \
   --norm_type=$NORMTYPE \
   --dataloader_num_workers=0 \
