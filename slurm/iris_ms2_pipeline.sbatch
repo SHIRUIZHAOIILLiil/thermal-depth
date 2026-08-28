@@ -30,6 +30,10 @@
 #                ⚠️ 用热像 caption 训练的臂必须传对应的 val manifest —— 拿 RGB caption
 #                给它选冠军，等于在它没训过的文本分布下挑权重，和用错 SEL_PROMPT 同性质。
 #   TEST_MANIFEST 同理，不设＝默认 test（RGB caption 那份）
+#   LOTUS_MODEL  底座权重仓库。不设＝评估器自己的默认（Lotus-G）。
+#   BACKBONE     g|d，必须与 LOTUS_MODEL 一致。评 Lotus-D 的 checkpoint 时两个
+#                都要给：不给就会拿 conv_in 8 的 G 架构去装 conv_in 4 的 D 权重。
+#                评估器自己有仓库名守卫，会挡住两个错配组合。
 #
 # ── 用法 ────────────────────────────────────────────────────────────
 #   不带 caption 训练的臂：
@@ -105,6 +109,8 @@ run_eval() {  # tag ckpt prompt stride [manifest]
               --val-stride "$stride" --val-caption-mode "$prompt"
               --num-inference-steps 1 --condition-latent mode --local-files-only)
   [[ -n "$manifest" ]] && args+=(--val-manifest "$manifest")
+  [[ -n "${LOTUS_MODEL:-}" ]] && args+=(--lotus-model-path "$LOTUS_MODEL")
+  [[ -n "${BACKBONE:-}" ]] && args+=(--backbone "$BACKBONE")
   echo "[eval] $tag"
   python tools/train_route_suite.py "${args[@]}"
 }
