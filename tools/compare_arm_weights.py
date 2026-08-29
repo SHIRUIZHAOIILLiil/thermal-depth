@@ -18,12 +18,32 @@ import torch
 
 
 def load_state(path: Path) -> dict:
+    """Unwrap whatever convert_iris_ms2_checkpoint.py wrapped the tensors in.
+
+    That converter nests them two deep, as payload["state_dicts"]["unet"], and
+    the singular "state_dict" other tools use is not present -- looking only for
+    the singular name finds no tensors at all and the comparison reports an empty
+    intersection rather than failing.
+    """
     payload = torch.load(path, map_location="cpu", weights_only=False)
-    for key in ("state_dict", "unet", "model"):
-        if isinstance(payload, dict) and key in payload and isinstance(payload[key], dict):
-            payload = payload[key]
-            break
-    return {k: v for k, v in payload.items() if isinstance(v, torch.Tensor) and v.is_floating_point()}
+    if isinstance(payload, dict) and isinstance(payload.get("state_dicts"), dict):
+        inner = payload["state_dicts"]
+        payload = inner.get("unet") or next(
+            (v for v in inner.values() if isinstance(v, dict)), inner
+        )
+    else:
+        for key in ("state_dict", "unet", "model"):
+            if isinstance(payload, dict) and isinstance(payload.get(key), dict):
+                payload = payload[key]
+                break
+    tensors = {k: v for k, v in payload.items()
+               if isinstance(v, torch.Tensor) and v.is_floating_point()}
+    if not tensors:
+        raise SystemExit(
+            f"{path.name}: no float tensors found. Top-level keys: "
+            f"{sorted(k for k in payload)[:8]}"
+        )
+    return tensors
 
 
 def compare(a: Path, b: Path, top: int) -> None:
