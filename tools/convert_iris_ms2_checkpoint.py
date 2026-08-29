@@ -54,6 +54,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True, help="Destination .pt")
     parser.add_argument("--lotus-model-path", default="jingheya/lotus-depth-g-v2-1-disparity",
                         help="Reference U-Net the key check compares against.")
+    parser.add_argument("--backbone", choices=("g", "d"), default="g",
+                        help="Which Lotus variant this checkpoint is. G takes the concatenated "
+                             "[condition, latent] input (conv_in 8); D is the direct variant and "
+                             "takes the condition alone (conv_in 4). Must agree with "
+                             "--lotus-model-path, which is what the key check compares against.")
     parser.add_argument("--local-files-only", action="store_true", default=True)
     parser.add_argument("--skip-reference-check", action="store_true",
                         help="Skip loading the reference U-Net. Only for a machine without the weights.")
@@ -115,7 +120,7 @@ def reference_state_dict(model_path: str, local_files_only: bool) -> dict:
     return unet.state_dict()
 
 
-def check_against_reference(state: dict, reference: dict) -> None:
+def check_against_reference(state: dict, reference: dict, backbone: str = "g") -> None:
     missing = sorted(set(reference) - set(state))
     extra = sorted(set(state) - set(reference))
     mismatched = [
@@ -134,11 +139,13 @@ def check_against_reference(state: dict, reference: dict) -> None:
         if mismatched:
             lines.append(f"  ({len(mismatched)} shape mismatches in total)")
         raise SystemExit("\n".join(lines))
+    want_in = 4 if backbone == "d" else 8
     conv_in = state.get("conv_in.weight")
-    if conv_in is not None and conv_in.shape[1] != 8:
+    if conv_in is not None and conv_in.shape[1] != want_in:
         raise SystemExit(
-            f"conv_in accepts {conv_in.shape[1]} channels, not 8: this U-Net cannot take "
-            "the concatenated [condition, latent] input the route feeds it."
+            f"conv_in accepts {conv_in.shape[1]} channels, not {want_in}: with --backbone "
+            f"{backbone} this U-Net cannot take the input the route feeds it "
+            "(g: the concatenated [condition, latent]; d: the condition alone)."
         )
     print(f"[check] {len(state)} tensors, keys and shapes match the reference U-Net", flush=True)
 
@@ -168,7 +175,11 @@ def main() -> int:
         print("[check] skipped by request -- a key mismatch will surface as a bad metric instead",
               flush=True)
     else:
-        check_against_reference(state, reference_state_dict(args.lotus_model_path, args.local_files_only))
+        check_against_reference(
+            state,
+            reference_state_dict(args.lotus_model_path, args.local_files_only),
+            args.backbone,
+        )
 
     step = infer_step(source, args.step)
     payload = {

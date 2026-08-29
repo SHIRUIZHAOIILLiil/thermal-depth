@@ -116,13 +116,18 @@ run_eval() {  # tag ckpt prompt stride [manifest]
 }
 
 # --- 1. 转换 ---------------------------------------------------------------
+# 转换器有它自己的参考架构检查，默认参考 Lotus-G（conv_in 8）。评 Lotus-D 时不把
+# 这两个传下去，它会正确地拒绝，但白排一次队 —— 2026-08-28 的 dnc_* 就是这么挂的。
+CONV_EXTRA=""
+[[ -n "${LOTUS_MODEL:-}" ]] && CONV_EXTRA="$CONV_EXTRA --lotus-model-path $LOTUS_MODEL"
+[[ -n "${BACKBONE:-}" ]] && CONV_EXTRA="$CONV_EXTRA --backbone $BACKBONE"
 for s in $STEPS; do
   target="$CONV_DIR/step${s}_weights.pt"
   if [[ -f "$target" ]]; then echo "[skip] step$s 已转换"; continue; fi
   src="$RUN_DIR/checkpoint-$s"
   [[ -d "$src" ]] || { echo "!! 找不到 $src —— 训练没跑到这一步？"; exit 1; }
   python tools/convert_iris_ms2_checkpoint.py --source "$src" --output "$target" \
-    --caption-mode "$SEL_PROMPT" --step "$s"
+    --caption-mode "$SEL_PROMPT" --step "$s" $CONV_EXTRA
 done
 
 # --- 2. val 逐点评估 -------------------------------------------------------
