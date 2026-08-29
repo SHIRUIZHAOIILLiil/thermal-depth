@@ -53,7 +53,13 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 : "${INIT_CKPT:?必须指定 INIT_CKPT（起点权重）}"
 : "${TRAIN_MANIFEST:?必须指定 TRAIN_MANIFEST}"
 
-MODEL_NAME="jingheya/lotus-depth-g-v2-1-disparity"
+# BACKBONE 驱动仓库路径，不给两个可能对不上的旋钮。不设＝g，与改动前一致。
+BACKBONE="${BACKBONE:-g}"
+case "$BACKBONE" in
+  g) MODEL_NAME="jingheya/lotus-depth-g-v2-1-disparity" ;;
+  d) MODEL_NAME="jingheya/lotus-depth-d-v2-0-disparity" ;;
+  *) echo "!! BACKBONE 只能是 g 或 d，收到 '$BACKBONE'"; exit 1 ;;
+esac
 HF_REPO_DIR="$HF_HOME/hub/models--${MODEL_NAME//\//--}"
 [[ -d "$HF_REPO_DIR" ]] || { echo "!! $MODEL_NAME 不在 HF 缓存里；先用 CPU 分区预取"; exit 1; }
 
@@ -89,6 +95,7 @@ if [[ "${SMOKE:-0}" == "1" ]]; then
 fi
 
 export MODEL_NAME
+export BACKBONE
 export OUTPUT_DIR="$IRIS_RUNS/iris_ms2/$TAG"
 export MS2_MANIFEST="$TRAIN_MANIFEST"
 export MS2_ROOT="$IRIS_MS2_ROOT"

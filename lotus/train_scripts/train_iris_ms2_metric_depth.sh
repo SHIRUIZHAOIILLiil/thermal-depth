@@ -67,6 +67,7 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   --ms2_root=$MS2_ROOT \
   --pseudo_gt_dir=$PSEUDO_GT_DIR \
   $CAPTION_FLAG \
+  --backbone=${BACKBONE:-g} \
   --metric_adaptation \
   --metric_norm_json=$METRIC_NORM_JSON \
   --init_unet_from=$INIT_UNET_FROM \

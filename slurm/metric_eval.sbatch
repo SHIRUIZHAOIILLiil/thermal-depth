@@ -80,6 +80,14 @@ cd "$IRIS_REPO"
 git log --oneline -1
 
 # tag ckpt manifest stride align source extra...
+# 与 metric_adapt.sbatch 同一个开关。不设＝g，与改动前逐字等价。
+BACKBONE="${BACKBONE:-g}"
+case "$BACKBONE" in
+  g) LOTUS_MODEL="jingheya/lotus-depth-g-v2-1-disparity" ;;
+  d) LOTUS_MODEL="jingheya/lotus-depth-d-v2-0-disparity" ;;
+  *) echo "!! BACKBONE 只能是 g 或 d，收到 '$BACKBONE'"; exit 1 ;;
+esac
+
 run_eval() {
   local tag="$1" ckpt="$2" manifest="$3" stride="$4" align="$5" source="$6"; shift 6
   local out="$IRIS_RUNS/eval/$tag"
@@ -90,6 +98,7 @@ run_eval() {
               --val-caption-mode "$PROMPT" --num-inference-steps 1
               --condition-latent mode --local-files-only --align-mode "$align")
   [[ -n "$source" ]] && args+=(--metric-source "$source")
+  args+=(--lotus-model-path "$LOTUS_MODEL" --backbone "$BACKBONE")
   args+=("$@")
   echo "[eval] $tag  ($align / ${source:-per-frame fit})"
   python tools/train_route_suite.py "${args[@]}"
@@ -134,7 +143,8 @@ if [[ -n "${ADAPT_RUN:-}" ]]; then
     src="$RUN_DIR/checkpoint-$s"
     [[ -d "$src" ]] || { echo "!! 找不到 $src"; exit 1; }
     python tools/convert_iris_ms2_checkpoint.py --source "$src" --output "$target" \
-      --caption-mode "$PROMPT" --step "$s"
+      --caption-mode "$PROMPT" --step "$s" \
+      --lotus-model-path "$LOTUS_MODEL" --backbone "$BACKBONE"
   done
 
   for s in $STEPS; do
