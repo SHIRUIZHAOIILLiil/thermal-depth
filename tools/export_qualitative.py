@@ -70,10 +70,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260703)
     parser.add_argument("--depth-scale", type=float, default=256.0)
     parser.add_argument(
+        "--caption-override", default=None,
+        help=(
+            "Text used by models whose --caption-mode is 'override'. An Iris-Fig-9-style "
+            "probe: hand-write a description that contradicts the scene and see whether "
+            "the prediction visibly moves. A demonstration, not a measurement."
+        ),
+    )
+    parser.add_argument(
         "--caption-mode",
         default="empty",
         help=(
-            "empty | correct | shuffled, or one per model as a comma list. A "
+            "empty | correct | shuffled | override, or one per model as a comma list. A "
             "caption-trained checkpoint rendered under 'empty' is being shown outside "
             "the input mode it was trained in. 'shuffled' keeps the text distribution "
             "and breaks only the image-text correspondence, so the same checkpoint "
@@ -188,15 +196,25 @@ def main() -> None:
         raise SystemExit(
             f"--caption-mode takes one value or one per model; got {len(modes)} for {len(args.models)}"
         )
-    unknown = sorted(set(modes) - {"empty", "correct", "shuffled"})
+    unknown = sorted(set(modes) - {"empty", "correct", "shuffled", "override"})
     if unknown:
         raise SystemExit(f"Unknown caption mode(s): {unknown}")
+    if "override" in modes and not (args.caption_override or "").strip():
+        raise SystemExit("--caption-mode override needs --caption-override TEXT")
 
     specs = []
     for entry, mode in zip(args.models, modes):
-        parts = entry.split(":")
-        route, checkpoint = parts[0], parts[1] if len(parts) > 1 else ""
-        label = parts[2] if len(parts) > 2 else ""
+        route, _, rest = entry.partition(":")
+        # Splitting the whole entry on ":" breaks on Windows, where the checkpoint
+        # carries a drive letter and "b_thermal_unet:E:/runs/x.pt:label" yields four
+        # fields, silently taking "E" as the checkpoint and the path as the label.
+        # Take the label off the right instead, and treat a lone letter before the
+        # first slash as a drive rather than a checkpoint that was given no label.
+        head, sep, tail = rest.rpartition(":")
+        if sep and not (len(head) == 1 and head.isalpha()):
+            checkpoint, label = head, tail
+        else:
+            checkpoint, label = rest, ""
         if route not in ROUTES or not checkpoint:
             raise SystemExit(f"Bad --models entry {entry!r}; expected ROUTE:CHECKPOINT[:LABEL]")
         path = Path(checkpoint)
@@ -236,6 +254,8 @@ def main() -> None:
     print(f"[data] {len(rows)} frames: {[r['id'] for r in rows]}", flush=True)
 
     texts = {"correct": {row["id"]: row["caption"] for row in rows}}
+    if "override" in modes:
+        texts["override"] = {row["id"]: args.caption_override for row in rows}
     if "shuffled" in modes:
         # Rotate a copy so a 'correct' model in the same figure keeps its own text.
         # The selected frames are hundreds to thousands of frames apart, so the
@@ -307,6 +327,14 @@ def main() -> None:
             # instead of re-running both models on the GPU.
             (args.output_dir / "aligned").mkdir(parents=True, exist_ok=True)
             np.save(args.output_dir / "aligned" / f"{label}__{row['id']}.npy", aligned.astype(np.float32))
+            # And the network's own output, before the affine fit and before the
+            # [min_depth, max_depth] clamp. The aligned map is the right thing to score
+            # and the wrong thing to look at: the clamp pins whole far-field regions to
+            # exactly max_depth -- 7% of one frame here -- so they print as a flat slab
+            # and a figure drawn from it understates what the model resolves. The
+            # relative-depth figures in this literature show this array, not that one.
+            (args.output_dir / "raw").mkdir(parents=True, exist_ok=True)
+            np.save(args.output_dir / "raw" / f"{label}__{row['id']}.npy", pred.astype(np.float32))
             gt_top = gt[top][valid[top]]
             sky_report.append(
                 {

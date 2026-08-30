@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
     # [image latent, noisy target latent]; D is the direct variant and takes the
     # image latent alone. Must match what the checkpoint was trained as -- see the
     # same flag in lotus/train_iris_ms2_g.py.
-    parser.add_argument("--backbone", choices=["g", "d"], default="g")
+    parser.add_argument("--backbone", choices=["g", "d", "marigold"], default="g")
     parser.add_argument("--anythermal-model-path", default="theairlabcmu/AnyThermal")
 
     parser.add_argument("--epochs", type=int, default=20)
@@ -1010,6 +1010,11 @@ class RouteModel:
                 f"--backbone d with {args.lotus_model_path}: that is a Lotus-G "
                 "checkpoint. Pass --backbone g."
             )
+        if (args.backbone == "marigold") != ("marigold" in _repo):
+            raise SystemExit(
+                f"--backbone {args.backbone} with {args.lotus_model_path}: the backbone "
+                "and the repository disagree about whether this is Marigold."
+            )
         _pipeline_cls = LotusDPipeline if args.backbone == "d" else LotusGPipeline
 
         self.lotus = _pipeline_cls.from_pretrained(
@@ -1188,11 +1193,16 @@ class RouteModel:
                 condition if self.args.backbone == "d"
                 else torch.cat([condition, latent_input], dim=1)
             )
+            # Marigold has no task switcher and its U-Net was built without a
+            # class embedding, so it must be called without class_labels.
             x0 = self.unet(
                 unet_input.to(unet_dtype),
                 timestep,
                 encoder_hidden_states=prompt.to(unet_dtype),
-                class_labels=task_embedding(1, self.device, unet_dtype),
+                class_labels=(
+                    None if self.args.backbone == "marigold"
+                    else task_embedding(1, self.device, unet_dtype)
+                ),
                 return_dict=False,
             )[0]
             # Same branch as LotusGPipeline.__call__: the checkpoint's DDIM config

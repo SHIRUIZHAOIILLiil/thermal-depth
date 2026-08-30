@@ -31,6 +31,9 @@
 #                给它选冠军，等于在它没训过的文本分布下挑权重，和用错 SEL_PROMPT 同性质。
 #   TEST_MANIFEST 同理，不设＝默认 test（RGB caption 那份）
 #   LOTUS_MODEL  底座权重仓库。不设＝评估器自己的默认（Lotus-G）。
+#   STEPS_INFER  去噪步数，默认 1。Marigold 是多步生成式，按 Iris 补充材料 B.2
+#                用 50；Lotus 两条都是 1。⚠️ 名字不叫 STEPS —— 那个在本脚本里
+#                已经是 checkpoint 步数了。
 #   BACKBONE     g|d，必须与 LOTUS_MODEL 一致。评 Lotus-D 的 checkpoint 时两个
 #                都要给：不给就会拿 conv_in 8 的 G 架构去装 conv_in 4 的 D 权重。
 #                评估器自己有仓库名守卫，会挡住两个错配组合。
@@ -107,7 +110,8 @@ run_eval() {  # tag ckpt prompt stride [manifest]
   local args=(--route "$ROUTE" --output-dir "$out" --ms2-root "$IRIS_MS2_ROOT"
               --train-manifest "$TRAIN_MANIFEST" --eval-checkpoint "$ckpt"
               --val-stride "$stride" --val-caption-mode "$prompt"
-              --num-inference-steps 1 --condition-latent mode --local-files-only)
+              --num-inference-steps "${STEPS_INFER:-1}"
+              --condition-latent mode --local-files-only)
   [[ -n "$manifest" ]] && args+=(--val-manifest "$manifest")
   [[ -n "${LOTUS_MODEL:-}" ]] && args+=(--lotus-model-path "$LOTUS_MODEL")
   [[ -n "${BACKBONE:-}" ]] && args+=(--backbone "$BACKBONE")

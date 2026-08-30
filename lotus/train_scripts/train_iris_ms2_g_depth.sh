@@ -24,7 +24,11 @@ export MODEL_NAME="${MODEL_NAME:-stabilityai/stable-diffusion-2-base}"
 export MS2_MANIFEST="${MS2_MANIFEST:?set MS2_MANIFEST}"
 export MS2_ROOT="${MS2_ROOT:?set MS2_ROOT}"
 export PSEUDO_GT_DIR="${PSEUDO_GT_DIR:?set PSEUDO_GT_DIR}"
-export NORMTYPE="trunc_disparity"
+# Lotus normalises truncated disparity; Marigold normalises depth between its
+# 0.02 and 0.98 quantiles (Iris supplementary B.2), which is our `truncnorm`.
+export NORMTYPE="${NORMTYPE:-trunc_disparity}"
+# Lotus predicts the clean sample; Marigold uses the v-objective.
+export PREDICTION_TYPE="${PREDICTION_TYPE:-sample}"
 
 # training configs
 export BATCH_SIZE=4
@@ -67,6 +71,7 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   $BACKBONE_FLAG \
   --random_flip \
   --norm_type=$NORMTYPE \
+  --prediction_type=$PREDICTION_TYPE \
   --dataloader_num_workers=0 \
   --train_batch_size=$BATCH_SIZE \
   --gradient_accumulation_steps=$GAS \

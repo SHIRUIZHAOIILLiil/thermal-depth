@@ -71,7 +71,13 @@ case "$START" in
   # 任务开关、双分支 loss、caption、伪 GT、评估协议全部共用。BACKBONE 跟着 START 走，
   # 不单独暴露，免得两者对不上。
   lotus_d) MODEL_NAME="jingheya/lotus-depth-d-v2-0-disparity"; BACKBONE=d ;;
-  *)    echo "!! START 只能是 sd2 / ckpt / lotus_d，收到 '$START'"; exit 1 ;;
+  # Marigold：多步生成式，v 目标，单分支无任务开关。归一化和预测类型跟着一起换，
+  # 三者是一套，分开设很容易只改一半 —— 依据是 Iris 补充材料 B.2 和他们自己的
+  # marigold_trainer.py.PD_text_prior。
+  marigold) MODEL_NAME="prs-eth/marigold-v1-0"; BACKBONE=marigold
+            NORMTYPE="${NORMTYPE:-truncnorm}"
+            PREDICTION_TYPE="${PREDICTION_TYPE:-v_prediction}" ;;
+  *)    echo "!! START 只能是 sd2 / ckpt / lotus_d / marigold，收到 '$START'"; exit 1 ;;
 esac
 BACKBONE="${BACKBONE:-g}"
 
@@ -101,6 +107,8 @@ fi
 
 export MODEL_NAME
 export BACKBONE
+export NORMTYPE="${NORMTYPE:-trunc_disparity}"
+export PREDICTION_TYPE="${PREDICTION_TYPE:-sample}"
 export OUTPUT_DIR="$IRIS_RUNS/iris_ms2/$TAG"
 export MS2_MANIFEST="${TRAIN_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_train_day2seq_clip75_20260728.jsonl}"
 export MS2_ROOT="$IRIS_MS2_ROOT"
