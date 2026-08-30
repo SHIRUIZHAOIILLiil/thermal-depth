@@ -29,6 +29,8 @@ REPOS = [
     "jingheya/lotus-depth-d-v2-0-disparity",
     # 第三条线。Iris Table 1 里 Marigold 是他们着墨最多的底座。
     "prs-eth/marigold-v1-0",
+    # 第四条线。Iris Table 1 的 E2E-FT (Stable Diffusion) 那一行。
+    "GonzaloMG/stable-diffusion-e2e-ft-depth",
     "theairlabcmu/AnyThermal",                # 只有 d1 / d2 要
     # 天空掩码（Jasmine 附录 C.3 的 sky loss 要它）。取 Cityscapes 版：
     # 它的标签集里有 sky，域也是行车场景。约 1.6 GB。

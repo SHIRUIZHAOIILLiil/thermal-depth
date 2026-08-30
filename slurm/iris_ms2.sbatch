@@ -77,7 +77,12 @@ case "$START" in
   marigold) MODEL_NAME="prs-eth/marigold-v1-0"; BACKBONE=marigold
             NORMTYPE="${NORMTYPE:-truncnorm}"
             PREDICTION_TYPE="${PREDICTION_TYPE:-v_prediction}" ;;
-  *)    echo "!! START 只能是 sd2 / ckpt / lotus_d / marigold，收到 '$START'"; exit 1 ;;
+  # E2E-FT：单步确定性，v 目标，损失在**解码后的图像**上做尺度平移不变 L1。
+  # 归一化同 Marigold（0.02/0.98 分位），推理 1 步，所以评估和 Lotus 一样便宜。
+  e2eft) MODEL_NAME="GonzaloMG/stable-diffusion-e2e-ft-depth"; BACKBONE=e2eft
+         NORMTYPE="${NORMTYPE:-truncnorm}"
+         PREDICTION_TYPE="${PREDICTION_TYPE:-v_prediction}" ;;
+  *)    echo "!! START 只能是 sd2 / ckpt / lotus_d / marigold / e2eft，收到 '$START'"; exit 1 ;;
 esac
 BACKBONE="${BACKBONE:-g}"
 

@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
     # [image latent, noisy target latent]; D is the direct variant and takes the
     # image latent alone. Must match what the checkpoint was trained as -- see the
     # same flag in lotus/train_iris_ms2_g.py.
-    parser.add_argument("--backbone", choices=["g", "d", "marigold"], default="g")
+    parser.add_argument("--backbone", choices=["g", "d", "marigold", "e2eft"], default="g")
     parser.add_argument("--anythermal-model-path", default="theairlabcmu/AnyThermal")
 
     parser.add_argument("--epochs", type=int, default=20)
@@ -1200,16 +1200,25 @@ class RouteModel:
                 timestep,
                 encoder_hidden_states=prompt.to(unet_dtype),
                 class_labels=(
-                    None if self.args.backbone == "marigold"
+                    None if self.args.backbone in ("marigold", "e2eft")
                     else task_embedding(1, self.device, unet_dtype)
                 ),
                 return_dict=False,
             )[0]
             # Same branch as LotusGPipeline.__call__: the checkpoint's DDIM config
             # declares prediction_type='sample', so x0 goes straight into step().
+            # The bypass is only valid when the network already emits the clean
+            # latent. Lotus declares prediction_type='sample' and does; Marigold
+            # and E2E-FT declare 'v_prediction', so what comes out is a velocity
+            # and taking it for x0 would be silently wrong -- those go through
+            # step(), which undoes the parameterisation, even at one step.
+            _needs_step = (
+                len(timesteps) > 1
+                or self.lotus.scheduler.config.prediction_type != "sample"
+            )
             latents = (
                 self.lotus.scheduler.step(x0.float(), timestep, latents, return_dict=False)[0]
-                if len(timesteps) > 1
+                if _needs_step
                 else x0
             )
         disparity = decode_to_disparity(self.lotus, latents.float(), self.device, gt_vae=self.gt_vae)

@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True, help="Destination .pt")
     parser.add_argument("--lotus-model-path", default="jingheya/lotus-depth-g-v2-1-disparity",
                         help="Reference U-Net the key check compares against.")
-    parser.add_argument("--backbone", choices=("g", "d", "marigold"), default="g",
+    parser.add_argument("--backbone", choices=("g", "d", "marigold", "e2eft"), default="g",
                         help="Which Lotus variant this checkpoint is. G takes the concatenated "
                              "[condition, latent] input (conv_in 8); D is the direct variant and "
                              "takes the condition alone (conv_in 4). Must agree with "

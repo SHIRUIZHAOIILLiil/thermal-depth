@@ -82,6 +82,12 @@ from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
 from pipeline import LotusDPipeline, LotusGPipeline
+from e2eft_loss import ScaleAndShiftInvariantLoss
+
+# Backbones that train one branch and carry no task switcher. Lotus packs a
+# depth branch and a thermal-reconstruction branch into one batch and tells
+# them apart with the switcher; neither Marigold nor E2E-FT has either.
+SINGLE_BRANCH = ("marigold", "e2eft")
 from utils.image_utils import concatenate_images, colorize_depth_map
 # MS2: Hypersim and VKITTI are replaced by the MS2 thermal dataset.
 from utils.ms2_thermal_dataset import MS2ThermalDataset, MS2ThermalTransform, collate_fn_ms2
@@ -576,14 +582,16 @@ def parse_args():
     parser.add_argument(
         "--backbone",
         type=str,
-        choices=["g", "d", "marigold"],
+        choices=["g", "d", "marigold", "e2eft"],
         default="g",
         help=(
             "Which Lotus variant the weights are. 'g' (default) reproduces the "
             "existing behaviour line for line. 'd' skips the 4->8 conv_in "
             "expansion and conditions on the image latent alone. 'marigold' is "
             "the multi-step variant: one branch, no task switcher, a random "
-            "timestep, and a target chosen by --prediction_type."
+            "timestep, and a target chosen by --prediction_type. 'e2eft' keeps "
+            "the terminal timestep but scores the decoded image under a "
+            "scale-and-shift-invariant L1 instead of the latent."
         ),
     )
 
@@ -1004,7 +1012,7 @@ def main():
     # Lotus carries a task switcher and its trainer always passes class_labels.
     # Marigold has neither, and a U-Net built with a class embedding refuses a
     # forward that omits class_labels -- so the switcher is added for Lotus only.
-    _switcher = {} if args.backbone == "marigold" else dict(
+    _switcher = {} if args.backbone in SINGLE_BRANCH else dict(
         class_embed_type="projection", projection_class_embeddings_input_dim=4
     )
     unet = UNet2DConditionModel.from_pretrained(
@@ -1039,7 +1047,12 @@ def main():
             f"--backbone marigold with {args.pretrained_model_name_or_path}: that "
             "is a Lotus checkpoint. Pass --backbone g or d."
         )
-    if args.backbone != "marigold" and "marigold" in _repo:
+    if args.backbone == "e2eft" and "e2e" not in _repo:
+        raise ValueError(
+            f"--backbone e2eft with {args.pretrained_model_name_or_path}: that is "
+            "not an E2E-FT checkpoint."
+        )
+    if args.backbone not in ("marigold", "e2eft") and "marigold" in _repo:
         raise ValueError(
             f"--backbone {args.backbone} with {args.pretrained_model_name_or_path}: "
             "that is a Marigold checkpoint. Pass --backbone marigold."
@@ -1271,8 +1284,11 @@ def main():
     # copy, still frozen. Taken *before* the cast below, so it holds the weights
     # `from_pretrained` loaded rather than an fp16 round trip of them. The
     # encoder is dropped because the metric term never encodes.
+    # E2E-FT scores a decoded image, so its gradient crosses the decoder just as
+    # the metric term's does -- and fp16 underflows that backward to exactly zero
+    # (see the metric adaptation notes above), so it needs the same fp32 copy.
     metric_vae = None
-    if args.metric_adaptation:
+    if args.metric_adaptation or args.backbone == "e2eft":
         metric_vae = copy.deepcopy(vae).to(device=accelerator.device, dtype=torch.float32)
         metric_vae.encoder = None
         metric_vae.requires_grad_(False)
@@ -1301,6 +1317,11 @@ def main():
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     # Afterwards we recalculate our number of training epochs
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+
+    # E2E-FT needs the cumulative alphas to undo the v-parameterisation, and the
+    # vendored loss object. Built once; both are inert for the other backbones.
+    _alpha_prod = noise_scheduler.alphas_cumprod.to(accelerator.device)
+    _ssi_loss = ScaleAndShiftInvariantLoss()
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -1432,7 +1453,7 @@ def main():
                 # thermal reconstruction -- and tells them apart with the task
                 # switcher. Marigold has one branch and no switcher, so nothing
                 # here is doubled and the reconstruction term does not exist.
-                _two_branch = args.backbone != "marigold"
+                _two_branch = args.backbone not in SINGLE_BRANCH
                 _img = batch["pixel_values"]
                 # Convert images to latent space
                 rgb_latents = vae.encode(
@@ -1458,11 +1479,15 @@ def main():
 
                 # Get the valid mask for the latent space
                 valid_mask_for_latent = batch.get("valid_mask_values", None)
+                # E2E-FT scores at image resolution, so it wants the mask before
+                # the 8x8 pooling that the latent losses need.
+                _e2e_mask = None
                 if args.task_name[0] == "depth" and valid_mask_for_latent is not None:
                     sky_mask_for_latent = batch.get("sky_mask_values", None)
                     valid_mask_for_latent = valid_mask_for_latent + sky_mask_for_latent
                 if valid_mask_for_latent is not None:
                     valid_mask_for_latent = valid_mask_for_latent.bool()
+                    _e2e_mask = valid_mask_for_latent[:bsz_per_task]
                     invalid_mask = ~valid_mask_for_latent
                     valid_mask_down_anno = ~torch.max_pool2d(invalid_mask.float(), 8, 8).bool()
                     valid_mask_down_anno = valid_mask_down_anno.repeat((1, 4, 1, 1))
@@ -1596,7 +1621,29 @@ def main():
                                 class_labels=task_emb if _two_branch else None)[0]
 
                 # Compute loss
-                anno_loss = F.mse_loss(model_pred[:bsz_per_task][valid_mask_down_anno].float(), target[:bsz_per_task][valid_mask_down_anno].float(), reduction="mean")
+                if args.backbone == "e2eft":
+                    # diffusion-e2e-ft/training/train.py:583-625, transcribed.
+                    _ap = _alpha_prod[timesteps].view(-1, 1, 1, 1)
+                    _bp = (1.0 - _alpha_prod)[timesteps].view(-1, 1, 1, 1)
+                    _pt = noise_scheduler.config.prediction_type
+                    if _pt == "v_prediction":
+                        x0_latent = (_ap ** 0.5) * noisy_latents - (_bp ** 0.5) * model_pred
+                    elif _pt == "epsilon":
+                        x0_latent = (noisy_latents - (_bp ** 0.5) * model_pred) / (_ap ** 0.5)
+                    elif _pt == "sample":
+                        x0_latent = model_pred
+                    else:
+                        raise ValueError(f"Unknown prediction type {_pt}")
+                    decoded = metric_vae.decode(
+                        x0_latent.float() / metric_vae.config.scaling_factor, return_dict=False
+                    )[0]
+                    estimate = decoded.mean(dim=1, keepdim=True).clamp(-1.0, 1.0)
+                    ground_truth = batch[TAR_ANNO][:, :1].to(estimate.device, torch.float32)
+                    if _e2e_mask is None:
+                        _e2e_mask = torch.ones_like(estimate, dtype=torch.bool)
+                    anno_loss = _ssi_loss(estimate, ground_truth, _e2e_mask)
+                else:
+                    anno_loss = F.mse_loss(model_pred[:bsz_per_task][valid_mask_down_anno].float(), target[:bsz_per_task][valid_mask_down_anno].float(), reduction="mean")
                 # With one branch the second half is empty and mse over it is NaN,
                 # so the term is dropped rather than computed.
                 rgb_loss = (
