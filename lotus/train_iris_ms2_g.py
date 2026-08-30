@@ -1086,8 +1086,9 @@ def main():
         unet.conv_in = _new_conv_in
     elif unet.conv_in.in_channels == 8:
         logger.info(
-            "conv_in already has 8 input channels: starting from a trained Lotus-G "
-            "checkpoint, expansion skipped."
+            "conv_in already has 8 input channels: starting from a checkpoint that "
+            "already conditions on a concatenated pair (Lotus-G, Marigold or "
+            "E2E-FT), expansion skipped."
         )
     else:
         raise ValueError(
@@ -1379,8 +1380,15 @@ def main():
         )
         logger.info(f"  {train_dataset_ms2.clip_summary()}")
     logger.info(f"  Task name: {args.task_name}")
-    logger.info(f"  Backbone: lotus-{args.backbone} "
-                f"(conv_in {4 if args.backbone == 'd' else 8} channels)")
+    logger.info(f"  Backbone: {args.backbone} "
+                f"(conv_in {4 if args.backbone == 'd' else 8} channels, "
+                f"{'one branch' if args.backbone in SINGLE_BRANCH else 'two branches'})")
+    # Silent until now, and it decides what the target is: registered as sample,
+    # a v-parameterised checkpoint would train against the wrong quantity without
+    # anything failing.
+    logger.info(f"  Objective: prediction_type={noise_scheduler.config.prediction_type}, "
+                f"norm_type={args.norm_type}, timestep="
+                f"{'random' if args.backbone == 'marigold' else args.timestep}")
     logger.info(f"  Is Full Evaluation?: {args.FULL_EVALUATION}")
     logger.info(f"Output Workspace: {args.output_dir}")
 
