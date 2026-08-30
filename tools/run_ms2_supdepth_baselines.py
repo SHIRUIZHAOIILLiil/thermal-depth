@@ -372,6 +372,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-scale", type=float, default=256.0)
     parser.add_argument("--limit", type=int, default=None, help="Smoke: first N frames only.")
     parser.add_argument(
+        "--save-pred-ids", nargs="*", default=None,
+        help="Frame ids whose metric depth to write as "
+             "<output-dir>/raw_predictions/<model>/<id>.npy, for figures. "
+             "The array is metres at ground-truth resolution, before any "
+             "alignment, so it is what the model actually predicts.",
+    )
+    parser.add_argument(
         "--build-only",
         action="store_true",
         help=(
@@ -459,6 +466,11 @@ def main() -> int:
             if prediction.shape[-2:] != gt.shape:
                 prediction = F.interpolate(prediction, gt.shape, mode="bilinear", align_corners=False)
             pred = prediction[0, 0].float().cpu().numpy()
+            if args.save_pred_ids and frame["id"] in set(args.save_pred_ids):
+                pred_dir = args.output_dir / "raw_predictions" / name
+                pred_dir.mkdir(parents=True, exist_ok=True)
+                np.save(pred_dir / f"{frame['id']}.npy", pred.astype(np.float32))
+                print(f"[{name}] saved prediction for {frame['id']}", flush=True)
             row = {"id": frame["id"], "sequence": frame["sequence"]}
             for mode in ALIGN_MODES:
                 metrics = evaluate_sample(

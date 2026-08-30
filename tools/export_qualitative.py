@@ -47,6 +47,14 @@ from train_route_suite import (  # noqa: E402
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models", nargs="+", required=True, metavar="ROUTE:CHECKPOINT[:LABEL]")
+    parser.add_argument(
+        "--extra-panel", nargs="*", default=[], metavar="LABEL:DIR",
+        help="Add a column from metric depth already on disk, as "
+             "<DIR>/<frame id>.npy in metres, which is what "
+             "run_ms2_supdepth_baselines.py --save-pred-ids writes. Only the "
+             "shared style renders these: colouring a baseline on its own "
+             "scale beside ours would make the two differ for the wrong reason.",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/route_suite/qualitative"))
     parser.add_argument(
         "--val-manifest",
@@ -182,8 +190,22 @@ def strip(panels: list[tuple[str, Image.Image]], width: int, label_h: int = 34) 
     return canvas
 
 
+def parse_extra_panels(entries):
+    out = []
+    for entry in entries:
+        if ":" not in entry:
+            raise SystemExit(f"Bad --extra-panel {entry!r}; expected LABEL:DIR")
+        label, directory = entry.split(":", 1)
+        path = Path(directory)
+        if not path.is_dir():
+            raise SystemExit(f"--extra-panel {label}: no such directory {path}")
+        out.append((label, path))
+    return out
+
+
 def main() -> None:
     args = parse_args()
+    extra_panels = parse_extra_panels(args.extra_panel)
     args.val_caption_mode = "empty"
     args.gt_decode_fp32 = True
     args.input_max_edge = 0
@@ -381,6 +403,15 @@ def main() -> None:
                     f"{label}  [{mode}]",
                     colour_shared(1.0 / np.maximum(aligned, 1e-6), lo, hi),
                 ))
+            for extra_label, extra_dir in extra_panels:
+                path = extra_dir / f"{row['id']}.npy"
+                if not path.exists():
+                    raise SystemExit(
+                        f"--extra-panel {extra_label}: nothing for {row['id']} at {path}"
+                    )
+                metric = np.load(path).astype(np.float32)
+                panels.append((extra_label,
+                               colour_shared(1.0 / np.maximum(metric, 1e-6), lo, hi)))
             strips["shared"].append(strip(panels, args.panel_width, label_h))
 
     for style, images in strips.items():
