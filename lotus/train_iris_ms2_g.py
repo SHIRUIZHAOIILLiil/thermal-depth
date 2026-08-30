@@ -576,12 +576,14 @@ def parse_args():
     parser.add_argument(
         "--backbone",
         type=str,
-        choices=["g", "d"],
+        choices=["g", "d", "marigold"],
         default="g",
         help=(
             "Which Lotus variant the weights are. 'g' (default) reproduces the "
             "existing behaviour line for line. 'd' skips the 4->8 conv_in "
-            "expansion and conditions on the image latent alone."
+            "expansion and conditions on the image latent alone. 'marigold' is "
+            "the multi-step variant: one branch, no task switcher, a random "
+            "timestep, and a target chosen by --prediction_type."
         ),
     )
 
@@ -999,10 +1001,15 @@ def main():
             args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
         )
     
+    # Lotus carries a task switcher and its trainer always passes class_labels.
+    # Marigold has neither, and a U-Net built with a class embedding refuses a
+    # forward that omits class_labels -- so the switcher is added for Lotus only.
+    _switcher = {} if args.backbone == "marigold" else dict(
+        class_embed_type="projection", projection_class_embeddings_input_dim=4
+    )
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.non_ema_revision,
-        class_embed_type="projection", projection_class_embeddings_input_dim=4,
-        low_cpu_mem_usage=False, device_map=None,
+        low_cpu_mem_usage=False, device_map=None, **_switcher,
     )
     
     # Replace the first layer to accept 8 in_channels.
@@ -1026,6 +1033,16 @@ def main():
         raise ValueError(
             f"--backbone d with {args.pretrained_model_name_or_path}: that looks "
             "like a Lotus-G checkpoint. Pass --backbone g."
+        )
+    if args.backbone == "marigold" and "lotus" in _repo:
+        raise ValueError(
+            f"--backbone marigold with {args.pretrained_model_name_or_path}: that "
+            "is a Lotus checkpoint. Pass --backbone g or d."
+        )
+    if args.backbone != "marigold" and "marigold" in _repo:
+        raise ValueError(
+            f"--backbone {args.backbone} with {args.pretrained_model_name_or_path}: "
+            "that is a Marigold checkpoint. Pass --backbone marigold."
         )
 
     if args.backbone == "d":
@@ -1411,9 +1428,15 @@ def main():
             batch = next(iter_ms2)
 
             with accelerator.accumulate(unet):
+                # Lotus packs two branches into one batch -- depth prediction and
+                # thermal reconstruction -- and tells them apart with the task
+                # switcher. Marigold has one branch and no switcher, so nothing
+                # here is doubled and the reconstruction term does not exist.
+                _two_branch = args.backbone != "marigold"
+                _img = batch["pixel_values"]
                 # Convert images to latent space
                 rgb_latents = vae.encode(
-                    torch.cat((batch["pixel_values"],batch["pixel_values"]), dim=0).to(weight_dtype)
+                    (torch.cat((_img, _img), dim=0) if _two_branch else _img).to(weight_dtype)
                     ).latent_dist.sample()
                 rgb_latents = rgb_latents * vae.config.scaling_factor
                 # Convert target_annotations to latent space
@@ -1425,12 +1448,13 @@ def main():
                 else:
                     raise ValueError(f"Do not support {args.task_name[0]} yet. ")
                 target_latents = vae.encode(
-                    torch.cat((batch[TAR_ANNO],batch["pixel_values"]), dim=0).to(weight_dtype)
+                    (torch.cat((batch[TAR_ANNO], _img), dim=0) if _two_branch
+                     else batch[TAR_ANNO]).to(weight_dtype)
                     ).latent_dist.sample()
                 target_latents = target_latents * vae.config.scaling_factor
                 
                 bsz = target_latents.shape[0]
-                bsz_per_task = int(bsz/2)
+                bsz_per_task = int(bsz/2) if _two_branch else bsz
 
                 # Get the valid mask for the latent space
                 valid_mask_for_latent = batch.get("valid_mask_values", None)
@@ -1451,7 +1475,15 @@ def main():
                 # Hoisted above the noise block so the G path can keep it while the
                 # D path skips everything else. It draws no random numbers, so G's
                 # random stream is unchanged by the move.
-                timesteps = torch.tensor([args.timestep], device=target_latents.device).repeat(bsz)
+                if args.backbone == "marigold":
+                    # marigold_trainer.py.PD_text_prior:259 -- Marigold trains over
+                    # the whole schedule, not at one terminal step.
+                    timesteps = torch.randint(
+                        0, noise_scheduler.config.num_train_timesteps, (bsz,),
+                        device=target_latents.device,
+                    )
+                else:
+                    timesteps = torch.tensor([args.timestep], device=target_latents.device).repeat(bsz)
                 timesteps = timesteps.long()
 
                 # The single architectural difference between the two backbones.
@@ -1501,9 +1533,10 @@ def main():
                     else:
                         all_prompts.append("")
                 
-                for i in range(bsz_per_task):
-                    # For RGB reconstruction task, use empty string or same description
-                    all_prompts.append("")
+                if _two_branch:
+                    for i in range(bsz_per_task):
+                        # For RGB reconstruction task, use empty string or same description
+                        all_prompts.append("")
                 
                 # Tokenize all prompts
                 text_inputs = tokenizer(
@@ -1537,7 +1570,19 @@ def main():
                 #-----------------------mod add text descriptions--------------------------------
 
                 # Get the target for loss
-                target = target_latents
+                if args.backbone == "marigold":
+                    # marigold_trainer.py.PD_text_prior:366-373, transcribed.
+                    _pt = noise_scheduler.config.prediction_type
+                    if _pt == "sample":
+                        target = target_latents
+                    elif _pt == "epsilon":
+                        target = noise
+                    elif _pt == "v_prediction":
+                        target = noise_scheduler.get_velocity(target_latents, noise, timesteps)
+                    else:
+                        raise ValueError(f"Unknown prediction type {_pt}")
+                else:
+                    target = target_latents
 
                 # Get the task embedding
                 task_emb_anno = torch.tensor([1, 0]).float().unsqueeze(0).to(accelerator.device)
@@ -1548,11 +1593,16 @@ def main():
 
                 # Predict
                 model_pred = unet(unet_input, timesteps, encoder_hidden_states, return_dict=False,
-                                class_labels=task_emb)[0]
+                                class_labels=task_emb if _two_branch else None)[0]
 
                 # Compute loss
                 anno_loss = F.mse_loss(model_pred[:bsz_per_task][valid_mask_down_anno].float(), target[:bsz_per_task][valid_mask_down_anno].float(), reduction="mean")
-                rgb_loss = F.mse_loss(model_pred[bsz_per_task:][valid_mask_down_rgb].float(), target[bsz_per_task:][valid_mask_down_rgb].float(), reduction="mean")
+                # With one branch the second half is empty and mse over it is NaN,
+                # so the term is dropped rather than computed.
+                rgb_loss = (
+                    F.mse_loss(model_pred[bsz_per_task:][valid_mask_down_rgb].float(), target[bsz_per_task:][valid_mask_down_rgb].float(), reduction="mean")
+                    if _two_branch else model_pred.new_zeros(())
+                )
                 # L = lambda_dense * L_dense + lambda_recon * L_I + lambda_metric * L_metric
                 # At the default weights of 1 and metric adaptation off this is
                 # `anno_loss + rgb_loss`, term for term, as it has always been.
