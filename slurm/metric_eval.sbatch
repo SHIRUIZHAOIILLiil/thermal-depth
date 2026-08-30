@@ -108,7 +108,10 @@ NORM_ARGS=(--metric-norm "$METRIC_NORM")
 AFFINE_ARGS=(--global-affine "$GLOBAL_AFFINE")
 
 # --- 行 1/2/4：原 checkpoint，test 上直接评 -------------------------------
-BASE_PREFIX="base_test_${TEST_FP}"
+# ⚠️ 底座要进名字。这三行依赖 BASE_CKPT，而 BASE_CKPT 随底座而变；只带 test 指纹
+# 的话，第二个底座跑同一批清单时会**静默覆盖**第一个底座的基线行，而且覆盖之后
+# 看不出来 —— 2026-08-29 的 Lotus-D 那次就把 Lotus-G 的三行盖掉了。
+BASE_PREFIX="base_test_${TEST_FP}_${BACKBONE}"
 if [[ "${SKIP_BASE:-0}" == "1" ]]; then
   # 那三行只依赖原 checkpoint，换一条适配臂它们一个字都不会变。全帧 test 每条
   # 30 分钟，重算三遍是 1.5 小时的纯浪费。汇总仍然从已有的目录读。
