@@ -88,6 +88,11 @@ from e2eft_loss import ScaleAndShiftInvariantLoss
 # depth branch and a thermal-reconstruction branch into one batch and tells
 # them apart with the switcher; neither Marigold nor E2E-FT has either.
 SINGLE_BRANCH = ("marigold", "e2eft")
+from utils.image_utils import concatenate_images, colorize_depth_map
+# MS2: Hypersim and VKITTI are replaced by the MS2 thermal dataset.
+from utils.ms2_thermal_dataset import MS2ThermalDataset, MS2ThermalTransform, collate_fn_ms2
+
+from eval import evaluation_depth, evaluation_normal
 
 
 class IterExponential:
@@ -115,11 +120,6 @@ class IterExponential:
         return math.exp(
             actual_iter / self.effective_length * math.log(self.final_ratio)
         )
-from utils.image_utils import concatenate_images, colorize_depth_map
-# MS2: Hypersim and VKITTI are replaced by the MS2 thermal dataset.
-from utils.ms2_thermal_dataset import MS2ThermalDataset, MS2ThermalTransform, collate_fn_ms2
-
-from eval import evaluation_depth, evaluation_normal
 
 # MS2 metric adaptation: the one place the inverse-depth convention lives.
 import sys as _sys

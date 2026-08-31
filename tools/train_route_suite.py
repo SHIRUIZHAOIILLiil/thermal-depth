@@ -1010,6 +1010,11 @@ class RouteModel:
                 f"--backbone d with {args.lotus_model_path}: that is a Lotus-G "
                 "checkpoint. Pass --backbone g."
             )
+        if (args.backbone == "e2eft") != ("e2e-ft" in _repo):
+            raise SystemExit(
+                f"--backbone {args.backbone} with {args.lotus_model_path}: the backbone "
+                "and the repository disagree about whether this is E2E-FT."
+            )
         if (args.backbone == "marigold") != ("marigold" in _repo):
             raise SystemExit(
                 f"--backbone {args.backbone} with {args.lotus_model_path}: the backbone "
@@ -1175,7 +1180,18 @@ class RouteModel:
             self.lotus.scheduler.set_timesteps(steps, device=self.device)
             timesteps = list(self.lotus.scheduler.timesteps)
         unet_dtype = next(self.unet.parameters()).dtype
-        if target_latent is not None:
+        if getattr(self.args, "backbone", "g") == "e2eft":
+            # Marigold/infer.py:124-127 defaults --noise to zeros and the eval
+            # scripts never override it, so E2E-FT starts inference from zeros
+            # exactly as it trains (train.py:497). Handing it noise here would
+            # be the one input it was never trained on, and nothing would fail.
+            if target_latent is not None:
+                raise SystemExit(
+                    "--backbone e2eft has no noisy-target input to seed; the "
+                    "oracle-latent path does not apply to it."
+                )
+            latents = torch.zeros_like(noise)
+        elif target_latent is not None:
             # train_iris_g.py:1078 -- the input is the target noised at this timestep,
             # not pure noise. At t=999 alpha_bar is about 4.7e-5, so the target
             # contributes under 1% of the input; Lotus trains this way and infers
