@@ -76,12 +76,26 @@ case "$START" in
   # marigold_trainer.py.PD_text_prior。
   marigold) MODEL_NAME="prs-eth/marigold-v1-0"; BACKBONE=marigold
             NORMTYPE="${NORMTYPE:-truncnorm}"
-            PREDICTION_TYPE="${PREDICTION_TYPE:-v_prediction}" ;;
+            PREDICTION_TYPE="${PREDICTION_TYPE:-v_prediction}"
+            # config/train_marigold.yaml: IterExponential, total_iter 25000,
+            # final_ratio 0.01, warmup 100. Their total is 25000 against a
+            # 30000-step budget, so a 20000-step run stops with the rate still
+            # at 0.025 -- that is their curve, cut short by our budget. Passing
+            # 20000 here would be a different schedule, not a shorter one.
+            LR_SCHEDULER="${LR_SCHEDULER:-iter_exponential}"
+            LR_WARMUP="${LR_WARMUP:-100}"
+            LR_TOTAL_ITER="${LR_TOTAL_ITER:-25000}" ;;
   # E2E-FT：单步确定性，v 目标，损失在**解码后的图像**上做尺度平移不变 L1。
   # 归一化同 Marigold（0.02/0.98 分位），推理 1 步，所以评估和 Lotus 一样便宜。
   e2eft) MODEL_NAME="GonzaloMG/stable-diffusion-e2e-ft-depth"; BACKBONE=e2eft
          NORMTYPE="${NORMTYPE:-truncnorm}"
-         PREDICTION_TYPE="${PREDICTION_TYPE:-v_prediction}" ;;
+         PREDICTION_TYPE="${PREDICTION_TYPE:-v_prediction}"
+         # train_marigold_e2e_ft_depth.sh: --lr_total_iter_length 20000
+         # --lr_exp_warmup_steps 100. Their budget is 20000 steps, the same as
+         # ours, so this one lands on their endpoint exactly.
+         LR_SCHEDULER="${LR_SCHEDULER:-iter_exponential}"
+         LR_WARMUP="${LR_WARMUP:-100}"
+         LR_TOTAL_ITER="${LR_TOTAL_ITER:-20000}" ;;
   *)    echo "!! START 只能是 sd2 / ckpt / lotus_d / marigold / e2eft，收到 '$START'"; exit 1 ;;
 esac
 BACKBONE="${BACKBONE:-g}"
@@ -114,6 +128,11 @@ export MODEL_NAME
 export BACKBONE
 export NORMTYPE="${NORMTYPE:-trunc_disparity}"
 export PREDICTION_TYPE="${PREDICTION_TYPE:-sample}"
+# Lotus ships a constant rate; the other two decay it. Defaulted here so the
+# Lotus lines are untouched by this.
+export LR_SCHEDULER="${LR_SCHEDULER:-constant}"
+export LR_WARMUP="${LR_WARMUP:-0}"
+export LR_TOTAL_ITER="${LR_TOTAL_ITER:-0}"
 export OUTPUT_DIR="$IRIS_RUNS/iris_ms2/$TAG"
 export MS2_MANIFEST="${TRAIN_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_train_day2seq_clip75_20260728.jsonl}"
 export MS2_ROOT="$IRIS_MS2_ROOT"
@@ -153,6 +172,7 @@ echo "sky rule  = $([[ -n "$SKY_MASK_DIR" ]] && echo "on ($SKY_MASK_DIR)" || ech
 echo "manifest  = $MS2_MANIFEST"
 echo "pseudo gt = $PSEUDO_GT_DIR"
 echo "steps     = $MAX_TRAIN_STEPS (ckpt every $CKPT_STEP)"
+echo "lr        = 3e-05 / $LR_SCHEDULER (warmup $LR_WARMUP, total_iter $LR_TOTAL_ITER)"
 echo "output    = $OUTPUT_DIR"
 echo "----------------"
 echo "门禁：日志里必须同时出现 SL_A（深度分支）与 SL_R（热像重建分支），"

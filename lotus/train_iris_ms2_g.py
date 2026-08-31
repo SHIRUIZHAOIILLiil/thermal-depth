@@ -88,6 +88,33 @@ from e2eft_loss import ScaleAndShiftInvariantLoss
 # depth branch and a thermal-reconstruction branch into one batch and tells
 # them apart with the switcher; neither Marigold nor E2E-FT has either.
 SINGLE_BRANCH = ("marigold", "e2eft")
+
+
+class IterExponential:
+    """marigold/src/util/lr_scheduler.py, transcribed.
+
+    Marigold decays the rate exponentially after a 100-step warmup
+    (config/train_marigold.yaml: IterExponential, total_iter 25000,
+    final_ratio 0.01) and E2E-FT copies this class verbatim
+    (diffusion-e2e-ft/training/train.py:362). Lotus ships a constant rate,
+    so this is selected per backbone rather than replacing the default.
+    """
+
+    def __init__(self, total_iter_length, final_ratio, warmup_steps=0) -> None:
+        self.total_length = total_iter_length
+        self.effective_length = total_iter_length - warmup_steps
+        self.final_ratio = final_ratio
+        self.warmup_steps = warmup_steps
+
+    def __call__(self, n_iter) -> float:
+        if n_iter < self.warmup_steps:
+            return 1.0 * n_iter / self.warmup_steps
+        if n_iter >= self.total_length:
+            return self.final_ratio
+        actual_iter = n_iter - self.warmup_steps
+        return math.exp(
+            actual_iter / self.effective_length * math.log(self.final_ratio)
+        )
 from utils.image_utils import concatenate_images, colorize_depth_map
 # MS2: Hypersim and VKITTI are replaced by the MS2 thermal dataset.
 from utils.ms2_thermal_dataset import MS2ThermalDataset, MS2ThermalTransform, collate_fn_ms2
@@ -746,6 +773,20 @@ def parse_args():
         "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler."
     )
     parser.add_argument(
+        "--lr_total_iter_length", type=int, default=0,
+        help="With --lr_scheduler iter_exponential, the iteration at which the "
+             "rate reaches --lr_final_ratio. 0 means --max_train_steps. Marigold "
+             "sets 25000 against a 30000-step budget, so its rate is still at "
+             "0.025 when a 20000-step run stops -- passing our own budget here "
+             "instead would decay faster than their recipe, which is a change to "
+             "the schedule and not to the budget.",
+    )
+    parser.add_argument(
+        "--lr_final_ratio", type=float, default=0.01,
+        help="With --lr_scheduler iter_exponential, the rate multiplier at "
+             "--lr_total_iter_length. Both upstream recipes use 0.01.",
+    )
+    parser.add_argument(
         "--use_8bit_adam", action="store_true", help="Whether or not to use 8-bit Adam from bitsandbytes."
     )
     parser.add_argument(
@@ -1254,12 +1295,25 @@ def main():
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
 
-    lr_scheduler = get_scheduler(
-        args.lr_scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
-        num_training_steps=args.max_train_steps * accelerator.num_processes,
-    )
+    if args.lr_scheduler == "iter_exponential":
+        # get_scheduler validates against the diffusers enum, which has no
+        # exponential member, so this cannot go through it.
+        _total = args.lr_total_iter_length or args.max_train_steps
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            IterExponential(
+                total_iter_length=_total * accelerator.num_processes,
+                final_ratio=args.lr_final_ratio,
+                warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
+            ),
+        )
+    else:
+        lr_scheduler = get_scheduler(
+            args.lr_scheduler,
+            optimizer=optimizer,
+            num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
+            num_training_steps=args.max_train_steps * accelerator.num_processes,
+        )
 
     # Prepare everything with our `accelerator`.
     unet, optimizer, train_dataloader_ms2, lr_scheduler = accelerator.prepare(  # MS2: one loader
@@ -1387,7 +1441,7 @@ def main():
     # a v-parameterised checkpoint would train against the wrong quantity without
     # anything failing.
     logger.info(f"  Objective: prediction_type={noise_scheduler.config.prediction_type}, "
-                f"norm_type={args.norm_type}, timestep="
+                f"norm_type={args.norm_type}, lr={args.lr_scheduler}, timestep="
                 f"{'random' if args.backbone == 'marigold' else args.timestep}")
     logger.info(f"  Is Full Evaluation?: {args.FULL_EVALUATION}")
     logger.info(f"Output Workspace: {args.output_dir}")
@@ -1529,6 +1583,17 @@ def main():
                 # Lotus-D training path with only the thermal/data changes on top.
                 if args.backbone == "d":
                     unet_input = rgb_latents
+                elif args.backbone == "e2eft":
+                    # diffusion-e2e-ft/training/train.py:497-498. --noise_type
+                    # "zeros" is the first argument their own launch script
+                    # passes, and the deterministic single-step claim is about
+                    # exactly this input: the network gets four channels of
+                    # nothing beside the image latent. Feeding add_noise output
+                    # here instead gives it four channels of random nuisance,
+                    # which is a different method wearing the same name.
+                    noise = None
+                    noisy_latents = torch.zeros_like(rgb_latents)
+                    unet_input = torch.cat([rgb_latents, noisy_latents], dim=1)
                 else:
                     # Sample noise that we'll add to the latents
                     noise = torch.randn_like(target_latents)

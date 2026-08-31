@@ -80,7 +80,7 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   --seed="${SEED:-42}" \
   --max_train_steps="${MAX_TRAIN_STEPS:-20000}" \
   --learning_rate=3e-05 \
-  --lr_scheduler="constant" --lr_warmup_steps=0 \
+  --lr_scheduler="${LR_SCHEDULER:-constant}" --lr_warmup_steps="${LR_WARMUP:-0}" --lr_total_iter_length="${LR_TOTAL_ITER:-0}" \
   --task_name=$TASK_NAME \
   --timestep=$TIMESTEP \
   --validation_steps=$CKPT_STEP \
