@@ -1188,7 +1188,18 @@ class RouteModel:
             # still ours, so the terminal 999 does not depend on whichever
             # spacing the checkpoint's scheduler config declares.
             self.lotus.scheduler.set_timesteps(1, device=self.device)
-            timesteps = [torch.full((1,), self.args.timestep, device=self.device, dtype=torch.long)]
+            # 0-dim, on CPU. step() does alphas_cumprod[timestep] without
+            # moving anything, and alphas_cumprod lives on CPU: a 1-D CUDA
+            # index makes that advanced indexing across devices and raises,
+            # while a 0-dim one is read as a scalar and is allowed. The 50-step
+            # branch never hit this because scheduler.timesteps yields 0-dim
+            # entries, and Lotus never reaches step() at all.
+            #
+            # CPU rather than device because diffusers' UNet moves a 0-dim
+            # timestep to the sample's device itself, and add_noise calls .to()
+            # on it; a 1-D tensor is left where it is by both. Lotus's numbers
+            # are unchanged either way -- the embedding sees the same value.
+            timesteps = [torch.tensor(self.args.timestep, dtype=torch.long)]
         else:
             # Evaluation only -- validate_args refuses this during training.
             self.lotus.scheduler.set_timesteps(steps, device=self.device)
