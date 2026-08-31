@@ -66,6 +66,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ms2-root", type=Path, default=Path("/mnt/e/dataset/ms2"))
     parser.add_argument("--lotus-model-path", default="jingheya/lotus-depth-g-v2-1-disparity")
+    # RouteModel reads this; without it every call here raises AttributeError.
+    parser.add_argument("--backbone", choices=["g", "d", "marigold", "e2eft"], default="g",
+                        help="Must match --lotus-model-path; the evaluator refuses mismatches.")
     parser.add_argument("--anythermal-model-path", default="theairlabcmu/AnyThermal")
     parser.add_argument("--frames", type=int, default=3)
     parser.add_argument("--frame-ids", nargs="*", default=None, help="Explicit manifest ids instead of a stride.")
