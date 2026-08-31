@@ -110,6 +110,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--label-prompt-mode", choices=("on", "off"), default="on",
+        help="The bracketed prompt mode belongs on a figure comparing prompt "
+             "modes; on one comparing models it is unexplained jargon.",
+    )
+    parser.add_argument(
         "--panel-labels", choices=("on", "off"), default="on",
         help="off = 面板上不画任何文字。给幻灯用的图一律用 off：烘进像素的标注没法在"
              "排版时改，读图的人会把它当成结论的一部分。栏目名放到幻灯的图注里。",
@@ -191,6 +196,10 @@ def strip(panels: list[tuple[str, Image.Image]], width: int, label_h: int = 34) 
         canvas.paste(im, (i * width, label_h))
         draw.text((i * width + 8, 7), name, fill=(31, 42, 68), font=font)
     return canvas
+
+
+def _panel_label(label, mode, args):
+    return f"{label}  [{mode}]" if args.label_prompt_mode == "on" else label
 
 
 def parse_extra_panels(entries):
@@ -384,7 +393,7 @@ def main() -> None:
             for _, _, label, mode in specs:
                 pred = predictions[label][row["id"]]
                 panel = colorize_depth_map(pred, reverse_color=True)
-                panels.append((f"{label}  [{mode}]", panel))
+                panels.append((_panel_label(label, mode, args), panel))
                 panel.save(args.output_dir / f"{label}_pred_demo.png")
             strips["official"].append(strip(panels, args.panel_width, label_h))
 
@@ -403,7 +412,7 @@ def main() -> None:
             for _, _, label, mode in specs:
                 aligned = aligned_by_label[label]
                 panels.append((
-                    f"{label}  [{mode}]",
+                    _panel_label(label, mode, args),
                     colour_shared(1.0 / np.maximum(aligned, 1e-6), lo, hi),
                 ))
             for extra_label, extra_dir in extra_panels:
