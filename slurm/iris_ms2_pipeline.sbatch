@@ -57,6 +57,18 @@ SEL_PROMPT="${SEL_PROMPT:?必须指定 SEL_PROMPT（empty 或 correct，须与�
 TEST_PROMPTS="${TEST_PROMPTS:-empty}"
 ROUTE="${ROUTE:-b_thermal_unet}"
 VAL_STRIDE="${VAL_STRIDE:-4}"
+# 2026-08-31：Marigold 和 E2E-FT 用 truncnorm 训练，输出是归一化**深度**；Lotus 两条
+# 用 trunc_disparity，输出是归一化**视差**。把前者当后者读，仿射拟合救不回来 ——
+# 那天 marigold nocap 的 val 是 AbsRel 0.265 / δ1 0.504，看着像模型烂，其实是卷子错。
+# 评估器的对应档是 --align-mode ssi，但它会给结果文件改名，所以后缀必须一路跟下去：
+# 跳过守卫、选点、配对、汇总四处都写死过 eval_eval.json。
+ALIGN_MODE="${ALIGN_MODE:-ssi_disparity}"
+case "$ALIGN_MODE" in
+  ssi_disparity) EVAL_SUFFIX="" ;;
+  ssi)           EVAL_SUFFIX="_affine_invariant_depth_space" ;;
+  *) echo "!! ALIGN_MODE 只支持 ssi_disparity | ssi。median 和 none 的文件名还多一段"
+     echo "!! metric_source，本脚本没接那条路，别在这里凑合。"; exit 1 ;;
+esac
 
 RUN_DIR="$IRIS_RUNS/iris_ms2/$RUN"
 CONV_DIR="$RUN_DIR/converted"
@@ -96,13 +108,14 @@ echo "test 臂       = $TEST_PROMPTS"
 # 在热像 caption 还是 RGB caption 下选出来的。
 echo "val manifest = ${VAL_MANIFEST:-<脚本默认：RGB caption>}"
 echo "test manifest= $TEST_MANIFEST"
+echo "对齐          = $ALIGN_MODE   (须与训练的 norm_type 一致：trunc_disparity→ssi_disparity，truncnorm→ssi)"
 echo "指纹          = val:$VAL_FP  test:$TEST_FP  (进入结果目录名)"
 echo "============"
 
 run_eval() {  # tag ckpt prompt stride [manifest]
   local tag="$1" ckpt="$2" prompt="$3" stride="$4" manifest="${5:-}"
   local out="$IRIS_RUNS/eval/$tag"
-  if [[ -f "$out/eval_eval.json" ]]; then
+  if [[ -f "$out/eval_eval${EVAL_SUFFIX}.json" ]]; then
     echo "[skip] $tag 已有结果"
     return 0
   fi
@@ -111,6 +124,7 @@ run_eval() {  # tag ckpt prompt stride [manifest]
               --train-manifest "$TRAIN_MANIFEST" --eval-checkpoint "$ckpt"
               --val-stride "$stride" --val-caption-mode "$prompt"
               --num-inference-steps "${STEPS_INFER:-1}"
+              --align-mode "$ALIGN_MODE"
               --condition-latent mode --local-files-only)
   [[ -n "$manifest" ]] && args+=(--val-manifest "$manifest")
   [[ -n "${LOTUS_MODEL:-}" ]] && args+=(--lotus-model-path "$LOTUS_MODEL")
@@ -140,13 +154,13 @@ for s in $STEPS; do
 done
 
 # --- 3. 按 val 选最佳（机械的一步，不需要人） -------------------------------
-BEST=$(python - "$IRIS_RUNS/eval" "$VAL_PREFIX" $STEPS <<'PY'
+BEST=$(python - "$IRIS_RUNS/eval" "$VAL_PREFIX" "$EVAL_SUFFIX" $STEPS <<'PY'
 import json, sys
-root, prefix, steps = sys.argv[1], sys.argv[2], [int(x) for x in sys.argv[3:]]
+root, prefix, sfx, steps = sys.argv[1], sys.argv[2], sys.argv[3], [int(x) for x in sys.argv[4:]]
 scored = {}
 for s in steps:
     try:
-        scored[s] = json.load(open(f'{root}/{prefix}_s{s}/eval_eval.json'))['abs_rel']
+        scored[s] = json.load(open(f'{root}/{prefix}_s{s}/eval_eval{sfx}.json'))['abs_rel']
     except Exception:
         pass
 if not scored:
@@ -180,18 +194,18 @@ for ((i = 0; i < ${#ARMS[@]}; i++)); do
     echo
     echo "=== 逐帧配对：$b − $a ==="
     python tools/compare_route_evals.py \
-      "$IRIS_RUNS/eval/${TEST_PREFIX}_s${BEST}_${a}/eval_eval_per_sample.csv" \
-      "$IRIS_RUNS/eval/${TEST_PREFIX}_s${BEST}_${b}/eval_eval_per_sample.csv"
+      "$IRIS_RUNS/eval/${TEST_PREFIX}_s${BEST}_${a}/eval_eval${EVAL_SUFFIX}_per_sample.csv" \
+      "$IRIS_RUNS/eval/${TEST_PREFIX}_s${BEST}_${b}/eval_eval${EVAL_SUFFIX}_per_sample.csv"
   done
 done
 
 # --- 6. 汇总 ---------------------------------------------------------------
 echo "=== 最终结果（test $(basename "$TEST_MANIFEST") / $(wc -l < "$TEST_MANIFEST") 帧，官方协议，condition_latent=mode）==="
-python - "$IRIS_RUNS/eval" "$TEST_PREFIX" "$BEST" $TEST_PROMPTS <<'PY'
+python - "$IRIS_RUNS/eval" "$TEST_PREFIX" "$BEST" "$EVAL_SUFFIX" $TEST_PROMPTS <<'PY'
 import json, sys
-root, prefix, best, prompts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+root, prefix, best, sfx, prompts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
 for p in prompts:
-    m = json.load(open(f'{root}/{prefix}_s{best}_{p}/eval_eval.json'))
+    m = json.load(open(f'{root}/{prefix}_s{best}_{p}/eval_eval{sfx}.json'))
     print(f"  {prefix} / {p:<8} abs_rel={m['abs_rel']:.5f}  rmse={m['rmse']:.3f}  a1={m['a1']:.4f}")
 # 这里原本并排打印 b 线 0.08843 的对照。那两个数是在另一条 test 序列上测的，
 # 换卷子之后并排就是串卷 —— 删掉，对照留给结果文档去做。
