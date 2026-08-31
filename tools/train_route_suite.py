@@ -1174,6 +1174,20 @@ class RouteModel:
                 "single-step predictor, there is no denoising trajectory to unroll."
             )
         if steps == 1:
+            # DDIM's step() reads num_inference_steps, and only set_timesteps
+            # assigns it. Lotus never reaches step() -- it declares
+            # prediction_type='sample', so the clean latent is the output --
+            # and Marigold runs 50 steps, which takes the branch below. E2E-FT
+            # is the only one that is both single-step and v-parameterised, so
+            # it is the only one that reaches step() with the scheduler
+            # uninitialised, and it raised on its first frame.
+            #
+            # Setting it to 1 also gives step() the right previous timestep:
+            # 999 - 1000//1 = -1, which resolves to final_alpha_cumprod, so a
+            # single step returns pred_original_sample. The timesteps list is
+            # still ours, so the terminal 999 does not depend on whichever
+            # spacing the checkpoint's scheduler config declares.
+            self.lotus.scheduler.set_timesteps(1, device=self.device)
             timesteps = [torch.full((1,), self.args.timestep, device=self.device, dtype=torch.long)]
         else:
             # Evaluation only -- validate_args refuses this during training.
