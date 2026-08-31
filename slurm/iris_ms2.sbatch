@@ -121,6 +121,13 @@ if [[ "${SMOKE:-0}" == "1" ]]; then
   # 2026-08-27 在 metric_adapt.sbatch 上正是这么栽的。别的长度用 SMOKE_STEPS。
   MAX_TRAIN_STEPS="${SMOKE_STEPS:-20}"
   CKPT_STEP=20
+  # And never resume. The smoke tag is smoke_iris_ms2_<backbone> unless
+  # RUN_TAG says otherwise, so the second smoke of a backbone lands on the
+  # first one's directory, finds its checkpoint-20, and exits having trained
+  # nothing -- reporting COMPLETED, with the previous run's learning rate
+  # restored into the progress bar. 2026-08-31 lost a round to exactly that
+  # while checking whether a new scheduler was wired up.
+  RESUME_FROM=""
   echo "[smoke] 强制 MAX_TRAIN_STEPS=$MAX_TRAIN_STEPS（忽略环境里可能残留的值）"
 fi
 
@@ -133,6 +140,8 @@ export PREDICTION_TYPE="${PREDICTION_TYPE:-sample}"
 export LR_SCHEDULER="${LR_SCHEDULER:-constant}"
 export LR_WARMUP="${LR_WARMUP:-0}"
 export LR_TOTAL_ITER="${LR_TOTAL_ITER:-0}"
+# Plain - not :- , so the smoke block's empty value survives.
+export RESUME_FROM="${RESUME_FROM-latest}"
 export OUTPUT_DIR="$IRIS_RUNS/iris_ms2/$TAG"
 export MS2_MANIFEST="${TRAIN_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_train_day2seq_clip75_20260728.jsonl}"
 export MS2_ROOT="$IRIS_MS2_ROOT"
@@ -172,6 +181,7 @@ echo "sky rule  = $([[ -n "$SKY_MASK_DIR" ]] && echo "on ($SKY_MASK_DIR)" || ech
 echo "manifest  = $MS2_MANIFEST"
 echo "pseudo gt = $PSEUDO_GT_DIR"
 echo "steps     = $MAX_TRAIN_STEPS (ckpt every $CKPT_STEP)"
+echo "resume    = ${RESUME_FROM:-<off>}"
 echo "lr        = 3e-05 / $LR_SCHEDULER (warmup $LR_WARMUP, total_iter $LR_TOTAL_ITER)"
 echo "output    = $OUTPUT_DIR"
 echo "----------------"

@@ -86,5 +86,5 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   --validation_steps=$CKPT_STEP \
   --checkpointing_steps=$CKPT_STEP \
   --output_dir=$OUTPUT_DIR \
-  --resume_from_checkpoint="latest" \
+  --resume_from_checkpoint="${RESUME_FROM-latest}" \
   --use_8bit_adam
