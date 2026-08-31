@@ -71,7 +71,25 @@ def rate_seconds_per_frame():
     return best, log.name
 
 
+def already_queued(condition):
+    """Names of this condition's arms that squeue already knows about.
+
+    Without this, running the script twice submits the eight jobs twice --
+    likely, because whether a nohup process survives logout depends on the
+    login node's logind policy, so the honest advice is "check, and re-run if
+    it died", and that advice is only safe if re-running is safe.
+    """
+    out = subprocess.run(["squeue", "-u", os.environ["USER"], "-h", "-o", "%j"],
+                         capture_output=True, text=True)
+    live = set(out.stdout.split())
+    return [f"{name}_{condition}" for name, *_ in ARMS if f"{name}_{condition}" in live]
+
+
 def submit(condition, manifest, frames, seconds_per_frame):
+    clash = already_queued(condition)
+    if clash:
+        print(f"  {condition}: 跳过，{' '.join(clash)} 已在队列里")
+        return
     # 30% headroom over the measured rate, then a whole hour for load and the
     # short val pass. Slurm cannot raise a running job's limit, so the cost of
     # being low is the whole pass; the cost of being high is queue position.
