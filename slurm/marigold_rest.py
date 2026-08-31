@@ -48,7 +48,13 @@ def newest(pattern):
 
 def val_abs_rel():
     """The val AbsRel of whichever Marigold arm has written one."""
-    for path in RUNS.glob("eval/marigold_full8_*_val_*_s20000/eval_eval*.json"):
+    # Only the file this alignment writes. eval_eval*.json also matches the
+    # eval_eval.json left behind by the cancelled ssi_disparity runs, whose
+    # AbsRel is 0.265 -- the very number this gate exists to catch. Reading it
+    # here makes the gate fire on a result from an exam we already abandoned.
+    for path in RUNS.glob(
+        "eval/marigold_full8_*_val_*_s20000/eval_eval_affine_invariant_depth_space.json"
+    ):
         try:
             return path, json.loads(path.read_text())["abs_rel"]
         except Exception:
