@@ -129,6 +129,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--anythermal-model-path", default="theairlabcmu/AnyThermal")
 
     parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument(
+        "--max-updates", type=int, default=None,
+        help=(
+            "Stop after this many optimizer updates, and span the learning-rate "
+            "schedule over exactly that many. Without it the run is epoch-driven. "
+            "This exists to hold the step budget fixed while something else about "
+            "the run changes: an epoch-driven run on four times the data is four "
+            "times the updates, which is a second difference nobody asked for."
+        ),
+    )
     parser.add_argument("--micro-batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--unet-learning-rate", type=float, default=1e-6)
@@ -659,6 +669,13 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--gt-loss-weight must be positive; pure GT is the whole objective.")
     if args.smoke_updates is not None and args.overfit_steps is not None:
         raise ValueError("Choose either --smoke-updates or --overfit-steps, not both.")
+    if args.max_updates is not None:
+        if args.max_updates <= 0:
+            raise ValueError("--max-updates must be positive.")
+        if args.smoke_updates is not None or args.overfit_steps is not None:
+            # The gate flags mark a run as throwaway: no resume state, no
+            # checkpoints. A budgeted run is a real one.
+            raise ValueError("--max-updates does not combine with the gate flags.")
     if args.smoke_updates is not None and "smoke" not in args.output_dir.name:
         raise ValueError("--smoke-updates requires an output dir name containing 'smoke'.")
     if args.overfit_steps is not None and "overfit" not in args.output_dir.name:
@@ -1983,6 +2000,20 @@ def main() -> None:
 
     updates_per_epoch = math.ceil(len(train_rows) / args.gradient_accumulation_steps)
     total_updates = updates_per_epoch * args.epochs
+    if args.max_updates is not None:
+        if total_updates < args.max_updates:
+            raise SystemExit(
+                f"--max-updates {args.max_updates} is more than --epochs {args.epochs} "
+                f"can supply: {updates_per_epoch} updates per epoch, {total_updates} in "
+                "all. Raise --epochs. The run stops on the update budget either way, "
+                "so the epoch count only has to be large enough to reach it."
+            )
+        # The schedule spans the budget, not the epochs. Left at the epoch total it
+        # would decay the rate over a horizon the run never reaches -- 20k updates
+        # inside a 383k-update schedule is a warmup followed by what is effectively
+        # a constant rate, which is not the recipe it is meant to reproduce, and
+        # nothing would have failed.
+        total_updates = args.max_updates
     if args.overfit_steps is not None:
         total_updates = args.overfit_steps
     if args.smoke_updates is not None:
@@ -2312,6 +2343,9 @@ def main() -> None:
                 if args.overfit_steps is not None and update >= args.overfit_steps:
                     stop = True
                     break
+                if args.max_updates is not None and update >= args.max_updates:
+                    stop = True
+                    break
 
         epoch_record = {
             "epoch": epoch + 1,
@@ -2363,6 +2397,16 @@ def main() -> None:
         if epoch + 1 in snapshot_epochs:
             save_weights(
                 output / f"epoch{epoch + 1:02d}_weights.pt",
+                model, args, epoch + 1, manifest_hash, epoch_record.get("val"),
+            )
+
+        if stop and args.max_updates is not None:
+            # An update budget runs out mid-epoch, where the epoch-keyed snapshot
+            # list may not fire, and the file is named by update rather than by
+            # epoch because the epoch it stopped inside is not the thing that
+            # identifies it.
+            save_weights(
+                output / f"update{update}_weights.pt",
                 model, args, epoch + 1, manifest_hash, epoch_record.get("val"),
             )
 

@@ -34,6 +34,12 @@
 #   SMOKE=1          5 个 update 即退出
 #   OVERFIT=1        300 步 / 32 样本自检
 #   EPOCHS           默认 20
+#   SEED             不设＝训练器默认 20260703
+#   GRAD_ACCUM       梯度累积步数，不设＝训练器默认 4。micro-batch 固定为 1
+#                    （训练器拒绝其他值），所以有效 batch 就等于这个数。
+#   MAX_UPDATES      跑满这么多次优化更新就停，学习率调度也按这个长度铺开。
+#                    不设＝按 epoch 跑（历史行为）。EPOCHS 必须大到够跑满，
+#                    否则训练器直接报错而不是少跑。
 #   SNAPSHOT_EPOCHS  默认 1,2,3,5,10,15（含 e3 —— 本地 caption 臂最好点落在 e3）
 #   TRAIN_MANIFEST   默认 clip75_20260728（≤75 token，逐帧同序同路径）
 #   VAL_MANIFEST     不设则用脚本自带默认
@@ -137,6 +143,11 @@ ARGS=(
 # 不设＝Lotus-G，与改动前一致。
 [[ -n "${LOTUS_MODEL:-}" ]] && ARGS+=(--lotus-model-path "$LOTUS_MODEL")
 [[ -n "${BACKBONE:-}" ]]    && ARGS+=(--backbone "$BACKBONE")
+# Both default inside the trainer (seed 20260703, accumulation 4). They are
+# exposed because a run meant to sit beside another has to match its seed and
+# its effective batch, and neither was reachable from here.
+[[ -n "${SEED:-}" ]]        && ARGS+=(--seed "$SEED")
+[[ -n "${GRAD_ACCUM:-}" ]]  && ARGS+=(--gradient-accumulation-steps "$GRAD_ACCUM")
 
 # MiDaS 的多尺度梯度匹配项。不设＝关闭，与既有全部结果同口径。
 # 逐点 L1 让"边界抹平"比"锐利但错位"便宜（合成阶跃上 0.0385 vs 0.0729），
@@ -230,6 +241,10 @@ elif [[ "${OVERFIT:-0}" == "1" ]]; then
   ARGS+=(--overfit-steps "${OVERFIT_STEPS:-300}" --overfit-samples "${OVERFIT_SAMPLES:-32}" --skip-val)
 else
   ARGS+=(--epochs "$EPOCHS" --snapshot-epochs "${SNAPSHOT_EPOCHS:-1,2,3,5,10,15}")
+  # A fixed update budget, for holding the step count constant while something
+  # else about the run changes. EPOCHS then only has to be large enough to
+  # reach it; the trainer refuses the combination if it is not.
+  [[ -n "${MAX_UPDATES:-}" ]] && ARGS+=(--max-updates "$MAX_UPDATES")
   if [[ "$RESUMING" == "1" ]]; then
     echo "=== 发现 $OUT/latest.pt，续跑 ==="
     ARGS+=(--resume "$OUT/latest.pt")
