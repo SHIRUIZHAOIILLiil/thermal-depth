@@ -62,6 +62,13 @@ def parse_args() -> argparse.Namespace:
              "which is why Marigold clips to quantiles instead.",
     )
     parser.add_argument("--truncnorm-min", type=float, default=0.02)
+    parser.add_argument(
+        "--no-overwrite", action="store_true",
+        help="Encode the pure calibrated pseudo map instead of the completed one. "
+             "The control for the seam split: that map is smooth everywhere, so a "
+             "lidar-vs-pseudo ratio which survives it is region difficulty rather "
+             "than the overwrite.",
+    )
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--stride", type=int, default=0, help="0 = spread --limit evenly over the split.")
     parser.add_argument("--device", default="cuda")
@@ -187,7 +194,8 @@ def main() -> int:
 
     if not records:
         raise SystemExit("No frame produced a measurement")
-    summary = {"frames": len(records), "lotus_model_path": args.lotus_model_path,
+    summary = {"frames": len(records), "no_overwrite": bool(args.no_overwrite),
+               "lotus_model_path": args.lotus_model_path,
                "checkpoint_convention": "disparity", "by_norm": {}}
     summary["valid_fraction_p50"] = float(np.median([r["valid_fraction"] for r in records]))
     summary["seam_magnitude_p50"] = float(np.median([r["seam_magnitude"] for r in records]))
