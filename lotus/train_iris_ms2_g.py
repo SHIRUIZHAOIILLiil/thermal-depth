@@ -414,6 +414,66 @@ def decode_metric_inverse_depth(metric_vae, x0_latent, norm):
     return y, decoded_to_inverse(y, norm)
 
 
+def image_depth_l1_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds):
+    """Masked L1 between predicted and measured depth, in metres.
+
+        L = mean_{i in M} |D_hat_i - D_GT_i|,     M = the real lidar mask
+
+    The latent objective cannot see metres. Its target is normalised by this
+    frame's own disparity quantiles, so an error in latent space carries no
+    fixed cost in metres, and the cost it does carry is wildly uneven: under the
+    training split's bounds a normalised error of 0.01 moves a 5 m pixel by 2 cm
+    and a 50 m pixel by 2.3 m. RMSE and the far-field delta1 are decided almost
+    entirely by the pixels that term weights least.
+
+    This scores metres, so the gradient lands where those metrics are decided.
+    It reads the *real* returns rather than the completed map: 16.3% of returns
+    lie beyond 30 m and the completed map agrees with them to about 6% there
+    (tools/audit_pseudo_by_depth.py), which is small, systematic, and not what a
+    term whose whole job is metres should be anchored to.
+
+    L1 rather than L2 on purpose. A decoder output that lands outside [0, 1]
+    can put a pixel at an absurd depth, and under L1 that costs a large loss
+    value but a gradient of the same magnitude as any other pixel. L2 would let
+    one such pixel drive the step.
+    """
+    device_type = x0_latent.device.type
+    # Same reasoning as decode_metric_inverse_depth: the surrounding step runs
+    # under accelerate's autocast, and decoding inside it would put this back in
+    # fp16, which underflows the gradient through the decoder to exactly zero.
+    with torch.autocast(device_type=device_type, enabled=False):
+        decoded = metric_vae.decode(
+            x0_latent.float() / metric_vae.config.scaling_factor, return_dict=False
+        )[0]
+    y = decoded.float().mean(dim=1, keepdim=True) / 2.0 + 0.5
+    lo = norm_bounds[:, 0].view(-1, 1, 1, 1).float()
+    hi = norm_bounds[:, 1].view(-1, 1, 1, 1).float()
+    q_hat = lo + y * (hi - lo + 1e-5)
+    # lo is a 2% quantile of 1/depth over pixels inside [d_min, d_max], so it is
+    # positive; only a decoder output below -1 can drive q_hat to zero. The floor
+    # is far below 1/d_max so it never touches a prediction that is merely far.
+    q_hat = q_hat.clamp(min=1e-4)
+    d_hat = 1.0 / q_hat
+
+    finite_bounds = torch.isfinite(lo) & torch.isfinite(hi)
+    mask = (gt_valid > 0.5) & finite_bounds
+    count = int(mask.sum())
+    stats = {
+        "d_hat_min": float(d_hat.detach().min()),
+        "d_hat_max": float(d_hat.detach().max()),
+        "lidar_pixels": count,
+        "frames_without_bounds": int((~finite_bounds).sum()),
+    }
+    if not count:
+        return x0_latent.new_zeros(()), 0, stats
+    loss = (d_hat[mask] - gt_depth[mask]).abs().mean()
+    with torch.no_grad():
+        stats["image_abs_rel"] = float(
+            ((d_hat[mask] - gt_depth[mask]).abs() / gt_depth[mask].clamp(min=1e-3)).mean()
+        )
+    return loss, count, stats
+
+
 def metric_inverse_depth_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm):
     """Masked L1 between predicted and measured inverse depth, in 1/m.
 
@@ -654,6 +714,31 @@ def parse_args():
             "Takes a train_route_suite.py payload (.pt with state_dicts.unet), which is "
             "what tools/convert_iris_ms2_checkpoint.py writes, or a diffusers unet/ "
             "directory. The rest of the pipeline still comes from --pretrained_model_name_or_path."
+        ),
+    )
+    parser.add_argument(
+        "--lambda_image",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight on a masked L1 in metres between the decoded prediction and the "
+            "real lidar, using this frame's own normalisation bounds to undo the "
+            "per-frame scaling. Zero -- the default -- leaves the objective exactly "
+            "as it was. Unlike --lambda_metric this does not need, and does not "
+            "impose, a global normalisation: it is an auxiliary term on the ordinary "
+            "recipe, meant for the far field, where a latent error is worth a hundred "
+            "times more metres than the same error up close."
+        ),
+    )
+    parser.add_argument(
+        "--pure_pseudo_target",
+        action="store_true",
+        help=(
+            "Build the latent target from the calibrated pseudo depth alone, without "
+            "stamping the measured pixels back over it. The latent objective then "
+            "learns one continuous surface, and the real returns are left to whichever "
+            "term is meant to read them -- which is the only place they can be told "
+            "apart, since a completed map cannot say which of its pixels were measured."
         ),
     )
     parser.add_argument(
@@ -946,6 +1031,15 @@ def parse_args():
             raise ValueError("--metric_norm_json only means anything with --metric_adaptation")
         if args.norm_type == "global_metric_disparity":
             raise ValueError("--norm_type global_metric_disparity requires --metric_adaptation")
+    if args.lambda_image > 0 and args.norm_type != "trunc_disparity":
+        # The term undoes the per-frame normalisation with the two bounds the
+        # dataset recorded, and only the trunc_disparity branch records them.
+        # Under any other norm_type those bounds are NaN and every pixel would
+        # fall out of the mask, so the term would contribute nothing and say so
+        # only in a diagnostic.
+        raise ValueError(
+            f"--lambda_image needs --norm_type trunc_disparity, got {args.norm_type}"
+        )
         if (args.lambda_dense, args.lambda_recon) != (1.0, 1.0):
             # Outside the metric stage this trainer must stay the recipe that
             # produced every published checkpoint, term for term.
@@ -1286,6 +1380,7 @@ def main():
         use_captions=not args.no_captions,
         metric_norm=metric_norm,
         sky_mask_dir=args.sky_mask_dir,
+        pure_pseudo_target=args.pure_pseudo_target,
     )
     train_dataloader_ms2 = torch.utils.data.DataLoader(
         train_dataset_ms2,
@@ -1352,7 +1447,7 @@ def main():
     # the metric term's does -- and fp16 underflows that backward to exactly zero
     # (see the metric adaptation notes above), so it needs the same fp32 copy.
     metric_vae = None
-    if args.metric_adaptation or args.backbone == "e2eft":
+    if args.metric_adaptation or args.backbone == "e2eft" or args.lambda_image > 0:
         metric_vae = copy.deepcopy(vae).to(device=accelerator.device, dtype=torch.float32)
         metric_vae.encoder = None
         metric_vae.requires_grad_(False)
@@ -1736,6 +1831,17 @@ def main():
                 # At the default weights of 1 and metric adaptation off this is
                 # `anno_loss + rgb_loss`, term for term, as it has always been.
                 loss = args.lambda_dense * anno_loss + args.lambda_recon * rgb_loss
+                image_loss = loss.new_zeros(())
+                image_stats = None
+                if args.lambda_image > 0:
+                    image_loss, _image_px, image_stats = image_depth_l1_loss(
+                        metric_vae,
+                        model_pred[:bsz_per_task],
+                        batch["gt_depth_values"].to(accelerator.device),
+                        batch["gt_valid_values"].to(accelerator.device),
+                        batch["norm_bounds"].to(accelerator.device),
+                    )
+                    loss = loss + args.lambda_image * image_loss
                 metric_loss = loss.new_zeros(())
                 metric_stats = None
                 if args.metric_adaptation:
@@ -1773,6 +1879,14 @@ def main():
                     "SL_A": anno_loss.detach().item(),
                     "SL_R": rgb_loss.detach().item(),
                     "lr": lr_scheduler.get_last_lr()[0]}
+            if args.lambda_image > 0:
+                # SL_I is metres, so it reads much larger than the latent terms;
+                # what matters is that it falls, and that iAbsRel -- the same
+                # prediction scored relatively on the measured pixels -- falls
+                # with it. A falling SL_I beside a flat iAbsRel would mean the
+                # term is buying far-field metres by giving up everything else.
+                logs["SL_I"] = image_loss.detach().item()
+                logs["iAbsRel"] = image_stats.get("image_abs_rel", float("nan"))
             if args.metric_adaptation:
                 # SL_M is the raw term; the run's own gate is that it falls, and
                 # that mAbsRel -- unaligned, on measured pixels -- falls with it.

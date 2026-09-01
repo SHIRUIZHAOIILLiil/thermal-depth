@@ -85,6 +85,7 @@ class MS2ThermalDataset(Dataset):
         use_captions=True,
         metric_norm=None,
         sky_mask_dir=None,
+        pure_pseudo_target=False,
     ):
         """
         Args:
@@ -130,6 +131,7 @@ class MS2ThermalDataset(Dataset):
         self.use_captions = use_captions
         self.metric_norm = metric_norm
         self.sky_mask_dir = Path(sky_mask_dir) if sky_mask_dir else None
+        self.pure_pseudo_target = bool(pure_pseudo_target)
         if self.sky_mask_dir is not None and not self.sky_mask_dir.is_dir():
             raise FileNotFoundError(f"No sky mask directory at {self.sky_mask_dir}")
         # How much of the target the sky rule actually rewrote, accumulated over
@@ -216,7 +218,14 @@ class MS2ThermalDataset(Dataset):
         pseudo = np.load(pseudo_path, allow_pickle=False).astype(np.float32)
         if pseudo.shape != gt.shape:
             raise ValueError(f"{row['id']}: pseudo {pseudo.shape} vs GT {gt.shape}")
-        dense = np.clip(np.where(real, gt, pseudo), self.d_min, self.d_max)
+        # `pure_pseudo_target` leaves the pseudo map alone. The latent objective
+        # then learns from one continuous surface rather than from a smooth map
+        # with a measured value stamped into a quarter of its pixels, and the
+        # real returns are left for whichever term is meant to read them --
+        # which is the only place they can be told apart, since after this line
+        # the completed map cannot say which pixels were measured.
+        dense = np.clip(pseudo if self.pure_pseudo_target else np.where(real, gt, pseudo),
+                        self.d_min, self.d_max)
         if self.sky_mask_dir is not None:
             mask_path = self.sky_mask_dir / f"{row['id']}.png"
             if not mask_path.is_file():
@@ -267,6 +276,13 @@ class MS2ThermalDataset(Dataset):
 
         # --- verbatim from vkitti_dataset.py so every norm_type matches Iris ---
         valid_mask = valid_mask_raw & (depth > 0)
+        # The two constants this frame was normalised by. Normalisation is
+        # otherwise a one-way trip: a loss that wants to score the decoded
+        # prediction in metres has to undo it, and after this block the bounds
+        # are gone. NaN marks a norm_type whose inverse is not this pair, and
+        # the trainer refuses to score in metres under one.
+        norm_lo = float("nan")
+        norm_hi = float("nan")
         if self.norm_type == "instnorm":
             dmin = depth[valid_mask].min()
             dmax = depth[valid_mask].max()
@@ -289,6 +305,7 @@ class MS2ThermalDataset(Dataset):
             disparity_max = torch.quantile(disparity[valid_mask], self.truncnorm_max)
             disparity_norm = ((disparity - disparity_min) / (disparity_max - disparity_min + 1e-5) - 0.5) * 2.0
             depth_norm = disparity_norm
+            norm_lo, norm_hi = float(disparity_min), float(disparity_max)
         elif self.norm_type == "global_metric_disparity":
             # The one branch whose two constants do not come from this frame.
             # Same functional form as trunc_disparity directly above -- the
@@ -306,6 +323,7 @@ class MS2ThermalDataset(Dataset):
         depth_norm = depth_norm.clip(-1, 1)
         depth_norm = depth_norm.repeat(3, 1, 1)  # (3, h, w)
         example["depth_values"] = depth_norm
+        example["norm_bounds"] = torch.tensor([norm_lo, norm_hi], dtype=torch.float32)
 
         example["text_description"] = row["caption"] if self.use_captions else ""
         return example
@@ -404,6 +422,8 @@ def collate_fn_ms2(examples):
     gt_valid_values = torch.stack([example["gt_valid_values"] for example in examples])
     gt_valid_values = gt_valid_values.to(memory_format=torch.contiguous_format).float()
 
+    norm_bounds = torch.stack([example["norm_bounds"] for example in examples]).float()
+
     return {
         "pixel_values": pixel_values,
         "depth_values": depth_values,
@@ -411,6 +431,7 @@ def collate_fn_ms2(examples):
         "sky_mask_values": sky_mask_values,
         "gt_depth_values": gt_depth_values,
         "gt_valid_values": gt_valid_values,
+        "norm_bounds": norm_bounds,
         "image_pathes": image_pathes,
         "depth_pathes": depth_pathes,
         "text_descriptions": text_descriptions,
