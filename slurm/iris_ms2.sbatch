@@ -137,6 +137,9 @@ export NORMTYPE="${NORMTYPE:-trunc_disparity}"
 export PREDICTION_TYPE="${PREDICTION_TYPE:-sample}"
 # Lotus ships a constant rate; the other two decay it. Defaulted here so the
 # Lotus lines are untouched by this.
+# Both default to the original objective: no flag, and a zero weight.
+export PURE_PSEUDO="${PURE_PSEUDO:-0}"
+export LAMBDA_IMAGE="${LAMBDA_IMAGE:-0}"
 export LR_SCHEDULER="${LR_SCHEDULER:-constant}"
 export LR_WARMUP="${LR_WARMUP:-0}"
 export LR_TOTAL_ITER="${LR_TOTAL_ITER:-0}"
@@ -181,6 +184,7 @@ echo "sky rule  = $([[ -n "$SKY_MASK_DIR" ]] && echo "on ($SKY_MASK_DIR)" || ech
 echo "manifest  = $MS2_MANIFEST"
 echo "pseudo gt = $PSEUDO_GT_DIR"
 echo "steps     = $MAX_TRAIN_STEPS (ckpt every $CKPT_STEP)"
+echo "target    = $([[ "$PURE_PSEUDO" == "1" ]] && echo pure-pseudo || echo completed-with-lidar)   lambda_image=$LAMBDA_IMAGE"
 echo "resume    = ${RESUME_FROM:-<off>}"
 echo "lr        = 3e-05 / $LR_SCHEDULER (warmup $LR_WARMUP, total_iter $LR_TOTAL_ITER)"
 echo "output    = $OUTPUT_DIR"

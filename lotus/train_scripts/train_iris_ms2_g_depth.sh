@@ -58,6 +58,10 @@ SKY_FLAG=""
 
 # g（默认）与改动前逐字等价；d 走 Lotus 的 direct 变体，conv_in 保持 4 通道。
 BACKBONE_FLAG="--backbone=${BACKBONE:-g}"
+# Empty unless asked for, so the command line stays byte-identical to the
+# original recipe whenever it is off.
+PURE_PSEUDO_FLAG=""
+[[ "${PURE_PSEUDO:-0}" == "1" ]] && PURE_PSEUDO_FLAG="--pure_pseudo_target"
 
 accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision="fp16" \
   --main_process_port="${MAIN_PORT:-13224}" \
@@ -71,6 +75,8 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   $BACKBONE_FLAG \
   --random_flip \
   --norm_type=$NORMTYPE \
+  $PURE_PSEUDO_FLAG \
+  --lambda_image="${LAMBDA_IMAGE:-0}" \
   --prediction_type=$PREDICTION_TYPE \
   --dataloader_num_workers=0 \
   --train_batch_size=$BATCH_SIZE \
