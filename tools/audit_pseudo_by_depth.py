@@ -64,6 +64,11 @@ def main() -> int:
     rel_sum = np.zeros(bins)
     frames = 0
     total_pixels = 0
+    # The teacher's own score. Every pixel of the latent target that was not
+    # measured is this predictor's opinion, so whatever error it carries is the
+    # floor a model trained to imitate it can reach. Per frame, like every other
+    # number in this project, then averaged.
+    teacher = {"abs_rel": [], "rmse": [], "delta1": []}
 
     for row in rows:
         pseudo_path = args.pseudo_dir / f"{row['id']}.npy"
@@ -79,6 +84,13 @@ def main() -> int:
         frames += 1
         total_pixels += gt.size
 
+        p = np.clip(pseudo[valid], args.min_depth, args.max_depth)
+        g = gt[valid]
+        teacher["abs_rel"].append(float(np.mean(np.abs(p - g) / g)))
+        teacher["rmse"].append(float(np.sqrt(np.mean((p - g) ** 2))))
+        ratio = np.maximum(p / g, g / p)
+        teacher["delta1"].append(float(np.mean(ratio < 1.25)))
+
         index = np.digitize(gt[valid], BIN_EDGES) - 1
         rel = np.abs(gt[valid] - pseudo[valid]) / np.maximum(gt[valid], 1e-6)
         for b in range(bins):
@@ -92,7 +104,14 @@ def main() -> int:
         raise SystemExit("no frame produced a measurement")
 
     print(f"[frames] {frames}")
-    print(f"[density] {counts.sum() / max(1, total_pixels):.1%} of all pixels carry a return\n")
+    print(f"[density] {counts.sum() / max(1, total_pixels):.1%} of all pixels carry a return")
+    print(f"\n[teacher] the calibrated pseudo depth, scored against the returns it did not "
+          f"replace being irrelevant -- this is what the latent objective imitates:")
+    print(f"          AbsRel {100 * np.mean(teacher['abs_rel']):.2f}   "
+          f"RMSE {np.mean(teacher['rmse']):.3f} m   "
+          f"delta1 {100 * np.mean(teacher['delta1']):.2f}")
+    print("          A model trained to reproduce this map cannot score better than it does,")
+    print("          however well the U-Net learns. Compare against the model's own row.\n")
     header = f"{'depth bin (m)':>16s}{'returns':>12s}{'share':>9s}{'per frame':>12s}{'|gt-pseudo|/gt':>17s}"
     print(header)
     print("-" * len(header))
