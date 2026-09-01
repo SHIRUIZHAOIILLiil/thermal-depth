@@ -115,7 +115,18 @@ def main() -> int:
 
         # The target the latent objective would encode: lidar where it spoke,
         # completed pseudo depth everywhere else.
-        dense = np.clip(np.where(valid, gt, pseudo), args.min_depth, args.max_depth)
+        #
+        # --no-overwrite is the control for the seam story. The measured pixels
+        # reconstruct worse than the filled ones, but they are also not spread
+        # evenly: returns concentrate on the ground and on near objects, where
+        # depth gradients are steep, while the fill dominates sky and far
+        # buildings, which are smooth. A VAE reconstructs smooth regions better
+        # regardless of any seam. Encoding the pure pseudo map and splitting by
+        # the same mask separates the two: the map is smooth everywhere, so a
+        # ratio that survives is region difficulty and a ratio that collapses
+        # was the overwrite.
+        dense = np.clip(pseudo if args.no_overwrite else np.where(valid, gt, pseudo),
+                        args.min_depth, args.max_depth)
         gt_disparity = np.zeros_like(gt)
         gt_disparity[valid] = 1.0 / gt[valid]
 
