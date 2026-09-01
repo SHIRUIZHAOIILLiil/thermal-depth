@@ -919,7 +919,16 @@ def parse_args():
     if args.metric_adaptation:
         if not args.metric_norm_json:
             raise ValueError("--metric_adaptation needs --metric_norm_json")
-        if args.norm_type not in ("trunc_disparity", "global_metric_disparity"):
+        # The incoming value only records which convention the starting
+        # checkpoint was trained under; the target this stage builds is
+        # overwritten to global_metric_disparity two lines below, whatever it
+        # was. truncnorm is admitted so Marigold and E2E-FT can reach the main
+        # table: all four backbones then adapt to the same global inverse-depth
+        # target, which is what makes those rows one comparison rather than four.
+        # Marigold and E2E-FT have to change convention to get there, from depth
+        # to inverse depth, so watch mAbsRel actually fall before spending a run.
+        if args.norm_type not in ("trunc_disparity", "truncnorm",
+                                  "global_metric_disparity"):
             raise ValueError(
                 f"--metric_adaptation cannot run with --norm_type {args.norm_type}: the "
                 "target has to be the globally normalised one."

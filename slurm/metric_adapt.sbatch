@@ -58,7 +58,17 @@ BACKBONE="${BACKBONE:-g}"
 case "$BACKBONE" in
   g) MODEL_NAME="jingheya/lotus-depth-g-v2-1-disparity" ;;
   d) MODEL_NAME="jingheya/lotus-depth-d-v2-0-disparity" ;;
-  *) echo "!! BACKBONE 只能是 g 或 d，收到 '$BACKBONE'"; exit 1 ;;
+  # Marigold and E2E-FT carry a v-objective and were trained under truncnorm.
+  # Both must travel with the backbone: without PREDICTION_TYPE the launcher
+  # defaults to sample, and a v-parameterised model would be adapted against
+  # the wrong quantity with nothing failing.
+  marigold) MODEL_NAME="prs-eth/marigold-v1-0"
+            NORMTYPE="${NORMTYPE:-truncnorm}"
+            PREDICTION_TYPE="${PREDICTION_TYPE:-v_prediction}" ;;
+  e2eft) MODEL_NAME="GonzaloMG/stable-diffusion-e2e-ft-depth"
+         NORMTYPE="${NORMTYPE:-truncnorm}"
+         PREDICTION_TYPE="${PREDICTION_TYPE:-v_prediction}" ;;
+  *) echo "!! BACKBONE 只能是 g / d / marigold / e2eft，收到 '$BACKBONE'"; exit 1 ;;
 esac
 HF_REPO_DIR="$HF_HOME/hub/models--${MODEL_NAME//\//--}"
 [[ -d "$HF_REPO_DIR" ]] || { echo "!! $MODEL_NAME 不在 HF 缓存里；先用 CPU 分区预取"; exit 1; }
@@ -96,6 +106,8 @@ fi
 
 export MODEL_NAME
 export BACKBONE
+export NORMTYPE="${NORMTYPE:-trunc_disparity}"
+export PREDICTION_TYPE="${PREDICTION_TYPE:-sample}"
 export OUTPUT_DIR="$IRIS_RUNS/iris_ms2/$TAG"
 export MS2_MANIFEST="$TRAIN_MANIFEST"
 export MS2_ROOT="$IRIS_MS2_ROOT"
@@ -127,6 +139,7 @@ echo "manifest  = $MS2_MANIFEST"
 echo "pseudo gt = $PSEUDO_GT_DIR"
 echo "loss      = ${LAMBDA_METRIC} * L_metric + ${LAMBDA_DENSE} * L_dense + ${LAMBDA_RECON} * L_I"
 echo "lr        = $LEARNING_RATE   steps = $MAX_TRAIN_STEPS (ckpt every $CKPT_STEP)"
+echo "backbone  = $BACKBONE ($MODEL_NAME)  norm=$NORMTYPE  pred=$PREDICTION_TYPE"
 echo "output    = $OUTPUT_DIR"
 echo "----------------"
 
