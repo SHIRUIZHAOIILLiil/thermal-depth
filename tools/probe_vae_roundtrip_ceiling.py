@@ -175,6 +175,16 @@ def main() -> int:
             aligned = np.clip(aligned, args.min_depth, args.max_depth)
 
             record[f"abs_rel__{norm}"] = float(np.mean(np.abs(aligned[valid] - gt[valid]) / gt[valid]))
+            # RMSE and delta1 as well, because AbsRel alone cannot see this
+            # ceiling. The teacher's map scores AbsRel 6.25 with RMSE 1.938 and
+            # delta1 97.72, and the model trained on it reaches AbsRel 6.96 with
+            # RMSE 2.996 and delta1 94.71 -- close on the metric that is relative
+            # and blind to the far field, far off on the two that are not. If the
+            # round trip alone accounts for that, it shows up here and nowhere
+            # else, since every other number in this probe is a relative one.
+            _a, _g = aligned[valid], gt[valid]
+            record[f"rmse__{norm}"] = float(np.sqrt(np.mean((_a - _g) ** 2)))
+            record[f"delta1__{norm}"] = float(np.mean(np.maximum(_a / _g, _g / _a) < 1.25))
             # Fidelity to the map that went in, no alignment involved at all.
             rel = np.abs(round_trip - source) / np.maximum(np.abs(source), 1e-6)
             record[f"round_trip_rel__{norm}"] = float(rel.mean())
@@ -204,9 +214,12 @@ def main() -> int:
         f = np.asarray([r[f"round_trip_rel__{norm}"] for r in records])
         li = np.asarray([r[f"round_trip_rel_lidar__{norm}"] for r in records])
         ps = np.asarray([r[f"round_trip_rel_pseudo__{norm}"] for r in records])
+        r = np.asarray([rec[f"rmse__{norm}"] for rec in records])
+        d1 = np.asarray([rec[f"delta1__{norm}"] for rec in records])
         summary["by_norm"][norm] = {
             "abs_rel_p50": float(np.median(a)), "abs_rel_mean": float(a.mean()),
             "abs_rel_p90": float(np.percentile(a, 90)), "abs_rel_max": float(a.max()),
+            "rmse_mean": float(r.mean()), "delta1_mean": float(d1.mean()),
             "round_trip_rel_p50": float(np.median(f)),
             "round_trip_rel_lidar_p50": float(np.median(li)),
             "round_trip_rel_pseudo_p50": float(np.median(ps)),
@@ -221,6 +234,15 @@ def main() -> int:
         mark = "  <- checkpoint" if norm == "disparity" else ""
         print(f"{norm:16s}{s['abs_rel_p50']:>12.4f}{s['abs_rel_mean']:>10.4f}"
               f"{s['abs_rel_p90']:>10.4f}{s['round_trip_rel_p50']:>16.4f}{mark}")
+    print(f"\n{'normalisation':16s}{'AbsRel':>10s}{'RMSE (m)':>12s}{'delta1':>10s}")
+    for norm, s in summary["by_norm"].items():
+        mark = "  <- checkpoint" if norm == "disparity" else ""
+        print(f"{norm:16s}{100 * s['abs_rel_mean']:>10.2f}{s['rmse_mean']:>12.3f}"
+              f"{100 * s['delta1_mean']:>10.2f}{mark}")
+    print("\nThree metrics, because AbsRel alone cannot see this ceiling. Read the row")
+    print("against the teacher's own score on the same pixels: whatever the round trip")
+    print("gives up here, no U-Net trained through it can get back.")
+
     print(f"\n[seams] {summary['valid_fraction_p50']:.1%} of pixels carry a real return, and "
           f"where they do the return differs from the pseudo depth it replaces by "
           f"{summary['seam_magnitude_p50']:.1%} on average.")
