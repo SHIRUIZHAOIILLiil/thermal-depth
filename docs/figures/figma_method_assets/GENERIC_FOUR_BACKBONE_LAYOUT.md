@@ -45,6 +45,27 @@ disparity-space affine inverts near and far, which cost a full evaluation round
 on 2026-08-31 (AbsRel 0.265 against a true 0.125) and which the method section
 now devotes a paragraph to. The figure must not contradict it.
 
+## The valid mask does not come from the LiDAR
+
+⚠️ The exported figure draws `Thermal-view LiDAR -> Valid Mask M -> 8x8
+All-valid -> M_z`. That arrow does not exist in the code.
+
+`ms2_thermal_dataset.py:313-320` computes the mask from the **completed** map,
+as a range check (`d_min <= D^C < d_max`), and the trainer then adds the sky
+back as valid (`train_iris_ms2_g.py:1558`). The sparse LiDAR mask is carried
+alongside, but `_completed_depth`'s own docstring says the latent objective
+"never needed" it -- only the metric stage reads it, to keep the metric anchor
+on pixels the sensor actually measured.
+
+So on this route the real returns only calibrate the pseudo depth, in panel A's
+`calibrate + overwrite`. They do not mask the loss. Draw `M` as coming from the
+completed target, not from the LiDAR block.
+
+The distinction matters beyond the figure: the sparse-GT route
+(`tools/train_route_suite.py`) is the one whose mask *is* the LiDAR hit
+pattern, because its loss is computed against the returns themselves. Drawing
+this route as if it used the LiDAR mask erases the difference between the two.
+
 ## Auxiliary Lotus branch
 
 Do not place the Lotus reconstruction branch in the main horizontal flow.
