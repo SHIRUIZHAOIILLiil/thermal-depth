@@ -119,7 +119,14 @@ def main() -> int:
         gt_disparity = np.zeros_like(gt)
         gt_disparity[valid] = 1.0 / gt[valid]
 
-        record = {"id": row["id"], "valid_pixels": int(valid.sum())}
+        record = {"id": row["id"], "valid_pixels": int(valid.sum()),
+                  "valid_fraction": float(valid.mean())}
+        # How much the overwrite actually changes, before any VAE is involved.
+        # If the calibrated pseudo already agrees with the returns at the pixels
+        # it overwrites, there is no discontinuity to blame and the rest of this
+        # probe cannot support the seam story either way.
+        record["seam_magnitude"] = float(
+            np.mean(np.abs(gt[valid] - pseudo[valid]) / np.maximum(gt[valid], 1e-6)))
         for norm in args.norm_types:
             if norm == "instnorm":
                 source, lo, hi = dense, float(dense.min()), float(dense.max())
@@ -151,8 +158,17 @@ def main() -> int:
 
             record[f"abs_rel__{norm}"] = float(np.mean(np.abs(aligned[valid] - gt[valid]) / gt[valid]))
             # Fidelity to the map that went in, no alignment involved at all.
-            record[f"round_trip_rel__{norm}"] = float(
-                np.mean(np.abs(round_trip - source) / np.maximum(np.abs(source), 1e-6)))
+            rel = np.abs(round_trip - source) / np.maximum(np.abs(source), 1e-6)
+            record[f"round_trip_rel__{norm}"] = float(rel.mean())
+            # Split by whether the pixel was overwritten with a real return.
+            # The completed map is smooth pseudo depth everywhere except at the
+            # measured pixels, where a raw return replaces it and can disagree
+            # with its neighbours by metres. A VAE trained on natural images does
+            # not keep isolated pixel-level spikes, so if the seams are the
+            # problem it shows up here: the measured pixels reconstruct worse
+            # than the filled ones, and those are the only real pixels there are.
+            record[f"round_trip_rel_lidar__{norm}"] = float(rel[valid].mean())
+            record[f"round_trip_rel_pseudo__{norm}"] = float(rel[~valid].mean())
         records.append(record)
         if index % 50 == 0:
             shown = "  ".join(f"{n} {record[f'abs_rel__{n}']:.4f}" for n in args.norm_types)
@@ -162,13 +178,20 @@ def main() -> int:
         raise SystemExit("No frame produced a measurement")
     summary = {"frames": len(records), "lotus_model_path": args.lotus_model_path,
                "checkpoint_convention": "disparity", "by_norm": {}}
+    summary["valid_fraction_p50"] = float(np.median([r["valid_fraction"] for r in records]))
+    summary["seam_magnitude_p50"] = float(np.median([r["seam_magnitude"] for r in records]))
     for norm in args.norm_types:
         a = np.asarray([r[f"abs_rel__{norm}"] for r in records])
         f = np.asarray([r[f"round_trip_rel__{norm}"] for r in records])
+        li = np.asarray([r[f"round_trip_rel_lidar__{norm}"] for r in records])
+        ps = np.asarray([r[f"round_trip_rel_pseudo__{norm}"] for r in records])
         summary["by_norm"][norm] = {
             "abs_rel_p50": float(np.median(a)), "abs_rel_mean": float(a.mean()),
             "abs_rel_p90": float(np.percentile(a, 90)), "abs_rel_max": float(a.max()),
             "round_trip_rel_p50": float(np.median(f)),
+            "round_trip_rel_lidar_p50": float(np.median(li)),
+            "round_trip_rel_pseudo_p50": float(np.median(ps)),
+            "lidar_over_pseudo": float(np.median(li) / max(np.median(ps), 1e-9)),
         }
     (args.output_dir / "vae_ceiling.json").write_text(
         json.dumps({"summary": summary, "per_frame": records}, indent=2), encoding="utf-8")
@@ -179,6 +202,19 @@ def main() -> int:
         mark = "  <- checkpoint" if norm == "disparity" else ""
         print(f"{norm:16s}{s['abs_rel_p50']:>12.4f}{s['abs_rel_mean']:>10.4f}"
               f"{s['abs_rel_p90']:>10.4f}{s['round_trip_rel_p50']:>16.4f}{mark}")
+    print(f"\n[seams] {summary['valid_fraction_p50']:.1%} of pixels carry a real return, and "
+          f"where they do the return differs from the pseudo depth it replaces by "
+          f"{summary['seam_magnitude_p50']:.1%} on average.")
+    print(f"\n{'normalisation':16s}{'往返@LiDAR':>14s}{'往返@伪深度':>14s}{'比值':>10s}")
+    for norm, s in summary["by_norm"].items():
+        print(f"{norm:16s}{s['round_trip_rel_lidar_p50']:>14.4f}"
+              f"{s['round_trip_rel_pseudo_p50']:>14.4f}{s['lidar_over_pseudo']:>10.2f}")
+    print("\nReading the split: the measured pixels are the only real supervision in the")
+    print("target, and they are the ones the overwrite makes discontinuous. A ratio near")
+    print("1 means the VAE handles them like any other pixel and the seams are not the")
+    print("problem. A ratio well above 1 means the round trip is worst exactly where the")
+    print("signal is true. If seam_magnitude is small, neither reading applies: there was")
+    print("no discontinuity to introduce.")
     print("\nReading it: each row is what the latent objective could reach if the U-Net")
     print("were perfect, because the target is only ever seen through this round trip.")
     print("Compare against 0.0849, which the current pixel-space objective already gets.")
