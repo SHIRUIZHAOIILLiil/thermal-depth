@@ -34,11 +34,6 @@
 #   STEPS_INFER  去噪步数，默认 1。Marigold 是多步生成式，按 Iris 补充材料 B.2
 #                用 50；Lotus 两条都是 1。⚠️ 名字不叫 STEPS —— 那个在本脚本里
 #                已经是 checkpoint 步数了。
-#   DEVICE       cuda（默认）| cpu。cpu 时必须同时给 FROZEN_DTYPE=fp32 —— CPU 上
-#                fp16 卷积没有内核。CPU 评估比 GPU 慢一到两个数量级，只适合用大
-#                VAL_STRIDE 做方向性判断；⚠️ 换了 stride 就换了帧集合，那个数
-#                不能和 stride 4 的数并排放进表里。
-#   FROZEN_DTYPE fp16（默认）| fp32
 #   BACKBONE     g|d，必须与 LOTUS_MODEL 一致。评 Lotus-D 的 checkpoint 时两个
 #                都要给：不给就会拿 conv_in 8 的 G 架构去装 conv_in 4 的 D 权重。
 #                评估器自己有仓库名守卫，会挡住两个错配组合。
@@ -113,7 +108,6 @@ echo "test 臂       = $TEST_PROMPTS"
 # 在热像 caption 还是 RGB caption 下选出来的。
 echo "val manifest = ${VAL_MANIFEST:-<脚本默认：RGB caption>}"
 echo "test manifest= $TEST_MANIFEST"
-echo "设备          = ${DEVICE:-cuda} / ${FROZEN_DTYPE:-fp16}   (CPU 上必须 fp32)"
 echo "对齐          = $ALIGN_MODE   (须与训练的 norm_type 一致：trunc_disparity→ssi_disparity，truncnorm→ssi)"
 echo "指纹          = val:$VAL_FP  test:$TEST_FP  (进入结果目录名)"
 echo "============"
@@ -131,8 +125,6 @@ run_eval() {  # tag ckpt prompt stride [manifest]
               --val-stride "$stride" --val-caption-mode "$prompt"
               --num-inference-steps "${STEPS_INFER:-1}"
               --align-mode "$ALIGN_MODE"
-              --frozen-dtype "${FROZEN_DTYPE:-fp16}"
-              --device "${DEVICE:-cuda}"
               --condition-latent mode --local-files-only)
   [[ -n "$manifest" ]] && args+=(--val-manifest "$manifest")
   [[ -n "${LOTUS_MODEL:-}" ]] && args+=(--lotus-model-path "$LOTUS_MODEL")
