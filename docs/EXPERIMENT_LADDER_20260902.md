@@ -126,6 +126,52 @@ RMSE 1.994，视差归一化 2.996，而 NeWCRF 是 2.430
 
 ---
 
+## 四点五、四条线 × 三条件 × 三指标（2026-09-04，全帧 test，各臂 val 最优点）
+
+| 条件 | 线 | AbsRel | RMSE | δ1 | 选点 | prompt | 对齐 |
+|---|---|---|---|---|---|---|---|
+| day3 | 第0级 cap | 0.0677 | 3.3315 | 0.9428 | e3 | correct | disp |
+| day3 | 第0级 nocap | 0.0676 | 3.3516 | 0.9426 | e3 | empty | disp |
+| day3 | 第1级 cap | 0.0825 | 3.9707 | 0.9156 | e3 | correct | disp |
+| day3 | 第1级 nocap | 0.0842 | 4.0803 | 0.9123 | e7 | empty | disp |
+| day3 | r2_cap | 0.0764 | 3.6583 | 0.9300 | s40000 | correct | disp |
+| day3 | r2_nocap | 0.0761 | 3.6682 | 0.9301 | s40000 | empty | disp |
+| day3 | r4_cap | 0.0850 | 2.7517 | 0.9324 | s36000 | correct | depth |
+| day3 | r4_nocap | 0.0843 | 2.7395 | 0.9328 | s40000 | empty | depth |
+| night3 | 第0级 cap | 0.0736 | 3.1858 | 0.9415 | e3 | correct | disp |
+| night3 | 第0级 nocap | 0.0734 | 3.1953 | 0.9406 | e3 | empty | disp |
+| night3 | 第1级 cap | 0.0868 | 3.6796 | 0.9160 | e3 | correct | disp |
+| night3 | 第1级 nocap | 0.0896 | 3.7657 | 0.9105 | e7 | empty | disp |
+| night3 | r2_cap | 0.0799 | 3.3337 | 0.9336 | s40000 | correct | disp |
+| night3 | r2_nocap | 0.0797 | 3.4004 | 0.9333 | s40000 | empty | disp |
+| night3 | r4_cap | 0.0906 | 2.6323 | 0.9273 | s36000 | correct | depth |
+| night3 | r4_nocap | 0.0883 | 2.5681 | 0.9306 | s40000 | empty | depth |
+| rainy3 | 第0级 cap | 0.0870 | 3.9453 | 0.9105 | e3 | correct | disp |
+| rainy3 | 第0级 nocap | 0.0870 | 3.9683 | 0.9091 | e3 | empty | disp |
+| rainy3 | 第1级 cap | 0.1043 | 4.6246 | 0.8720 | e3 | correct | disp |
+| rainy3 | 第1级 nocap | 0.1087 | 4.8348 | 0.8627 | e7 | empty | disp |
+| rainy3 | r2_cap | 0.0931 | 3.9952 | 0.9027 | s40000 | correct | disp |
+| rainy3 | r2_nocap | 0.0929 | 4.0002 | 0.9030 | s40000 | empty | disp |
+| rainy3 | r4_cap | 0.1050 | 3.2817 | 0.8974 | s36000 | correct | depth |
+| rainy3 | r4_nocap | 0.1052 | 3.2567 | 0.8946 | s40000 | empty | depth |
+
+三条在三个条件上都一致的结论：
+
+1. **第 0 级的 AbsRel 与 δ1 是最好的**，且对 `r2` 是三条件 × 三指标全胜。
+   ⚠️ 两者隔着六处差异，这是事实陈述不是因果归因。
+2. ⭐ **`r4` 的 RMSE 是全场最好**，`r2 → r4` 只换归一化即 −0.91 / −0.70 / −0.71 m，
+   三条件同向，与事先预测的约 1.0 m 吻合。
+3. **第 1 级的开关十八个格全部变差**，已结案。
+
+caption：没有一条线给出三指标一致的胜利。第 0 级与 `r2` 是「AbsRel 微偏 nocap、
+RMSE 与 δ1 微偏 cap」，`r4` 上 nocap 几乎全赢（night 三指标全赢）。
+⚠️ 第 1 级（e3 vs e7）与 `r4`（s36000 vs s40000）两臂选在不同预算上，这两组不可用。
+
+⚠️ 全部是全帧口径，与已发表基线的每 10 帧抽 1 不同批帧；`r4` 的对齐在深度空间，
+其余在视差空间。**跨这两处的任何比较都不成立。**
+
+---
+
 ## 五、待办
 
 1. 第 0 级的 **test**（2 臂 × 3 条件，`best_weights.pt`）
