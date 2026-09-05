@@ -71,8 +71,14 @@ def main() -> int:
         rows = list(csv.DictReader(path.open(encoding="utf-8")))
         if not rows:
             print(f"{path}: empty"); continue
-        have = {r["id"] for r in rows}
-        subset = [r for r in rows if r["id"] in wanted]
+        # Our route evaluator names the column "id"; the official one writes
+        # "sample_id" for the same thing. Detecting it beats a flag nobody
+        # remembers to pass, and a wrong flag would silently score no frames.
+        id_column = "id" if "id" in rows[0] else "sample_id"
+        if id_column not in rows[0]:
+            print(f"{path}: no id column (has {sorted(rows[0])[:6]})"); continue
+        have = {r[id_column] for r in rows}
+        subset = [r for r in rows if r[id_column] in wanted]
         missing = wanted - have
         column = {m: f"{args.prefix}{m}" if args.prefix else m for m in METRICS}
         available = [m for m in METRICS if column[m] in rows[0]]
