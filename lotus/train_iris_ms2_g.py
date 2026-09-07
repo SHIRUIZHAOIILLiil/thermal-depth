@@ -414,7 +414,8 @@ def decode_metric_inverse_depth(metric_vae, x0_latent, norm):
     return y, decoded_to_inverse(y, norm)
 
 
-def image_depth_l1_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds):
+def image_depth_l1_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds,
+                        norm_type="trunc_disparity"):
     """Masked L1 between predicted and measured depth, in metres.
 
         L = mean_{i in M} |D_hat_i - D_GT_i|,     M = the real lidar mask
@@ -448,12 +449,26 @@ def image_depth_l1_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds):
     y = decoded.float().mean(dim=1, keepdim=True) / 2.0 + 0.5
     lo = norm_bounds[:, 0].view(-1, 1, 1, 1).float()
     hi = norm_bounds[:, 1].view(-1, 1, 1, 1).float()
-    q_hat = lo + y * (hi - lo + 1e-5)
-    # lo is a 2% quantile of 1/depth over pixels inside [d_min, d_max], so it is
-    # positive; only a decoder output below -1 can drive q_hat to zero. The floor
-    # is far below 1/d_max so it never touches a prediction that is merely far.
-    q_hat = q_hat.clamp(min=1e-4)
-    d_hat = 1.0 / q_hat
+    # The bounds are quantiles of whatever the normalisation acted on, so the
+    # inverse differs by exactly one reciprocal. Getting this wrong produces a
+    # finite, plausible-looking depth that is not the one the network predicted.
+    if norm_type == "trunc_disparity":
+        q_hat = lo + y * (hi - lo + 1e-5)
+        # lo is a 2% quantile of 1/depth over pixels inside [d_min, d_max], so it
+        # is positive; only a decoder output below -1 can drive q_hat to zero. The
+        # floor is far below 1/d_max so it never touches a prediction that is
+        # merely far.
+        q_hat = q_hat.clamp(min=1e-4)
+        d_hat = 1.0 / q_hat
+    elif norm_type == "truncnorm":
+        # Depth directly, no reciprocal. A decoder output below -1 can put this
+        # at or under zero, so it takes the same floor the dataset clips to.
+        d_hat = (lo + y * (hi - lo + 1e-5)).clamp(min=1e-3)
+    else:
+        raise ValueError(
+            f"image_depth_l1_loss has no inverse for norm_type={norm_type!r}; "
+            "it knows trunc_disparity and truncnorm."
+        )
 
     finite_bounds = torch.isfinite(lo) & torch.isfinite(hi)
     mask = (gt_valid > 0.5) & finite_bounds
@@ -1031,15 +1046,6 @@ def parse_args():
             raise ValueError("--metric_norm_json only means anything with --metric_adaptation")
         if args.norm_type == "global_metric_disparity":
             raise ValueError("--norm_type global_metric_disparity requires --metric_adaptation")
-    if args.lambda_image > 0 and args.norm_type != "trunc_disparity":
-        # The term undoes the per-frame normalisation with the two bounds the
-        # dataset recorded, and only the trunc_disparity branch records them.
-        # Under any other norm_type those bounds are NaN and every pixel would
-        # fall out of the mask, so the term would contribute nothing and say so
-        # only in a diagnostic.
-        raise ValueError(
-            f"--lambda_image needs --norm_type trunc_disparity, got {args.norm_type}"
-        )
         if (args.lambda_dense, args.lambda_recon) != (1.0, 1.0):
             # Outside the metric stage this trainer must stay the recipe that
             # produced every published checkpoint, term for term.
@@ -1047,6 +1053,17 @@ def parse_args():
                 "--lambda_dense / --lambda_recon may only leave 1.0 under "
                 "--metric_adaptation; the base recipe's objective is fixed."
             )
+    if args.lambda_image > 0 and args.norm_type not in ("trunc_disparity", "truncnorm"):
+        # The term undoes the per-frame normalisation with the two bounds the
+        # dataset recorded, and only these two branches record them. Under any
+        # other norm_type those bounds are NaN, every pixel falls out of the
+        # mask, and the term contributes exactly nothing while saying so only in
+        # a diagnostic -- which is the failure that takes a day to notice.
+        raise ValueError(
+            "--lambda_image needs --norm_type trunc_disparity or truncnorm, got "
+            f"{args.norm_type}: those are the two whose bounds the dataset records "
+            "and whose inverse image_depth_l1_loss implements."
+        )
 
     # default to using the same revision for the non-ema model if not specified
     if args.non_ema_revision is None:
@@ -1840,6 +1857,7 @@ def main():
                         batch["gt_depth_values"].to(accelerator.device),
                         batch["gt_valid_values"].to(accelerator.device),
                         batch["norm_bounds"].to(accelerator.device),
+                        norm_type=args.norm_type,
                     )
                     loss = loss + args.lambda_image * image_loss
                 metric_loss = loss.new_zeros(())

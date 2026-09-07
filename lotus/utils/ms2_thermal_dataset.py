@@ -291,6 +291,10 @@ class MS2ThermalDataset(Dataset):
             dmin = torch.quantile(depth[valid_mask], self.truncnorm_min)
             dmax = torch.quantile(depth[valid_mask], self.truncnorm_max)
             depth_norm = ((depth - dmin) / (dmax - dmin + 1e-5) - 0.5) * 2.0
+            # Quantiles of depth, where trunc_disparity's are quantiles of
+            # 1/depth. The pair alone cannot say which, so whoever inverts it
+            # has to be told the norm_type as well.
+            norm_lo, norm_hi = float(dmin), float(dmax)
         elif self.norm_type == "perscene_norm":
             depth_norm = ((depth / self.d_max) - 0.5) * 2.0
         elif self.norm_type == "disparity":

@@ -132,5 +132,93 @@ class ImageDepthL1LossTest(unittest.TestCase):
         self.assertLess(stats["d_hat_max"], 1e5)
 
 
+class TruncnormInversionTest(unittest.TestCase):
+    """The same term under depth normalisation, where there is no reciprocal."""
+
+    LO, HI = 4.0, 60.0           # metres, the quantiles truncnorm records
+
+    def _bounds(self, depth):
+        return (torch.tensor([[self.LO, self.HI]] * depth.shape[0]),
+                torch.ones_like(depth))
+
+    @staticmethod
+    def normalise(depth, lo, hi):
+        """Exactly what the dataset does for truncnorm."""
+        return ((depth - lo) / (hi - lo + 1e-5) - 0.5) * 2.0
+
+    def test_perfect_prediction_scores_zero(self):
+        depth = torch.tensor([[[[5.0, 12.0], [30.0, 55.0]]]])
+        bounds, valid = self._bounds(depth)
+        vae = StubVAE(self.normalise(depth, self.LO, self.HI))
+        loss, count, _ = image_depth_l1_loss(
+            vae, torch.zeros(1, 4, 1, 1), depth, valid, bounds,
+            norm_type="truncnorm")
+        self.assertEqual(count, 4)
+        self.assertLess(float(loss), 1e-3, f"perfect prediction scored {float(loss)}")
+
+    def test_error_is_measured_in_metres(self):
+        truth = torch.tensor([[[[20.0, 20.0]]]])
+        predicted = torch.tensor([[[[23.0, 23.0]]]])
+        bounds, valid = self._bounds(truth)
+        vae = StubVAE(self.normalise(predicted, self.LO, self.HI))
+        loss, _, _ = image_depth_l1_loss(
+            vae, torch.zeros(1, 4, 1, 1), truth, valid, bounds,
+            norm_type="truncnorm")
+        self.assertAlmostEqual(float(loss), 3.0, places=3)
+
+    def test_near_and_far_cost_the_same(self):
+        """The point of depth normalisation: one step in latent, one cost in metres.
+
+        Under trunc_disparity the same step costs twenty times more at 50 m than
+        at 5 m. Here it must not, and that difference is the whole reason the
+        normalisation is worth swapping.
+        """
+        offset = 0.02
+        losses = {}
+        for depth_value in (6.0, 50.0):
+            truth = torch.full((1, 1, 1, 1), depth_value)
+            bounds, valid = self._bounds(truth)
+            vae = StubVAE(self.normalise(truth, self.LO, self.HI) - offset)
+            loss, _, _ = image_depth_l1_loss(
+                vae, torch.zeros(1, 4, 1, 1), truth, valid, bounds,
+                norm_type="truncnorm")
+            losses[depth_value] = float(loss)
+        self.assertAlmostEqual(losses[6.0], losses[50.0], places=4,
+                               msg=f"near {losses[6.0]} vs far {losses[50.0]}")
+
+    def test_reciprocal_would_be_caught(self):
+        """A disparity inverse applied to depth bounds must not pass as correct.
+
+        This is the actual bug the norm_type argument exists to prevent, so it
+        gets a test of its own rather than trusting the branch to be reached.
+        """
+        depth = torch.tensor([[[[20.0]]]])
+        bounds, valid = self._bounds(depth)
+        vae = StubVAE(self.normalise(depth, self.LO, self.HI))
+        wrong, _, _ = image_depth_l1_loss(
+            vae, torch.zeros(1, 4, 1, 1), depth, valid, bounds,
+            norm_type="trunc_disparity")
+        self.assertGreater(float(wrong), 1.0,
+                           "the disparity inverse on depth bounds scored as if correct")
+
+    def test_absurd_decoder_output_stays_positive(self):
+        truth = torch.tensor([[[[20.0]]]])
+        bounds, valid = self._bounds(truth)
+        vae = StubVAE(torch.full((1, 1, 1, 1), -50.0))
+        loss, _, stats = image_depth_l1_loss(
+            vae, torch.zeros(1, 4, 1, 1), truth, valid, bounds,
+            norm_type="truncnorm")
+        self.assertTrue(torch.isfinite(loss), f"loss was {float(loss)}")
+        self.assertGreater(stats["d_hat_min"], 0.0, "depth must stay positive")
+
+    def test_unknown_norm_type_raises(self):
+        depth = torch.tensor([[[[20.0]]]])
+        bounds, valid = self._bounds(depth)
+        vae = StubVAE(self.normalise(depth, self.LO, self.HI))
+        with self.assertRaises(ValueError):
+            image_depth_l1_loss(vae, torch.zeros(1, 4, 1, 1), depth, valid, bounds,
+                                norm_type="instnorm")
+
+
 if __name__ == "__main__":
     unittest.main()
