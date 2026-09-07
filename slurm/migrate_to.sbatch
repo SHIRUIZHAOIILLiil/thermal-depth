@@ -29,6 +29,9 @@
 #   SKIP_EVAL  1（默认）跳过 eval/。评估作业还在往里写的时候必须跳过，
 #              否则会复制到写了一半的结果。全部评估完成后再用 SKIP_EVAL=0
 #              单独跑一次，rsync 只补新增的。
+#   FULL       1 = 连 runs/iris_ms2 下全部训练中间 checkpoint 一起搬（约 1.7 TB）。
+#              默认 0：只搬第 4 段里被评估过的 converted/*.pt。中间点的用处是
+#              「将来想换选点而不重训」，所以它排在最后一段。
 #   DRY        1 = 只列要传什么、不动手
 #
 # ── 用法 ────────────────────────────────────────────────────────────
@@ -92,9 +95,22 @@ copy "6/7 data/ms2（文件数最多，最慢）" "$IRIS_MS2_ROOT/" "data/ms2"
 
 if [[ "$SKIP_EVAL" == "1" ]]; then
   echo
-  echo "-- 7/7 eval：按 SKIP_EVAL=1 跳过。评估作业跑完后用 SKIP_EVAL=0 单独再跑一次。"
+  echo "-- 7/8 eval：按 SKIP_EVAL=1 跳过。评估作业跑完后用 SKIP_EVAL=0 单独再跑一次。"
 else
-  copy "7/7 eval（约 29 GPU 小时的结果）" "$IRIS_RUNS/eval/" "runs/eval"
+  copy "7/8 eval（约 29 GPU 小时的结果）" "$IRIS_RUNS/eval/" "runs/eval"
+fi
+
+if [[ "${FULL:-0}" == "1" ]]; then
+  # 训练中间点。约 1.7 TB，而复现论文里的数一个都用不上 —— 上面第 4 段的
+  # converted/*.pt 才是被评估过的那些。它们的用处是「将来想换一个选点而
+  # 不重训」，那是真实的用处，只是排在最后：作业被砍时先丢这一段，损失
+  # 最小。
+  echo
+  echo "################ 8/8 iris_ms2 全部 checkpoint（约 1.7 TB，最后走）"
+  rsync $FLAGS "$IRIS_RUNS/iris_ms2/" "$DEST/runs/iris_ms2/"     || echo "!! 未完成（重投可接着跑）"
+else
+  echo
+  echo "-- 8/8 iris_ms2 中间 checkpoint：按 FULL=0 跳过。要全搬用 FULL=1。"
 fi
 
 echo
