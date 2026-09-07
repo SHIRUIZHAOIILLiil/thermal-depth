@@ -43,7 +43,9 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/env.sh"
 : "${DEST:?必须指定 DEST（对方 scratch 里的目标目录）}"
 SKIP_EVAL="${SKIP_EVAL:-1}"
 FLAGS="-a --info=progress2 --no-inc-recursive"
-[[ "${DRY:-0}" == "1" ]] && FLAGS="$FLAGS --dry-run --itemize-changes"
+# --itemize-changes 会为每个文件打一行，data/ms2 有几十万个：空跑的目的是
+# 看总量，不是看清单。--stats 给的正是每段的文件数与字节数。
+[[ "${DRY:-0}" == "1" ]] && FLAGS="$FLAGS --dry-run --stats"
 
 # 写得进去吗。这一步失败的话后面每一条都会失败，早知道比晚知道好。
 probe="$DEST/.write_probe_$$"
