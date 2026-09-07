@@ -140,8 +140,16 @@ if [[ "${FULL:-0}" == "1" ]]; then
   # 最小。
   echo
   if [[ "${ARCHIVE:-0}" == "1" ]]; then
-    archive "8/8 iris_ms2 全部 checkpoint（打包，约 1.7 TB）" \
-            "$IRIS_RUNS/iris_ms2" "iris_ms2_all.tar" "约 27 万"
+    # 一条臂一个 tar，不是整个目录一个。tar 不能续传：作为单个 1.7 TB 的文件，
+    # 作业被砍在八成处留下的是不可用的半成品，而且要从零重来。按臂拆开之后，
+    # 同样被砍时每条跑完的臂都是完整的，重投时上面那个「已存在就跳过」的检查
+    # 会从断掉的那条接着走。
+    echo
+    echo "################ 8/8 iris_ms2 全部 checkpoint（按臂打包，约 1.7 TB）"
+    for run in $(ls -1 "$IRIS_RUNS/iris_ms2" 2>/dev/null); do
+      [[ -d "$IRIS_RUNS/iris_ms2/$run" ]] || continue
+      archive "  $run" "$IRIS_RUNS/iris_ms2/$run" "iris_ms2__$run.tar" "整条臂"
+    done
   else
     echo "################ 8/8 iris_ms2 全部 checkpoint（约 1.7 TB，最后走）"
     rsync $FLAGS "$IRIS_RUNS/iris_ms2/" "$DEST/runs/iris_ms2/" \
