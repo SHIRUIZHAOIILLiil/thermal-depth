@@ -29,6 +29,12 @@
 #   SKIP_EVAL  1（默认）跳过 eval/。评估作业还在往里写的时候必须跳过，
 #              否则会复制到写了一半的结果。全部评估完成后再用 SKIP_EVAL=0
 #              单独跑一次，rsync 只补新增的。
+#   ARCHIVE    1 = 把文件数多的目录打成单个 tar 写到目标，而不是逐文件复制。
+#              目标账号的 inode 配额可能远小于空间配额（实测对方剩 50,641 个
+#              inode，而这一趟要搬 117 万个文件），这时逐文件复制根本装不下。
+#              打包后 data/ms2 的 810,497 个文件只占 1 个 inode，字节数不变。
+#              ⚠️ 归档手段，不是「搬过去就能接着跑」：要用得先解开，而解开
+#              需要把 inode 还回来。真正的解法是提配额，这是等配额期间的做法。
 #   FULL       1 = 连 runs/iris_ms2 下全部训练中间 checkpoint 一起搬（约 1.7 TB）。
 #              默认 0：只搬第 4 段里被评估过的 converted/*.pt。中间点的用处是
 #              「将来想换选点而不重训」，所以它排在最后一段。
@@ -89,9 +95,36 @@ for run in ma_r3ow_cap ma_r3ow_nocap r3ow_cap r3ow_nocap \
     || echo "!! $run 未完成"
 done
 
-copy "5/7 pseudo_gt（76,547 个 npy，约 47 GB）" \
-     "$IRIS_RUNS/pseudo_gt/official_train/" "runs/pseudo_gt/official_train"
-copy "6/7 data/ms2（文件数最多，最慢）" "$IRIS_MS2_ROOT/" "data/ms2"
+archive () {  # 标签 源目录 目标tar名 文件数说明
+  local label="$1" src="$2" name="$3" n="$4"
+  if [[ ! -d "$src" ]]; then echo "-- 跳过 $label：找不到 $src"; return 0; fi
+  echo
+  echo "################ $label"
+  if [[ -s "$DEST/$name" ]]; then
+    echo "[skip] $DEST/$name 已存在（$(du -h "$DEST/$name" 2>/dev/null | cut -f1)）"
+    return 0
+  fi
+  echo "打包 $n 个文件 -> $DEST/$name（占 1 个 inode）"
+  if [[ "${DRY:-0}" == "1" ]]; then echo "[dry] 不实际打包"; return 0; fi
+  # 直接写到目标，源端不需要额外空间。⚠️ tar 没有断点续传，被砍就得重来，
+  # 所以打包的两段排在小东西后面。
+  if tar -cf "$DEST/$name" -C "$src" . ; then
+    ls -lh "$DEST/$name"
+  else
+    echo "!! $label 打包失败，删掉半成品"
+    rm -f "$DEST/$name"
+  fi
+}
+
+if [[ "${ARCHIVE:-0}" == "1" ]]; then
+  archive "5/8 pseudo_gt（打包）" "$IRIS_RUNS/pseudo_gt/official_train" \
+          "pseudo_gt_official_train.tar" "76,551"
+  archive "6/8 data/ms2（打包）" "$IRIS_MS2_ROOT" "data_ms2.tar" "810,497"
+else
+  copy "5/8 pseudo_gt（76,547 个 npy，约 47 GB）" \
+       "$IRIS_RUNS/pseudo_gt/official_train/" "runs/pseudo_gt/official_train"
+  copy "6/8 data/ms2（文件数最多，最慢）" "$IRIS_MS2_ROOT/" "data/ms2"
+fi
 
 if [[ "$SKIP_EVAL" == "1" ]]; then
   echo
@@ -106,8 +139,14 @@ if [[ "${FULL:-0}" == "1" ]]; then
   # 不重训」，那是真实的用处，只是排在最后：作业被砍时先丢这一段，损失
   # 最小。
   echo
-  echo "################ 8/8 iris_ms2 全部 checkpoint（约 1.7 TB，最后走）"
-  rsync $FLAGS "$IRIS_RUNS/iris_ms2/" "$DEST/runs/iris_ms2/"     || echo "!! 未完成（重投可接着跑）"
+  if [[ "${ARCHIVE:-0}" == "1" ]]; then
+    archive "8/8 iris_ms2 全部 checkpoint（打包，约 1.7 TB）" \
+            "$IRIS_RUNS/iris_ms2" "iris_ms2_all.tar" "约 27 万"
+  else
+    echo "################ 8/8 iris_ms2 全部 checkpoint（约 1.7 TB，最后走）"
+    rsync $FLAGS "$IRIS_RUNS/iris_ms2/" "$DEST/runs/iris_ms2/" \
+      || echo "!! 未完成（重投可接着跑）"
+  fi
 else
   echo
   echo "-- 8/8 iris_ms2 中间 checkpoint：按 FULL=0 跳过。要全搬用 FULL=1。"
