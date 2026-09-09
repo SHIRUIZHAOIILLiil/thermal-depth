@@ -287,6 +287,11 @@ class MS2ThermalDataset(Dataset):
             dmin = depth[valid_mask].min()
             dmax = depth[valid_mask].max()
             depth_norm = ((depth - dmin) / (dmax - dmin + 1e-5) - 0.5) * 2.0
+            # Same functional form as truncnorm -- depth mapped linearly between
+            # two bounds -- so the same inverse applies. The bounds are the whole
+            # observed range rather than the 2/98 quantiles, which is the entire
+            # difference between the two.
+            norm_lo, norm_hi = float(dmin), float(dmax)
         elif self.norm_type == "truncnorm":
             dmin = torch.quantile(depth[valid_mask], self.truncnorm_min)
             dmax = torch.quantile(depth[valid_mask], self.truncnorm_max)

@@ -460,14 +460,17 @@ def image_depth_l1_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds,
         # merely far.
         q_hat = q_hat.clamp(min=1e-4)
         d_hat = 1.0 / q_hat
-    elif norm_type == "truncnorm":
+    elif norm_type in ("truncnorm", "instnorm"):
         # Depth directly, no reciprocal. A decoder output below -1 can put this
         # at or under zero, so it takes the same floor the dataset clips to.
+        # instnorm shares this inverse: it differs only in where the bounds come
+        # from (whole range rather than the 2/98 quantiles), and the bounds are
+        # carried per sample, so the arithmetic here is identical.
         d_hat = (lo + y * (hi - lo + 1e-5)).clamp(min=1e-3)
     else:
         raise ValueError(
             f"image_depth_l1_loss has no inverse for norm_type={norm_type!r}; "
-            "it knows trunc_disparity and truncnorm."
+            "it knows trunc_disparity, truncnorm and instnorm."
         )
 
     finite_bounds = torch.isfinite(lo) & torch.isfinite(hi)

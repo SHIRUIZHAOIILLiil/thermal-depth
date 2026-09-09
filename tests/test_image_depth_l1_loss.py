@@ -212,13 +212,77 @@ class TruncnormInversionTest(unittest.TestCase):
         self.assertGreater(stats["d_hat_min"], 0.0, "depth must stay positive")
 
     def test_unknown_norm_type_raises(self):
+        """`perscene_norm` is a real dataset normalisation with no inverse here.
+
+        It used to be `instnorm`, which this term now inverts. The point of the
+        test is that an unhandled normalisation stops the run rather than
+        scoring metres it cannot compute, so it needs a name that is still
+        unhandled.
+        """
         depth = torch.tensor([[[[20.0]]]])
         bounds, valid = self._bounds(depth)
         vae = StubVAE(self.normalise(depth, self.LO, self.HI))
         with self.assertRaises(ValueError):
             image_depth_l1_loss(vae, torch.zeros(1, 4, 1, 1), depth, valid, bounds,
-                                norm_type="instnorm")
+                                norm_type="perscene_norm")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstnormInversionTest(unittest.TestCase):
+    """instnorm shares truncnorm's inverse; the bounds are the only difference.
+
+    The dataset takes the whole observed range instead of the 2/98 quantiles,
+    so the arithmetic is the same and the risk is that the branch never learns
+    the name. A missing branch used to raise; a missing pair of bounds used to
+    make this term silently zero, which is the failure that cost a training run.
+    """
+
+    LO, HI = 2.0, 80.0           # metres, the min and max instnorm records
+
+    def _bounds(self, depth):
+        return (torch.tensor([[self.LO, self.HI]] * depth.shape[0]),
+                torch.ones_like(depth))
+
+    @staticmethod
+    def normalise(depth, lo, hi):
+        """Exactly what the dataset does for instnorm."""
+        return ((depth - lo) / (hi - lo + 1e-5) - 0.5) * 2.0
+
+    def test_perfect_prediction_scores_zero(self):
+        depth = torch.tensor([[[[3.0, 15.0], [40.0, 70.0]]]])
+        bounds, valid = self._bounds(depth)
+        vae = StubVAE(self.normalise(depth, self.LO, self.HI))
+        loss, count, _ = image_depth_l1_loss(
+            vae, torch.zeros(1, 4, 1, 1), depth, valid, bounds,
+            norm_type="instnorm")
+        self.assertEqual(count, 4)
+        self.assertLess(float(loss), 1e-3, f"perfect prediction scored {float(loss)}")
+
+    def test_error_is_measured_in_metres(self):
+        truth = torch.tensor([[[[25.0, 25.0]]]])
+        predicted = torch.tensor([[[[29.0, 29.0]]]])
+        bounds, valid = self._bounds(truth)
+        vae = StubVAE(self.normalise(predicted, self.LO, self.HI))
+        loss, _, _ = image_depth_l1_loss(
+            vae, torch.zeros(1, 4, 1, 1), truth, valid, bounds,
+            norm_type="instnorm")
+        self.assertAlmostEqual(float(loss), 4.0, places=3)
+
+    def test_nan_bounds_leave_nothing_to_score(self):
+        """The dataset writes NaN when it has no inverse for the norm_type.
+
+        instnorm now writes real bounds, so this checks the guard still fires
+        for whatever normalisation comes next rather than scoring garbage.
+        """
+        depth = torch.tensor([[[[10.0, 20.0]]]])
+        bounds = torch.tensor([[float("nan"), float("nan")]])
+        valid = torch.ones_like(depth)
+        vae = StubVAE(self.normalise(depth, self.LO, self.HI))
+        loss, count, _ = image_depth_l1_loss(
+            vae, torch.zeros(1, 4, 1, 1), depth, valid, bounds,
+            norm_type="instnorm")
+        self.assertEqual(count, 0)
+        self.assertEqual(float(loss), 0.0)
