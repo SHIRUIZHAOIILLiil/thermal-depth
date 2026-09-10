@@ -22,6 +22,7 @@ import copy
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import random
 import sys
@@ -417,6 +418,22 @@ def ssi_sky_loss(prediction, gt_disparity, valid_mask, sky_mask, max_depth, mode
     return loss, sky_count
 
 
+def _denormalise(decoded):
+    """Decoded tensor to [0,1], channel-meaned, optionally clipped first.
+
+    Lotus clips each channel to [0,1] before anything else reads it
+    (`lotus/pipeline.py`, via the image processor); this evaluator never has.
+    The affine part commutes with the channel mean, so the clip is the whole
+    difference -- and it does not commute, which is why it has to happen here
+    rather than after the mean. Off by default: every number this project has
+    published came from the unclipped path.
+    """
+    out = decoded.float() / 2.0 + 0.5
+    if os.environ.get("IRIS_DECODE_CLAMP") == "1":
+        out = out.clamp(0, 1)
+    return out.mean(dim=1).squeeze(0)
+
+
 def decode_to_disparity(lotus, x0, device, gt_vae=None):
     """Mirror the official evaluator: decode x0, denormalize, channel-mean."""
     if gt_vae is not None:
@@ -426,12 +443,12 @@ def decode_to_disparity(lotus, x0, device, gt_vae=None):
         decoded = gt_vae.decode(
             x0.float() / gt_vae.config.scaling_factor, return_dict=False
         )[0]
-        return (decoded.mean(dim=1) / 2.0 + 0.5).squeeze(0)
+        return _denormalise(decoded)
     with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
         decoded = lotus.vae.decode(
             x0 / lotus.vae.config.scaling_factor, return_dict=False
         )[0]
-    return (decoded.float().mean(dim=1) / 2.0 + 0.5).squeeze(0)
+    return _denormalise(decoded)
 
 
 def seed_everything(seed: int) -> None:

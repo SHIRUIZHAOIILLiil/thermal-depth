@@ -53,7 +53,9 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
 # Must match the value the checkpoint was trained under; see lotus/pipeline.py.
 export IRIS_TEXT_PADDING="${IRIS_TEXT_PADDING:-legacy}"
+export IRIS_DECODE_CLAMP="${IRIS_DECODE_CLAMP:-0}"
 echo "text pad  = $IRIS_TEXT_PADDING"
+echo "decode clamp = $IRIS_DECODE_CLAMP  (1 = 与 Lotus 一致，先裁再取通道均值)"
 
 : "${RUN:?必须指定 RUN（训练输出目录名）}"
 STEPS="${STEPS:-1000 2000 3000 5000 8000}"
