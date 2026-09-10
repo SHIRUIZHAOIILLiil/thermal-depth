@@ -1,5 +1,6 @@
 
 import inspect
+import os
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
@@ -269,7 +270,7 @@ class DirectDiffusionPipeline(
         num_images_per_prompt,
         do_classifier_free_guidance,
         negative_prompt=None,
-        padding_type="do_not_pad",
+        padding_type=None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
         lora_scale: Optional[float] = None,
@@ -327,6 +328,16 @@ class DirectDiffusionPipeline(
             if isinstance(self, TextualInversionLoaderMixin):
                 prompt = self.maybe_convert_prompt(prompt, self.tokenizer)
 
+            # Train and eval have to agree on this. The reference training code
+            # (diffusion-e2e-ft) pads every prompt, empty ones included, to the
+            # encoder's 77 tokens; this pipeline historically padded none of
+            # them, so an empty prompt reached the U-Net as two tokens. The
+            # environment variable moves both sides at once -- unset keeps the
+            # behaviour every run before 2026-09-11 was measured under.
+            if padding_type is None:
+                padding_type = ("max_length"
+                                if os.environ.get("IRIS_TEXT_PADDING") == "max_length"
+                                else "do_not_pad")
             text_inputs = self.tokenizer(
                 prompt,
                 padding=padding_type,

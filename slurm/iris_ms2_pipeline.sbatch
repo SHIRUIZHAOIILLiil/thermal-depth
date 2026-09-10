@@ -51,6 +51,10 @@
 
 source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
+# Must match the value the checkpoint was trained under; see lotus/pipeline.py.
+export IRIS_TEXT_PADDING="${IRIS_TEXT_PADDING:-legacy}"
+echo "text pad  = $IRIS_TEXT_PADDING"
+
 : "${RUN:?必须指定 RUN（训练输出目录名）}"
 STEPS="${STEPS:-1000 2000 3000 5000 8000}"
 SEL_PROMPT="${SEL_PROMPT:?必须指定 SEL_PROMPT（empty 或 correct，须与该臂训练时一致）}"

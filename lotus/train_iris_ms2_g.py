@@ -1761,9 +1761,14 @@ def main():
                         all_prompts.append("")
                 
                 # Tokenize all prompts
+                # Matches lotus/pipeline.py's resolution of the same variable, so
+                # a checkpoint is evaluated under the padding it was trained with.
+                _text_padding = ("max_length"
+                                 if os.environ.get("IRIS_TEXT_PADDING") == "max_length"
+                                 else True)
                 text_inputs = tokenizer(
                     all_prompts,
-                    padding=True,
+                    padding=_text_padding,
                     max_length=tokenizer.model_max_length,
                     truncation=True,
                     return_tensors="pt",
