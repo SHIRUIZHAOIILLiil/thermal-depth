@@ -63,6 +63,20 @@ BACKBONE_FLAG="--backbone=${BACKBONE:-g}"
 PURE_PSEUDO_FLAG=""
 [[ "${PURE_PSEUDO:-0}" == "1" ]] && PURE_PSEUDO_FLAG="--pure_pseudo_target"
 
+# The flip moves the image and leaves the caption alone, so a caption that names
+# a side becomes false for that sample. Measured on the official training
+# manifest: 51.6% of captions say left or right, and the flip fires on half the
+# samples, so about a quarter of caption-conditioned steps train on text that
+# contradicts the image it is paired with. The default stays on because every
+# run before 2026-09-11 had it on and their numbers have to stay reproducible.
+RANDOM_FLIP_FLAG=""
+[[ "${RANDOM_FLIP:-1}" == "1" ]] && RANDOM_FLIP_FLAG="--random_flip"
+if [[ "${RANDOM_FLIP:-1}" == "1" && "${NO_CAPTIONS:-0}" != "1" ]]; then
+  echo "!! RANDOM_FLIP=1 with captions on: about a quarter of steps will see a"
+  echo "!! caption whose left/right disagrees with the flipped image."
+  echo "!! Pass RANDOM_FLIP=0 for an arm whose caption has to stay truthful."
+fi
+
 accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision="fp16" \
   --main_process_port="${MAIN_PORT:-13224}" \
   train_iris_ms2_g.py \
@@ -73,7 +87,7 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   $CAPTION_FLAG \
   $SKY_FLAG \
   $BACKBONE_FLAG \
-  --random_flip \
+  $RANDOM_FLIP_FLAG \
   --norm_type=$NORMTYPE \
   $PURE_PSEUDO_FLAG \
   --lambda_image="${LAMBDA_IMAGE:-0}" \
