@@ -108,6 +108,11 @@ ARGS+=(
   --condition-latent "${COND_LATENT:-mode}"
 )
 [[ -n "${VAL_MANIFEST:-}" ]] && ARGS+=(--val-manifest "$VAL_MANIFEST")
+# train_route_suite defaults to ssi_disparity. A depth-normalised checkpoint
+# scored under it collapses to roughly 0.27 AbsRel rather than erroring, and
+# the log line still says "affine_invariant", so the mistake is silent.
+# 2026-09-11: four convention checks were run and thrown away for want of this.
+[[ -n "${ALIGN_MODE:-}" ]] && ARGS+=(--align-mode "$ALIGN_MODE")
 [[ "${LOCAL_FILES_ONLY:-1}" == "1" ]] && ARGS+=(--local-files-only)
 # 任务 3 的可视化和九分层都吃 raw_predictions/<id>.npy。
 # 每帧约 0.5 MB + 1 个 inode，所以默认关，要用时显式 SAVE_RAW=1。
