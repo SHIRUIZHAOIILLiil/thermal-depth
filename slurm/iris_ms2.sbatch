@@ -65,7 +65,27 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
 START="${START:-ckpt}"
 case "$START" in
-  sd2)  MODEL_NAME="stabilityai/stable-diffusion-2-base" ;;
+  # 2026-09-12：官方 stabilityai/stable-diffusion-2* 全系取不到（匿名与带 token
+  # 均 401；HF 对「门控」与「不存在」返回同一个 401，状态无法从外部区分）。
+  # 改用已验真的社区镜像。验真方法与结果：
+  #   vae/diffusion_pytorch_model.safetensors 的 sha256 与 Lotus-G 仓库里那份
+  #   **逐字节相同**（3e4c0899…，167,335,342 字节）；text_encoder 的张量名、
+  #   形状、dtype 全同，只多一个 text_model.embeddings.position_ids —— 那是新版
+  #   transformers 不再保存的 buffer，不是权重。Lotus 微调时 vae 与 text_encoder
+  #   是冻结的，所以这两项对得上即同一血统。
+  #   unet 另有跨仓库共识：12 个互不相关的账号各传了一份 SD2.1-base，其中 **11 个**
+  #   的 unet/diffusion_pytorch_model.safetensors sha256 完全相同 ——
+  #   6dfae3e5f7d459b50f4b0850ead945972c75bb0e1897628933e169eb43974214
+  #   （3,463,726,498 字节；Manojb / huanzi05 / sd2-community / sd-research /
+  #   LanguageMachines / omeregev / SagiPolaczek / akaleksandr / kohido /
+  #   PIEthonista / daniekpo）。唯一不同的是 WIBE-HuggingFace，不要用那一份。
+  #   下载后务必自校验：
+  #     sha256sum <cache>/unet/diffusion_pytorch_model.safetensors
+  # ⚠️ 偏差：这是 **2.1-base**，Iris 用的是 2.0-base。两者 vae/text_encoder 相同、
+  #   架构相同（cross_attention_dim 1024、sample_size 64、conv_in 4），但 **unet
+  #   权重不同**（2.1 是在 2.0 之后继续训的）。上面的校验证明不了 unet 与 Iris
+  #   的起点一致，只证明这是真的 SD2 血统。这条偏差必须写进论文。
+  sd2)  MODEL_NAME="${SD2_REPO:-Manojb/stable-diffusion-2-1-base}" ;;
   ckpt) MODEL_NAME="jingheya/lotus-depth-g-v2-1-disparity" ;;
   # Lotus 的 direct 变体。conv_in 是 4 通道而不是 8 —— 这是两个底座唯一的架构差别，
   # 任务开关、双分支 loss、caption、伪 GT、评估协议全部共用。BACKBONE 跟着 START 走，
@@ -106,7 +126,8 @@ HF_REPO_DIR="$HF_HOME/hub/models--${MODEL_NAME//\//--}"
 if [[ ! -d "$HF_REPO_DIR" ]]; then
   echo "!! $MODEL_NAME 不在 HF 缓存里（找不到 $HF_REPO_DIR）"
   if [[ "$START" == "sd2" ]]; then
-    echo "!! sd2 臂当前无官方来源：Stability 已下架 SD 2.x，见本脚本开头的说明。"
+    echo "!! sd2 臂没有官方来源（Stability 的 SD 2.x 取不到），用的是已验真的镜像。"
+    echo "!! 预取： huggingface-cli download $MODEL_NAME --exclude '*.bin' '*fp16*'"
   fi
   echo "!! 先用 CPU 分区预取，别让 GPU 作业去下载。"
   exit 1
