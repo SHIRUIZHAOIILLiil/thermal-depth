@@ -41,15 +41,22 @@ done
 
 echo
 echo "=== 4 converted 权重（进论文的那几条臂）==="
+# ⚠️ converted/ 空 ≠ 这条臂没东西。2026-09-10 清过一轮 step*_weights.pt，
+# 规则是「有对应 checkpoint-<step> 才删」——所以权重可能只以 checkpoint-<step>/
+# 的形式存在，而那属于第 8 段（FULL=1 才走）。这两种情况必须分开报，
+# 不然会以为模型已经没了。
 for run in ma_r3ow_cap ma_r3ow_nocap r3ow_cap r3ow_nocap \
            iris_ms2_full8_thermalcap iris_ms2_full8_nocap \
            lotusd_full8_thermalcap lotusd_full8_nocap; do
   s="$IRIS_RUNS/iris_ms2/$run/converted"; d="$DEST/runs/iris_ms2/$run/converted"
-  ns=$([[ -d "$s" ]] && ls -1 "$s" | wc -l || echo 0)
-  nd=$([[ -d "$d" ]] && ls -1 "$d" | wc -l || echo 0)
-  if   [[ "$ns" == 0 ]];        then row "$run" "源上没有 converted/"
-  elif [[ "$nd" == "$ns" ]];    then row "$run" "✅ $nd/$ns"
-  else                               row "$run" "⚠️ $nd/$ns（未完）"
+  ns=0; [[ -d "$s" ]] && ns=$(ls -1 "$s" 2>/dev/null | wc -l)
+  nd=0; [[ -d "$d" ]] && nd=$(ls -1 "$d" 2>/dev/null | wc -l)
+  nc=$(ls -d "$IRIS_RUNS/iris_ms2/$run/checkpoint-"* 2>/dev/null | wc -l)
+  if   [[ ! -d "$IRIS_RUNS/iris_ms2/$run" ]]; then row "$run" "源上没有这条臂"
+  elif [[ "$ns" == 0 && "$nc" != 0 ]]; then row "$run" "⚠️ converted/ 已清空，只剩 $nc 个 checkpoint-* → 要 FULL=1 才搬得走"
+  elif [[ "$ns" == 0 ]];     then row "$run" "⛔ converted/ 空且无 checkpoint-*"
+  elif [[ "$nd" == "$ns" ]]; then row "$run" "✅ $nd/$ns"
+  else                            row "$run" "⚠️ $nd/$ns（未完）"
   fi
 done
 
@@ -76,7 +83,8 @@ for run in $(ls -1 "$IRIS_RUNS/iris_ms2" 2>/dev/null); do
   [[ -d "$IRIS_RUNS/iris_ms2/$run" ]] || continue
   t="$DEST/iris_ms2__$run.tar"
   tar_ok "$t" && continue
-  [[ -d "$DEST/runs/iris_ms2/$run/checkpoint-"* ]] 2>/dev/null && continue
+  # 非打包模式下这条臂可能是逐文件搬过去的
+  compgen -G "$DEST/runs/iris_ms2/$run/checkpoint-*" >/dev/null 2>&1 && continue
   echo "  - $run"; missing=$((missing+1))
 done
 echo "  共 $missing 条未搬"
