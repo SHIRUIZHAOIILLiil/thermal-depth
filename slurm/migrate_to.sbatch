@@ -74,6 +74,13 @@ echo "=== 目标可写：$DEST ==="
 # 等 117 万个文件搬完再补就是递归一百多万次。
 # 整件事的目的是让对方能用，所以这一条不通过就不开搬。
 owner=$(stat -c %U "$DEST" 2>/dev/null)
+# 拉的人就是目标属主本人时这一整条检查是空的：新建的东西本来就归他，
+# 而 getfacl 会把他记成 user::（属主位），不是 user:<名字>: 的命名条目。
+# 从他账号拉回去正是推荐的做法（文件从一开始就归会留下来的那个账号），
+# 所以这里放行，不然这道闸只会挡住最该走的那条路。
+if [[ "$USER" == "$owner" ]]; then
+  echo "=== 目标属主本人在拉，新文件直接归 $owner，ACL 免检 ==="
+else
 aclprobe="$DEST/.aclprobe_$$"
 if mkdir -p "$aclprobe" 2>/dev/null; then
   if getfacl -p "$aclprobe" 2>/dev/null | grep -q "^user:$owner:"; then
@@ -87,6 +94,7 @@ if mkdir -p "$aclprobe" 2>/dev/null; then
     [[ "${SKIP_ACL_CHECK:-0}" == "1" ]] || exit 1
   fi
   rmdir "$aclprobe" 2>/dev/null
+fi
 fi
 df -h "$DEST" 2>/dev/null | tail -1
 
