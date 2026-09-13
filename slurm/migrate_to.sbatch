@@ -53,6 +53,22 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/env.sh"
 
 : "${DEST:?必须指定 DEST（对方 scratch 里的目标目录）}"
 SKIP_EVAL="${SKIP_EVAL:-1}"
+
+# 源端还在训练的臂必须排除：rsync 会把正在写的 checkpoint 搬成半个文件，而它
+# 在目标那边看起来是个正常的权重。下一趟靠 size+mtime 能发现并重传，但在那之前
+# 谁都分不出来。2026-09-13：sd2_cap_s43 / sd2_nocap_s43 已经跑了 8.5 小时，用
+#   EXCLUDE_RUNS="sd2_cap_s43 sd2_nocap_s43"
+# 把其余的先搬走，等它们结束再原样重投一次补上（rsync 跳过已一致的）。
+EXCLUDE_RUNS="${EXCLUDE_RUNS:-}"
+EXFLAGS=""
+for _r in $EXCLUDE_RUNS; do EXFLAGS="$EXFLAGS --exclude=/$_r/"; done
+[[ -n "$EXCLUDE_RUNS" ]] && echo "=== 排除（源端还在写）：$EXCLUDE_RUNS ==="
+
+excluded () {  # 这条臂在排除名单里吗
+  local run="$1" r
+  for r in $EXCLUDE_RUNS; do [[ "$run" == "$r" ]] && return 0; done
+  return 1
+}
 FLAGS="-a --info=progress2 --no-inc-recursive"
 # --itemize-changes 会为每个文件打一行，data/ms2 有几十万个：空跑的目的是
 # 看总量，不是看清单。--stats 给的正是每段的文件数与字节数。
@@ -142,6 +158,7 @@ echo "################ 4/8 converted 权重"
 # r2/r3/r4 里超出 checkpoint 数的那几步。
 # 写死名单在这种局面下两头落空：该搬的一个都搬不到，唯一副本一个都没覆盖。
 for run in $(ls -1 "$IRIS_RUNS/iris_ms2" 2>/dev/null); do
+  excluded "$run" && { echo "-- 跳过 $run：在 EXCLUDE_RUNS 里（源端还在写）"; continue; }
   src="$IRIS_RUNS/iris_ms2/$run/converted"
   [[ -d "$src" ]] || continue
   if ! ls -A "$src" >/dev/null 2>&1; then
@@ -223,11 +240,12 @@ if [[ "${FULL:-0}" == "1" ]]; then
     echo "################ 8/8 iris_ms2 全部 checkpoint（按臂打包，约 1.7 TB）"
     for run in $(ls -1 "$IRIS_RUNS/iris_ms2" 2>/dev/null); do
       [[ -d "$IRIS_RUNS/iris_ms2/$run" ]] || continue
+      excluded "$run" && { echo "-- 跳过 $run：在 EXCLUDE_RUNS 里"; continue; }
       archive "  $run" "$IRIS_RUNS/iris_ms2/$run" "iris_ms2__$run.tar" "整条臂"
     done
   else
     echo "################ 8/8 iris_ms2 全部 checkpoint（2026-09-13 实测 1.34 TB＋当时读不到的八条臂，最后走）"
-    rsync $FLAGS "$IRIS_RUNS/iris_ms2/" "$DEST/runs/iris_ms2/"; rsync_rc $? "8/8 全部 checkpoint"
+    rsync $FLAGS $EXFLAGS "$IRIS_RUNS/iris_ms2/" "$DEST/runs/iris_ms2/"; rsync_rc $? "8/8 全部 checkpoint"
   fi
 else
   echo
