@@ -98,6 +98,22 @@ fi
 fi
 df -h "$DEST" 2>/dev/null | tail -1
 
+
+# rsync 的退出码必须分开看，2026-09-13 这一趟正是栽在这上面：
+#   23 = 有东西读不到（权限）。**重投一百次也一样**，而且它根本没进清单，
+#        所以「搬完了」的日志和真的搬完长得一模一样，缺的只在 .err 里。
+#   24 = 建清单时有文件消失（源端作业正在写），其余都传了，重投能补上。
+# 原来这两种都打「未完成（重投可接着跑）」，等于把唯一需要人介入的那种
+# 说成了不需要。
+rsync_rc () {  # 退出码 标签
+  case "$1" in
+    0)  ;;
+    24) echo "-- $2：有文件在扫描时消失（源端作业正在写），其余已传，重投可补" ;;
+    23) echo "!! $2：**有东西读不到（权限）** —— 重投不会变好。看 .err 里的"
+        echo "!!   Permission denied，让源端跑 setfacl -R -m u:$USER:rX <那些目录>" ;;
+    *)  echo "!! $2 未完成（rc=$1，重投可接着跑）" ;;
+  esac
+}
 copy () {  # 标签 源 目标子目录
   local label="$1" src="$2" sub="$3"
   if [[ ! -e "$src" ]]; then
@@ -107,7 +123,7 @@ copy () {  # 标签 源 目标子目录
   echo
   echo "################ $label"
   mkdir -p "$DEST/$sub"
-  rsync $FLAGS "$src" "$DEST/$sub/" || echo "!! $label 未完成（重投可接着跑）"
+  rsync $FLAGS "$src" "$DEST/$sub/"; rsync_rc $? "$label"
 }
 
 # 目标要的是 $SCRATCH 的镜像：那边已有 manifests/sequence_level_internvl3_8b/，
@@ -128,10 +144,12 @@ echo "################ 4/8 converted 权重"
 for run in $(ls -1 "$IRIS_RUNS/iris_ms2" 2>/dev/null); do
   src="$IRIS_RUNS/iris_ms2/$run/converted"
   [[ -d "$src" ]] || continue
-  [[ -n "$(ls -A "$src" 2>/dev/null)" ]] || { echo "-- 跳过 $run：converted/ 空（权重在 checkpoint-*，第 8 段）"; continue; }
+  if ! ls -A "$src" >/dev/null 2>&1; then
+    echo "!! $run：converted/ 读不到（权限），不是空的 —— 见 .err"; continue
+  fi
+  [[ -n "$(ls -A "$src")" ]] || { echo "-- 跳过 $run：converted/ 空（权重在 checkpoint-*，第 8 段）"; continue; }
   mkdir -p "$DEST/runs/iris_ms2/$run"
-  rsync $FLAGS "$src/" "$DEST/runs/iris_ms2/$run/converted/" \
-    || echo "!! $run 未完成"
+  rsync $FLAGS "$src/" "$DEST/runs/iris_ms2/$run/converted/"; rsync_rc $? "$run"
 done
 
 # tar 的结尾是两个 512 字节全零块。被墙钟砍在半路的 tar 没有这个尾巴 —— 但它
@@ -208,9 +226,8 @@ if [[ "${FULL:-0}" == "1" ]]; then
       archive "  $run" "$IRIS_RUNS/iris_ms2/$run" "iris_ms2__$run.tar" "整条臂"
     done
   else
-    echo "################ 8/8 iris_ms2 全部 checkpoint（约 1.7 TB，最后走）"
-    rsync $FLAGS "$IRIS_RUNS/iris_ms2/" "$DEST/runs/iris_ms2/" \
-      || echo "!! 未完成（重投可接着跑）"
+    echo "################ 8/8 iris_ms2 全部 checkpoint（2026-09-13 实测 1.34 TB＋当时读不到的八条臂，最后走）"
+    rsync $FLAGS "$IRIS_RUNS/iris_ms2/" "$DEST/runs/iris_ms2/"; rsync_rc $? "8/8 全部 checkpoint"
   fi
 else
   echo
