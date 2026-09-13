@@ -21,6 +21,20 @@ tar_ok () {
 
 row () { printf '  %-38s %s\n' "$1" "$2"; }
 
+# 「读不到」和「是空的」在 ls 里长得一模一样，只要 stderr 被吞掉。2026-09-13
+# 就是这么把一个已经搬进去几百 GB 的目标读成了零：from_sc23sz 的 default ACL 里
+# 没有 sc23sz，凡是在对方账号下建的子目录，属主是他、组 ---，我们连 ls 都不行。
+# 所以每一处都先问「我读得进去吗」，读不进去就照实说，别报成没有。
+peek () {  # 目录 -> 一句话状态
+  local d="$1"
+  [[ -e "$d" ]] || { echo "—— 没有"; return; }
+  if ! ls -1 "$d" >/dev/null 2>&1; then
+    echo "⛔ 在，但我读不到（属主 $(stat -c %U "$d" 2>/dev/null)）—— 要他 setfacl -R -m u:$USER:rwX"
+    return
+  fi
+  echo "在（顶层 $(ls -1 "$d" | wc -l) 项，$(du -sh "$d" 2>/dev/null | cut -f1)）"
+}
+
 echo "=== 目标 $DEST ==="
 [[ -d "$DEST" ]] || { echo "!! 目标目录不存在或看不见（对方跑过 setfacl 了吗）"; exit 1; }
 touch "$DEST/.probe_$$" 2>/dev/null && { echo "可写：是"; rm -f "$DEST/.probe_$$"; } || echo "可写：⛔ 否"
@@ -32,11 +46,7 @@ for spec in "1 manifests:manifests" \
             "3 baseline_bench:runs/baseline_bench" \
             "7 eval:runs/eval"; do
   label="${spec%%:*}"; sub="${spec##*:}"
-  if [[ -d "$DEST/$sub" ]]; then
-    row "$label" "在（顶层 $(ls -1 "$DEST/$sub" 2>/dev/null | wc -l) 项，$(du -sh "$DEST/$sub" 2>/dev/null | cut -f1)）"
-  else
-    row "$label" "—— 没有"
-  fi
+  row "$label" "$(peek "$DEST/$sub")"
 done
 
 echo
@@ -51,6 +61,7 @@ for run in ma_r3ow_cap ma_r3ow_nocap r3ow_cap r3ow_nocap \
   s="$IRIS_RUNS/iris_ms2/$run/converted"; d="$DEST/runs/iris_ms2/$run/converted"
   ns=0; [[ -d "$s" ]] && ns=$(ls -1 "$s" 2>/dev/null | wc -l)
   nd=0; [[ -d "$d" ]] && nd=$(ls -1 "$d" 2>/dev/null | wc -l)
+  if [[ -d "$d" ]] && ! ls -1 "$d" >/dev/null 2>&1; then row "$run" "⛔ 目标侧读不到（属主 $(stat -c %U "$d"))"; continue; fi
   nc=$(ls -d "$IRIS_RUNS/iris_ms2/$run/checkpoint-"* 2>/dev/null | wc -l)
   if   [[ ! -d "$IRIS_RUNS/iris_ms2/$run" ]]; then row "$run" "源上没有这条臂"
   elif [[ "$ns" == 0 && "$nc" != 0 ]]; then row "$run" "⚠️ converted/ 已清空，只剩 $nc 个 checkpoint-* → 要 FULL=1 才搬得走"
