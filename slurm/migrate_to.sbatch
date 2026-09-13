@@ -102,9 +102,12 @@ copy () {  # 标签 源 目标子目录
   rsync $FLAGS "$src" "$DEST/$sub/" || echo "!! $label 未完成（重投可接着跑）"
 }
 
-copy "1/7 manifests（caption 全在这里）" "$IRIS_MANIFEST_DIR/" "manifests"
-copy "2/7 metric_adapt（冻结常数）"       "$IRIS_RUNS/metric_adapt/" "runs/metric_adapt"
-copy "3/7 baseline_bench（基线复现值）"   "$IRIS_RUNS/baseline_bench/" "runs/baseline_bench"
+# 目标要的是 $SCRATCH 的镜像：那边已有 manifests/sequence_level_internvl3_8b/，
+# 而且所有 sbatch 都按 $IRIS_MANIFEST_DIR 这个相对布局找清单。铺到 manifests/
+# 根下会在上一层多出一份重复的，并且路径对不上。
+copy "1/8 manifests（caption 全在这里）" "$IRIS_MANIFEST_DIR/" "manifests/sequence_level_internvl3_8b"
+copy "2/8 metric_adapt（冻结常数）"       "$IRIS_RUNS/metric_adapt/" "runs/metric_adapt"
+copy "3/8 baseline_bench（基线复现值）"   "$IRIS_RUNS/baseline_bench/" "runs/baseline_bench"
 
 echo
 echo "################ 4/8 converted 权重"
