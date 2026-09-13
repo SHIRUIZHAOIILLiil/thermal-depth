@@ -14,7 +14,9 @@
 #   1. manifests        几百 MB —— 76,547 帧的 VLM caption 推理都在里面
 #   2. metric_adapt     几 KB   —— 冻结常数，主表的尺度靠它
 #   3. baseline_bench   小      —— 四个基线的复现值
-#   4. converted/*.pt   ~23 GB  —— 进论文的那几个模型，每个背后 20 小时训练
+#   4. converted/*.pt   —— converted/ 非空的臂。⚠️ 09-10 清理之后，进论文的那
+#                          几条臂在这一段里已经是空的（权重只剩 checkpoint-*，
+#                          见第 8 段），这段现在主要是别处没有副本的那些步数
 #   5. pseudo_gt        ~47 GB  —— 76,547 个 .npy（2026-09-07 实测，不是表头
 #                                  曾经写的 13 GB）
 #   6. data/ms2         ~57 GB  —— 数据集本身，文件数最多、最慢
@@ -65,6 +67,27 @@ if ! touch "$probe" 2>/dev/null; then
 fi
 rm -f "$probe"
 echo "=== 目标可写：$DEST ==="
+
+# 写得进去 ≠ 对方读得到。2026-09-13 实测：from_sc23sz 的 default ACL 里只有
+# user:: 和一个第三方，没有属主本人的命名条目。于是这里新建的子树属主是**我**、
+# 组权限 ---，对方作为上级目录的属主照样进不去；而 setfacl 只有文件属主能跑,
+# 等 117 万个文件搬完再补就是递归一百多万次。
+# 整件事的目的是让对方能用，所以这一条不通过就不开搬。
+owner=$(stat -c %U "$DEST" 2>/dev/null)
+aclprobe="$DEST/.aclprobe_$$"
+if mkdir -p "$aclprobe" 2>/dev/null; then
+  if getfacl -p "$aclprobe" 2>/dev/null | grep -q "^user:$owner:"; then
+    echo "=== 对方（$owner）读得到新建内容：是 ==="
+  else
+    echo "!! 新建的目录里没有 $owner 的 ACL 条目 —— 搬过去他读不到。"
+    echo "!! 让他在自己账号上跑一次（只需一次，往后新建的自动继承）："
+    echo "     setfacl -m d:u:$owner:rwx -m u:$owner:rwx $DEST"
+    echo "!! 确认不需要这一步就用 SKIP_ACL_CHECK=1 再投。"
+    rmdir "$aclprobe"
+    [[ "${SKIP_ACL_CHECK:-0}" == "1" ]] || exit 1
+  fi
+  rmdir "$aclprobe" 2>/dev/null
+fi
 df -h "$DEST" 2>/dev/null | tail -1
 
 copy () {  # 标签 源 目标子目录
@@ -84,12 +107,17 @@ copy "2/7 metric_adapt（冻结常数）"       "$IRIS_RUNS/metric_adapt/" "runs
 copy "3/7 baseline_bench（基线复现值）"   "$IRIS_RUNS/baseline_bench/" "runs/baseline_bench"
 
 echo
-echo "################ 4/7 converted 权重（进论文的那几个）"
-for run in ma_r3ow_cap ma_r3ow_nocap r3ow_cap r3ow_nocap \
-           iris_ms2_full8_thermalcap iris_ms2_full8_nocap \
-           lotusd_full8_thermalcap lotusd_full8_nocap; do
+echo "################ 4/8 converted 权重"
+# 2026-09-13 改：这里原先写死八条「进论文的臂」。09-10 清过一轮 step*_weights.pt
+# （规则是「有对应 checkpoint-<step> 才删」）之后，那八条的 converted/ 全空了 ——
+# 它们的权重只剩 checkpoint-<step>/，属于第 8 段。同一次清理反而让另一批成了
+# 唯一副本：iris_ms2_ckpt(7)、iris_ms2_ckpt_nocap(5)、iris_ms2_thermalcap(5)、
+# r2/r3/r4 里超出 checkpoint 数的那几步。
+# 写死名单在这种局面下两头落空：该搬的一个都搬不到，唯一副本一个都没覆盖。
+for run in $(ls -1 "$IRIS_RUNS/iris_ms2" 2>/dev/null); do
   src="$IRIS_RUNS/iris_ms2/$run/converted"
-  [[ -d "$src" ]] || { echo "-- 跳过 $run：没有 converted/"; continue; }
+  [[ -d "$src" ]] || continue
+  [[ -n "$(ls -A "$src" 2>/dev/null)" ]] || { echo "-- 跳过 $run：converted/ 空（权重在 checkpoint-*，第 8 段）"; continue; }
   mkdir -p "$DEST/runs/iris_ms2/$run"
   rsync $FLAGS "$src/" "$DEST/runs/iris_ms2/$run/converted/" \
     || echo "!! $run 未完成"
