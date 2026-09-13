@@ -95,24 +95,42 @@ for run in ma_r3ow_cap ma_r3ow_nocap r3ow_cap r3ow_nocap \
     || echo "!! $run 未完成"
 done
 
+# tar 的结尾是两个 512 字节全零块。被墙钟砍在半路的 tar 没有这个尾巴 —— 但它
+# 非空，所以「已存在就跳过」会把半成品当成完成品放过去，而这个脚本存在的全部
+# 意义就是「被砍了原样重投接着跑」。O(1)：只读最后 1024 字节。
+tar_complete () {
+  local f="$1"
+  [[ -s "$f" ]] || return 1
+  [[ $(tail -c 1024 "$f" 2>/dev/null | tr -d '\000' | wc -c) -eq 0 ]]
+}
+
 archive () {  # 标签 源目录 目标tar名 文件数说明
   local label="$1" src="$2" name="$3" n="$4"
+  local final="$DEST/$name" part="$DEST/$name.part"
   if [[ ! -d "$src" ]]; then echo "-- 跳过 $label：找不到 $src"; return 0; fi
   echo
   echo "################ $label"
-  if [[ -s "$DEST/$name" ]]; then
-    echo "[skip] $DEST/$name 已存在（$(du -h "$DEST/$name" 2>/dev/null | cut -f1)）"
+  if tar_complete "$final"; then
+    echo "[skip] $final 已完整（$(du -h "$final" 2>/dev/null | cut -f1)）"
     return 0
   fi
-  echo "打包 $n 个文件 -> $DEST/$name（占 1 个 inode）"
+  if [[ -e "$final" ]]; then
+    # 09-07 之前的版本直接写最终名，所以旧的半成品长着完成品的名字。
+    echo "!! $final 存在但结尾不完整（被砍在半路），删掉重打"
+    rm -f "$final"
+  fi
+  [[ -e "$part" ]] && { echo "-- 上一趟的 $part.part 作废，重来"; rm -f "$part"; }
+  echo "打包 $n 个文件 -> $final（占 1 个 inode）"
   if [[ "${DRY:-0}" == "1" ]]; then echo "[dry] 不实际打包"; return 0; fi
-  # 直接写到目标，源端不需要额外空间。⚠️ tar 没有断点续传，被砍就得重来，
-  # 所以打包的两段排在小东西后面。
-  if tar -cf "$DEST/$name" -C "$src" . ; then
-    ls -lh "$DEST/$name"
+  # 先写 .part 再改名：作业在打包途中被砍，留下的是 .part，下一趟一眼看得出
+  # 它不是成品。改名是同一文件系统内的元数据操作，不搬字节。
+  # ⚠️ tar 仍然没有断点续传 —— 被砍就是从零重来，所以打包的段排在小东西后面。
+  if tar -cf "$part" -C "$src" . && tar_complete "$part"; then
+    mv -f "$part" "$final"
+    ls -lh "$final"
   else
     echo "!! $label 打包失败，删掉半成品"
-    rm -f "$DEST/$name"
+    rm -f "$part"
   fi
 }
 
