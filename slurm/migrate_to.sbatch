@@ -12,6 +12,7 @@
 # 先丢最贵的那几样：
 #
 #   1. manifests        几百 MB —— 76,547 帧的 VLM caption 推理都在里面
+#   1b. captions      502 MB  —— VLM 推理产物，128 个文件，重来要再推 76,547 帧
 #   2. metric_adapt     几 KB   —— 冻结常数，主表的尺度靠它
 #   3. baseline_bench   小      —— 四个基线的复现值
 #   4. converted/*.pt   —— converted/ 非空的臂。⚠️ 09-10 清理之后，进论文的那
@@ -53,6 +54,8 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/env.sh"
 
 : "${DEST:?必须指定 DEST（对方 scratch 里的目标目录）}"
 SKIP_EVAL="${SKIP_EVAL:-1}"
+# captions 不在 $IRIS_RUNS 下，从源 scratch 根推出来（对方拉的时候 $SCRATCH 是他自己的）
+IRIS_CAPTIONS="${IRIS_CAPTIONS:-$(dirname "$IRIS_RUNS")/captions}"
 
 # 源端还在训练的臂必须排除：rsync 会把正在写的 checkpoint 搬成半个文件，而它
 # 在目标那边看起来是个正常的权重。下一趟靠 size+mtime 能发现并重传，但在那之前
@@ -146,6 +149,11 @@ copy () {  # 标签 源 目标子目录
 # 而且所有 sbatch 都按 $IRIS_MANIFEST_DIR 这个相对布局找清单。铺到 manifests/
 # 根下会在上一层多出一份重复的，并且路径对不上。
 copy "1/8 manifests（caption 全在这里）" "$IRIS_MANIFEST_DIR/" "manifests/sequence_level_internvl3_8b"
+# 2026-09-14 加：VLM 推理产物，128 个文件 / 502 MB。按「重来代价÷大小」排，
+# 它跟 manifests 是同一档 —— 重来要把 76,547 帧再推一遍，而搬它只要半个 GB。
+# 训练真正读的 caption 内联在 manifests 的 jsonl 里，这份是溯源与重算用的。
+copy "1b/8 captions（VLM 推理产物）"     "$IRIS_CAPTIONS/" "captions"
+
 copy "2/8 metric_adapt（冻结常数）"       "$IRIS_RUNS/metric_adapt/" "runs/metric_adapt"
 copy "3/8 baseline_bench（基线复现值）"   "$IRIS_RUNS/baseline_bench/" "runs/baseline_bench"
 
