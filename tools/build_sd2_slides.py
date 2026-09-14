@@ -28,7 +28,7 @@ from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 
 from build_report8_slides import (
-    BAD, BAND, FONT, GOOD, GREY, ICE, INK, RULE, WHITE,
+    BAD, BAND, FONT, GOOD, GREY, ICE, INK, RULE, WHITE, cell_text,
     BODY_W, MARGIN, W, H,
     conclusion, footnote, header, placeholder, table, textbox, write,
 )
@@ -79,57 +79,89 @@ def arrow(slide, x0, y, x1):
     shape.shadow.inherit = False
 
 
-def metric_rows(rows):
-    """rows: (label, left triple, right triple). The better value of each pair
-    is marked red -- within a row only, since the three conditions differ in
-    absolute level and a best-of-column would compare scenes."""
-    head = ["场景"]
-    for _ in range(2):
-        head += [("AbsRel", {"align": PP_ALIGN.CENTER}),
-                 ("RMSE", {"align": PP_ALIGN.CENTER}),
-                 ("d1", {"align": PP_ALIGN.CENTER})]
-    out = [head]
-    for label, left, right in rows:
-        cells = [label]
-        for side, other in ((left, right), (right, left)):
-            for i, fmt in enumerate(("{:.5f}", "{:.3f}", "{:.4f}")):
+def result_table(slide, left_label, right_label, rows, left, top, width, height,
+                 *, size=12.5):
+    """A six-column metric table under two merged condition headers.
+
+    The two headers name the two factors separately -- whether the arm was
+    trained with captions, and what text it is fed at inference -- because the
+    whole design turns on those being independent, and a single run-on label
+    ("caption-trained, fed the real caption") hides that.
+
+    AbsRel drops from five decimals to four because the fifth never decides a
+    comparison here and costs scanning time; RMSE and delta1 keep the precision
+    the evaluator reports. The assertion below is why: at two decimals the
+    night-time RMSE pair 3.605 / 3.598 both print as 3.60, so one of two equal
+    looking cells would carry the red mark. A rounding that hides the very
+    difference the cell is marked for is worse than a wide column.
+    """
+    n = len(rows) + 2
+    shape = slide.shapes.add_table(n, 7, Inches(left), Inches(top),
+                                   Inches(width), Inches(height))
+    tbl = shape.table
+    tbl.first_row = False
+    tbl.horz_banding = False
+    for index, fraction in enumerate(COLS):
+        tbl.columns[index].width = Inches(width * fraction / sum(COLS))
+
+    tbl.cell(0, 0).merge(tbl.cell(1, 0))
+    tbl.cell(0, 1).merge(tbl.cell(0, 3))
+    tbl.cell(0, 4).merge(tbl.cell(0, 6))
+    for cell, text in ((tbl.cell(0, 0), "场景"),
+                       (tbl.cell(0, 1), left_label),
+                       (tbl.cell(0, 4), right_label)):
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = INK
+        cell_text(cell, text, size=size, bold=True, colour=WHITE,
+                  align=PP_ALIGN.CENTER)
+    for col, name in enumerate(["AbsRel ↓", "RMSE ↓", "δ1 ↑"] * 2, start=1):
+        cell = tbl.cell(1, col)
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = BAND
+        cell_text(cell, name, size=size - 1.5, bold=True, align=PP_ALIGN.CENTER)
+
+    for r, (label, group, lv, rv) in enumerate(rows, start=2):
+        band = BAND if group else WHITE
+        cell = tbl.cell(r, 0)
+        cell.fill.solid(); cell.fill.fore_color.rgb = band
+        cell_text(cell, label, size=size, bold=False, align=PP_ALIGN.LEFT)
+        col = 1
+        for side, other in ((lv, rv), (rv, lv)):
+            for i, fmt in enumerate(("{:.4f}", "{:.3f}", "{:.4f}")):
                 better = side[i] > other[i] if i == 2 else side[i] < other[i]
-                cells.append((fmt.format(side[i]),
-                              {"colour": RED if better else INK,
-                               "bold": better, "align": PP_ALIGN.CENTER}))
-        out.append(cells)
-    return out
+                assert fmt.format(side[i]) != fmt.format(other[i]), (
+                    f"{label}: {side[i]} and {other[i]} both print as "
+                    f"{fmt.format(side[i])}, so the mark would be unreadable")
+                cell = tbl.cell(r, col)
+                cell.fill.solid(); cell.fill.fore_color.rgb = band
+                cell_text(cell, fmt.format(side[i]), size=size,
+                          bold=better, colour=RED if better else INK,
+                          align=PP_ALIGN.CENTER)
+                col += 1
+    return tbl
 
 
-def group_header(slide, left_label, right_label, top, left=MARGIN, width=BODY_W):
-    span = width * 3 / 7
-    write(textbox(slide, left + width / 7, top, span, 0.26), [left_label],
-          size=11.5, colour=INK, bold=True)
-    write(textbox(slide, left + width / 7 + span, top, span, 0.26), [right_label],
-          size=11.5, colour=INK, bold=True)
+INJ = [("种子 42 · 白天", False, (0.07996, 3.876, 0.9207), (0.08201, 3.941, 0.9158)),
+       ("种子 42 · 夜间", False, (0.08240, 3.533, 0.9265), (0.08408, 3.542, 0.9228)),
+       ("种子 42 · 雨天", False, (0.10347, 4.533, 0.8796), (0.10697, 4.621, 0.8719)),
+       ("种子 43 · 白天", True, (0.08265, 3.844, 0.9183), (0.08538, 3.946, 0.9115)),
+       ("种子 43 · 夜间", True, (0.08578, 3.605, 0.9199), (0.08813, 3.679, 0.9135)),
+       ("种子 43 · 雨天", True, (0.10850, 4.638, 0.8705), (0.11080, 4.684, 0.8646))]
 
+CONTENT = [("种子 42 · 白天", False, (0.07996, 3.876, 0.9207), (0.08028, 3.892, 0.9199)),
+           ("种子 42 · 夜间", False, (0.08240, 3.533, 0.9265), (0.08255, 3.524, 0.9262)),
+           ("种子 42 · 雨天", False, (0.10347, 4.533, 0.8796), (0.10402, 4.550, 0.8784)),
+           ("种子 43 · 白天", True, (0.08265, 3.844, 0.9183), (0.08337, 3.870, 0.9166)),
+           ("种子 43 · 夜间", True, (0.08578, 3.605, 0.9199), (0.08606, 3.616, 0.9191)),
+           ("种子 43 · 雨天", True, (0.10850, 4.638, 0.8705), (0.10936, 4.685, 0.8688))]
 
-INJ = [("种子 42 · 白天", (0.07996, 3.876, 0.9207), (0.08201, 3.941, 0.9158)),
-       ("种子 42 · 夜间", (0.08240, 3.533, 0.9265), (0.08408, 3.542, 0.9228)),
-       ("种子 42 · 雨天", (0.10347, 4.533, 0.8796), (0.10697, 4.621, 0.8719)),
-       ("种子 43 · 白天", (0.08265, 3.844, 0.9183), (0.08538, 3.946, 0.9115)),
-       ("种子 43 · 夜间", (0.08578, 3.605, 0.9199), (0.08813, 3.679, 0.9135)),
-       ("种子 43 · 雨天", (0.10850, 4.638, 0.8705), (0.11080, 4.684, 0.8646))]
+ARMS8 = [("白天", False, (0.08265, 3.844, 0.9183), (0.08398, 3.952, 0.9143)),
+         ("夜间", False, (0.08578, 3.605, 0.9199), (0.08600, 3.598, 0.9191)),
+         ("雨天", False, (0.10850, 4.638, 0.8705), (0.11335, 4.778, 0.8580))]
 
-CONTENT = [("种子 42 · 白天", (0.07996, 3.876, 0.9207), (0.08028, 3.892, 0.9199)),
-           ("种子 42 · 夜间", (0.08240, 3.533, 0.9265), (0.08255, 3.524, 0.9262)),
-           ("种子 42 · 雨天", (0.10347, 4.533, 0.8796), (0.10402, 4.550, 0.8784)),
-           ("种子 43 · 白天", (0.08265, 3.844, 0.9183), (0.08337, 3.870, 0.9166)),
-           ("种子 43 · 夜间", (0.08578, 3.605, 0.9199), (0.08606, 3.616, 0.9191)),
-           ("种子 43 · 雨天", (0.10850, 4.638, 0.8705), (0.10936, 4.685, 0.8688))]
-
-ARMS8 = [("白天", (0.08265, 3.844, 0.9183), (0.08398, 3.952, 0.9143)),
-         ("夜间", (0.08578, 3.605, 0.9199), (0.08600, 3.598, 0.9191)),
-         ("雨天", (0.10850, 4.638, 0.8705), (0.11335, 4.778, 0.8580))]
-
-ARMS20 = [("白天", (0.08387, 3.950, 0.9208), (0.08259, 3.865, 0.9212)),
-          ("夜间", (0.09071, 3.968, 0.9179), (0.08840, 3.798, 0.9205)),
-          ("雨天", (0.10652, 4.666, 0.8793), (0.10739, 4.632, 0.8760))]
+ARMS20 = [("白天", False, (0.08387, 3.950, 0.9208), (0.08259, 3.865, 0.9212)),
+          ("夜间", False, (0.09071, 3.968, 0.9179), (0.08840, 3.798, 0.9205)),
+          ("雨天", False, (0.10652, 4.666, 0.8793), (0.10739, 4.632, 0.8760))]
 
 
 def cover(prs):
@@ -200,9 +232,10 @@ def setup(prs):
 def injection(prs):
     slide = new(prs)
     header(slide, "结果 · 主证据", "同一份权重，只换推理时喂进去的文本")
-    group_header(slide, "喂真实 caption", "喂空 caption", 1.86)
-    table(slide, metric_rows(INJ), MARGIN, 2.14, BODY_W, 3.2, COLS, size=12, align=ALIGN)
-    write(textbox(slide, MARGIN, 5.50, BODY_W, 0.5),
+    result_table(slide, "训练：带 caption　·　推理：真实 caption",
+                 "训练：带 caption　·　推理：空 caption",
+                 INJ, MARGIN, 1.92, BODY_W, 3.45)
+    write(textbox(slide, MARGIN, 5.55, BODY_W, 0.5),
           ["十八格全部偏真实 caption。此比较不涉及第二次训练，因此不含训练随机性。"],
           size=13.5, colour=INK, bold=True)
     footnote(slide, "此前在 Lotus-G 起点上的六条实验线，这一比较全部是相反方向。每行较好的值标红。")
@@ -212,9 +245,10 @@ def injection(prs):
 def content(prs):
     slide = new(prs)
     header(slide, "结果 · 控制实验", "把 caption 与图像的配对打乱，还剩多少？")
-    group_header(slide, "喂真实 caption", "喂打乱 caption", 1.86)
-    table(slide, metric_rows(CONTENT), MARGIN, 2.14, BODY_W, 3.2, COLS, size=12, align=ALIGN)
-    write(textbox(slide, MARGIN, 5.50, BODY_W, 0.5),
+    result_table(slide, "训练：带 caption　·　推理：真实 caption",
+                 "训练：带 caption　·　推理：打乱 caption",
+                 CONTENT, MARGIN, 1.92, BODY_W, 3.45)
+    write(textbox(slide, MARGIN, 5.55, BODY_W, 0.5),
           ["方向仍然一致（十八格中十七格），但打乱后仍保留约八成收益 —— 语义内容约占两成。"],
           size=13.5, colour=INK, bold=True)
     footnote(slide, "打乱 ＝ 把每帧的描述换成另一帧的描述；文本长度与分布不变，只破坏与图像的对应关系。")
@@ -226,9 +260,10 @@ def arms(prs):
     header(slide, "结果 · 未能确立的一项", "带 caption 训练 vs 不带：读不出方向")
     for left, label, rows in ((MARGIN, "两臂都取 8000 步", ARMS8),
                               (MARGIN + 6.25, "两臂都取 20000 步", ARMS20)):
-        write(textbox(slide, left, 1.78, 5.85, 0.26), [label], size=11.5, colour=INK, bold=True)
-        group_header(slide, "带 caption 训练", "无 caption 训练", 2.04, left, 5.85)
-        table(slide, metric_rows(rows), left, 2.32, 5.85, 1.7, COLS, size=9.5, align=ALIGN)
+        write(textbox(slide, left, 1.78, 5.85, 0.26), [label], size=12.5, colour=INK, bold=True)
+        result_table(slide, "训练带 caption　推理真实",
+                     "训练无 caption　推理空",
+                     rows, left, 2.08, 5.85, 2.10, size=10.5)
     write(textbox(slide, MARGIN, 4.35, BODY_W, 1.7),
           ["同一对训练，只换取用的 checkpoint，结论完全相反。",
            "单条臂自己在不同 checkpoint 之间的跳动最大 0.0060，而两臂之间的差只有 0.001–0.003 ——"
