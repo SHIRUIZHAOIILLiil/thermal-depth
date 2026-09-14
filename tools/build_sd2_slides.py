@@ -278,45 +278,48 @@ def arms(prs):
 def objective(prs):
     slide = new(prs)
     header(slide, "方法 · 目标函数", "两个分支各自在监督什么")
-    top = 1.84
-    xs = [MARGIN, MARGIN + 2.05, MARGIN + 3.95, MARGIN + 6.80]
-    widths = [1.80, 1.65, 2.60, 2.00]
-    labels = [["深度图（米）"], ["取倒数 → 视差"],
-              ["逐帧 2%/98% 分位数", "归一化到 [-1, 1]"], ["VAE 编码", "→ 目标 latent"]]
-    for x, width, label in zip(xs, widths, labels):
-        box(slide, x, top, width, 0.66, label, size=11, fill=WHITE)
-    for index in range(3):
-        arrow(slide, xs[index] + widths[index] + 0.06, top + 0.33, xs[index + 1] - 0.06)
-    write(textbox(slide, MARGIN + 3.95, top + 0.70, 2.60, 0.28),
-          ["↑ 绝对尺度在这一步丢失"], size=10.5, colour=BAD, bold=True)
-    write(textbox(slide, MARGIN + 9.05, top + 0.12, 3.1, 0.5),
-          ["深度分支的目标", "（重建分支的目标是热像自身）"], size=10.5, colour=GREY)
 
-    body = 2.92
-    box(slide, MARGIN, body, 5.85, 2.55,
-        [("L_dense　深度分支", {"size": 14, "bold": True, "colour": INK, "space_after": 7}),
-         ("输入　[热像 latent ‖ 加噪 latent]　任务开关 [1,0]　文本＝caption", {"size": 11.5}),
-         ("目标　该帧归一化视差图的 VAE latent", {"size": 11.5}),
-         ("损失　两者在 latent 空间的 MSE", {"size": 11.5, "space_after": 7}),
-         ("教模型：从热像推断相对深度。这是唯一在学正事的项。",
-          {"size": 11.5, "bold": True, "colour": GOOD, "space_after": 7}),
-         ("掩码取伪深度有效区 ∪ 天空，8×8 池化到 latent 分辨率；实测覆盖 100%，"
-          "因此等价于全 1。", {"size": 10.5, "colour": GREY})],
+    # The normalisation chain belongs to the depth branch alone -- the other
+    # branch's target is the thermal frame itself -- so it sits inside that box
+    # rather than spanning the slide above both, which needed a footnote to
+    # disown half of what it appeared to cover.
+    body = 1.95
+    box(slide, MARGIN, body, 5.85, 3.55,
+        [("L_dense　深度分支", {"size": 15, "bold": True, "colour": INK, "space_after": 9}),
+         ("输入", {"size": 11, "bold": True, "colour": GREY, "space_after": 1}),
+         ("[热像 latent ‖ 加噪 latent]　任务开关 [1,0]　文本＝caption",
+          {"size": 11.5, "space_after": 8}),
+         ("目标", {"size": 11, "bold": True, "colour": GREY, "space_after": 1}),
+         ("深度图（米）→ 取倒数得视差 → 逐帧 2%/98% 分位数归一化到 [-1,1] → VAE 编码",
+          {"size": 11.5, "space_after": 2}),
+         ("⚠ 绝对尺度在归一化这一步丢失：每一帧用自己的分位数，两帧深度范围不同也被压到同一区间",
+          {"size": 11, "colour": BAD, "bold": True, "space_after": 8}),
+         ("损失", {"size": 11, "bold": True, "colour": GREY, "space_after": 1}),
+         ("预测 latent 与目标 latent 的 MSE，掩码为伪深度有效区 ∪ 天空（实测覆盖 100%）",
+          {"size": 11.5, "space_after": 9}),
+         ("教模型：从热像推断相对深度 —— 唯一在学正事的项。",
+          {"size": 12, "bold": True, "colour": GOOD})],
         fill=WHITE, line=GOOD, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP)
 
-    box(slide, MARGIN + 6.25, body, 5.85, 2.55,
-        [("L_recon　重建分支", {"size": 14, "bold": True, "colour": INK, "space_after": 7}),
-         ("输入　同一张热像 latent　任务开关 [0,1]　文本＝空串", {"size": 11.5}),
-         ("目标　热像自身的 VAE latent", {"size": 11.5}),
-         ("损失　同样是 latent 空间的 MSE，掩码恒为全 1", {"size": 11.5, "space_after": 7}),
+    box(slide, MARGIN + 6.25, body, 5.85, 3.55,
+        [("L_recon　重建分支", {"size": 15, "bold": True, "colour": INK, "space_after": 9}),
+         ("输入", {"size": 11, "bold": True, "colour": GREY, "space_after": 1}),
+         ("同一张热像 latent　任务开关 [0,1]　文本＝空串",
+          {"size": 11.5, "space_after": 8}),
+         ("目标", {"size": 11, "bold": True, "colour": GREY, "space_after": 1}),
+         ("热像自身的 VAE latent —— 不经过上面那条归一化链",
+          {"size": 11.5, "space_after": 8}),
+         ("损失", {"size": 11, "bold": True, "colour": GREY, "space_after": 1}),
+         ("同样是 latent 空间的 MSE，掩码恒为全 1",
+          {"size": 11.5, "space_after": 9}),
          ("教模型：学深度时不要毁掉输入的细结构（Lotus 的「细节保持器」）。",
-          {"size": 11.5, "bold": True, "colour": GOOD, "space_after": 7}),
-         ("但输入的前四个通道已经就是热像 latent，这接近恒等映射：损失从第 20 步的 0.53 "
-          "掉到第 1300 步的 0.001，约为深度分支的百分之一，此后几乎不提供梯度。",
+          {"size": 12, "bold": True, "colour": GOOD, "space_after": 8}),
+         ("但输入的前四个通道已经就是热像 latent，这接近恒等映射：损失从第 20 步的 0.53 掉到"
+          "第 1300 步的 0.001，约为深度分支的百分之一，此后几乎不提供梯度。",
           {"size": 10.5, "colour": GREY})],
         fill=WHITE, line=RULE, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP)
 
-    write(textbox(slide, MARGIN, 5.62, BODY_W, 0.5),
+    write(textbox(slide, MARGIN, 5.66, BODY_W, 0.5),
           ["两项都只比较 latent：目标函数里没有任何一个量的单位是米，也没有任何一项引用 caption。"],
           size=13, colour=BAD, bold=True)
     conclusion(slide, "文本只作为条件输入进入 cross-attention，没有梯度要求模型去读它 —— "
