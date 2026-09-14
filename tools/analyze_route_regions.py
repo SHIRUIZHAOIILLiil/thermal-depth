@@ -94,6 +94,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ms2-root", type=Path, default=Path("/mnt/e/dataset/ms2"))
     parser.add_argument("--lotus-model-path", default="jingheya/lotus-depth-g-v2-1-disparity")
+    # train_route_suite.RouteModel gained --backbone when Lotus-D became a second
+    # base; this tool builds the same RouteModel and was never given the flag, so
+    # every run here died on an AttributeError before loading a single frame.
+    parser.add_argument("--backbone", choices=("g", "d", "marigold", "e2eft"), default="g")
     parser.add_argument("--anythermal-model-path", default="theairlabcmu/AnyThermal")
     parser.add_argument("--val-stride", type=int, default=1)
     parser.add_argument(
