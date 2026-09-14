@@ -158,6 +158,13 @@ CONTENT = [("种子 42 · 白天", False, (0.07996, 3.876, 0.9207), (0.08028, 3.
            ("种子 43 · 夜间", True, (0.08578, 3.605, 0.9199), (0.08606, 3.616, 0.9191)),
            ("种子 43 · 雨天", True, (0.10850, 4.638, 0.8705), (0.10936, 4.685, 0.8688))]
 
+ARMS_MAIN = [("种子 42 · 白天", False, (0.07996, 3.876, 0.9207), (0.08120, 3.904, 0.9183)),
+             ("种子 42 · 夜间", False, (0.08240, 3.533, 0.9265), (0.08254, 3.558, 0.9262)),
+             ("种子 42 · 雨天", False, (0.10347, 4.533, 0.8796), (0.10790, 4.702, 0.8701)),
+             ("种子 43 · 白天", True, (0.08265, 3.844, 0.9183), (0.08398, 3.952, 0.9143)),
+             ("种子 43 · 夜间", True, (0.08578, 3.605, 0.9199), (0.08600, 3.598, 0.9191)),
+             ("种子 43 · 雨天", True, (0.10850, 4.638, 0.8705), (0.11335, 4.778, 0.8580))]
+
 ARMS8 = [("白天", False, (0.08265, 3.844, 0.9183), (0.08398, 3.952, 0.9143)),
          ("夜间", False, (0.08578, 3.605, 0.9199), (0.08600, 3.598, 0.9191)),
          ("雨天", False, (0.10850, 4.638, 0.8705), (0.11335, 4.778, 0.8580))]
@@ -180,7 +187,7 @@ def cover(prs):
           ["改从 SD2 起训之后，", "caption 第一次跨种子稳定生效"],
           size=34, colour=WHITE, bold=True, space_after=8)
     write(textbox(slide, MARGIN, 4.60, 11.8, 1.4),
-          ["· 同一模型喂真实 caption 优于喂空 caption：两个种子 × 三个场景 × 三个指标，十八格同向",
+          [f"· 同一模型喂真实 caption 优于喂空 caption：两个种子 × 三个场景 × 三个指标，{wins(INJ)} 格同向",
            "· 语义内容只占其中约两成，其余来自「有文本」这件事本身",
            "· 绝对精度未提升，横向仍不及监督基线"],
           size=13.5, colour=ICE, space_after=8)
@@ -232,6 +239,32 @@ def setup(prs):
     conclusion(slide, "两条臂只差一件事：训练时是否喂 caption。起点、数据、超参、随机种子全部相同。")
 
 
+def wins(rows):
+    """How many of the 3 x 3 metric cells favour the left condition.
+
+    Counted from the data rather than written into the caption: the first
+    draft of this deck said eighteen cells where a seed has nine, and a
+    sentence that restates a table is the sentence that goes stale first.
+    """
+    return sum((r[2][i] > r[3][i]) if i == 2 else (r[2][i] < r[3][i])
+               for r in rows for i in range(3))
+
+
+def arms_main(prs):
+    slide = new(prs)
+    header(slide, "结果 · 两臂对照", "训练时给不给 caption")
+    result_table(slide, "训练：带 caption　·　推理：真实 caption",
+                 "训练：无 caption　·　推理：空 caption",
+                 ARMS_MAIN, MARGIN, 1.92, BODY_W, 3.45)
+    write(textbox(slide, MARGIN, 5.50, BODY_W, 0.55),
+          [f"种子 42 九格中 {wins(ARMS_MAIN[:3])} 格、种子 43 九格中 {wins(ARMS_MAIN[3:])} 格"
+           f"偏带 caption 训练的一臂。"],
+          size=13.5, colour=INK, bold=True)
+    footnote(slide, "每个种子内部两臂取同一步：种子 42 为 16000 步（机械选点恰好一致），"
+                    "种子 43 为 8000 步。两臂的起点、数据、超参、随机种子完全相同。", top=6.02)
+    conclusion(slide, "这是唯一直接回答「模型有没有变好」的比较；但它跨两次训练，对取用哪个 checkpoint 敏感 —— 见后一页。")
+
+
 def injection(prs):
     slide = new(prs)
     header(slide, "结果 · 主证据", "同一份权重，只换推理时喂进去的文本")
@@ -239,7 +272,7 @@ def injection(prs):
                  "训练：带 caption　·　推理：空 caption",
                  INJ, MARGIN, 1.92, BODY_W, 3.45)
     write(textbox(slide, MARGIN, 5.55, BODY_W, 0.5),
-          ["十八格全部偏真实 caption。此比较不涉及第二次训练，因此不含训练随机性。"],
+          [f"十八格中 {wins(INJ)} 格偏真实 caption。此比较不涉及第二次训练，因此不含训练随机性。"],
           size=13.5, colour=INK, bold=True)
     footnote(slide, "此前在 Lotus-G 起点上的六条实验线，这一比较全部是相反方向。每行较好的值标红。")
     conclusion(slide, "文本条件在 SD2 起点上由有害转为有益，且在两个种子上一致。")
@@ -252,27 +285,29 @@ def content(prs):
                  "训练：带 caption　·　推理：打乱 caption",
                  CONTENT, MARGIN, 1.92, BODY_W, 3.45)
     write(textbox(slide, MARGIN, 5.55, BODY_W, 0.5),
-          ["方向仍然一致（十八格中十七格），但打乱后仍保留约八成收益 —— 语义内容约占两成。"],
+          [f"方向仍然一致（十八格中 {wins(CONTENT)} 格），但打乱后仍保留约八成收益 —— 语义内容约占两成。"],
           size=13.5, colour=INK, bold=True)
     footnote(slide, "打乱 ＝ 把每帧的描述换成另一帧的描述；文本长度与分布不变，只破坏与图像的对应关系。")
     conclusion(slide, "模型主要响应「有一段文本在场」，而不是文本说了什么。")
 
 
-def arms(prs):
+def sensitivity(prs):
     slide = new(prs)
-    header(slide, "结果 · 未能确立的一项", "带 caption 训练 vs 不带：读不出方向")
-    for left, label, rows in ((MARGIN, "两臂都取 8000 步", ARMS8),
-                              (MARGIN + 6.25, "两臂都取 20000 步", ARMS20)):
-        write(textbox(slide, left, 1.78, 5.85, 0.26), [label], size=12.5, colour=INK, bold=True)
-        result_table(slide, "训练带 caption　推理真实",
-                     "训练无 caption　推理空",
-                     rows, left, 2.08, 5.85, 2.10, size=10.5)
-    write(textbox(slide, MARGIN, 4.35, BODY_W, 1.7),
-          ["同一对训练，只换取用的 checkpoint，结论完全相反。",
-           "单条臂自己在不同 checkpoint 之间的跳动最大 0.0060，而两臂之间的差只有 0.001–0.003 ——"
-           "噪声大于信号，任何单一步数上的比较都不可靠。"],
-          size=12.5, colour=GREY, space_after=9)
-    conclusion(slide, "这一项不作为主张。注入对照之所以站得住，正因为它不跨训练运行。")
+    header(slide, "结果 · 上一页的边界", "换一个 checkpoint，两臂的结论就反过来")
+    write(textbox(slide, MARGIN, 1.80, BODY_W, 0.28),
+          ["同一对训练（种子 43），两臂改取 20000 步"], size=12.5, colour=INK, bold=True)
+    result_table(slide, "训练：带 caption　·　推理：真实 caption",
+                 "训练：无 caption　·　推理：空 caption",
+                 ARMS20, MARGIN, 2.10, BODY_W, 1.95)
+    write(textbox(slide, MARGIN, 4.30, BODY_W, 1.9),
+          [f"上一页种子 43 取 8000 步时九格中 {wins(ARMS_MAIN[3:])} 格偏带 caption；"
+           f"此处取 20000 步，九格中 {9 - wins(ARMS20)} 格偏无 caption。",
+           "原因是单条臂自己在不同 checkpoint 之间就会跳动：带 caption 一臂的夜间 AbsRel 从 0.08578 变到 0.09071，"
+           "无 caption 一臂的雨天从 0.11335 变到 0.10739 —— 跳动幅度最大 0.0060，而两臂之间的差只有 0.001 至 0.003。",
+           "噪声大于信号，因此两臂之差不作为论文主张；它只说明「模型是否变好」这个问题目前测不出来。"],
+          size=12.5, colour=GREY, space_after=10)
+    conclusion(slide, "注入与打乱两项对照之所以站得住，正因为它们在同一份权重上做，不跨训练运行。")
+
 
 
 def objective(prs):
@@ -353,7 +388,8 @@ def limits(prs):
 def build(path: Path) -> None:
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(W), Inches(H)
-    for page in (cover, lineage, setup, injection, content, arms, objective, limits):
+    for page in (cover, lineage, setup, arms_main, injection, content,
+                 sensitivity, objective, limits):
         page(prs)
     path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(path)
