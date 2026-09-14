@@ -45,7 +45,7 @@ def new(prs):
 
 
 def box(slide, left, top, width, height, text, *, fill=BAND, line=RULE,
-        size=11, colour=INK, bold=False):
+        size=11, colour=INK, bold=False, align=PP_ALIGN.CENTER, anchor=None):
     shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left),
                                    Inches(top), Inches(width), Inches(height))
     shape.fill.solid()
@@ -55,18 +55,21 @@ def box(slide, left, top, width, height, text, *, fill=BAND, line=RULE,
     shape.shadow.inherit = False
     frame = shape.text_frame
     frame.word_wrap = True
-    frame.vertical_anchor = MSO_ANCHOR.MIDDLE
-    frame.margin_left = frame.margin_right = Inches(0.08)
-    frame.margin_top = frame.margin_bottom = 0
+    frame.vertical_anchor = anchor or MSO_ANCHOR.MIDDLE
+    frame.margin_left = frame.margin_right = Inches(0.16)
+    frame.margin_top = frame.margin_bottom = Inches(0.10)
     lines = text if isinstance(text, list) else [text]
     for index, item in enumerate(lines):
+        body, over = item if isinstance(item, tuple) else (item, {})
         para = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
-        para.alignment = PP_ALIGN.CENTER
-        para.space_after = Pt(1)
+        para.alignment = over.get("align", align)
+        para.space_after = Pt(over.get("space_after", 3))
         run = para.add_run()
-        run.text = item
-        run.font.name, run.font.size, run.font.bold = FONT, Pt(size), bold
-        run.font.color.rgb = colour
+        run.text = body
+        run.font.name = FONT
+        run.font.size = Pt(over.get("size", size))
+        run.font.bold = over.get("bold", bold)
+        run.font.color.rgb = over.get("colour", colour)
     return shape
 
 
@@ -88,12 +91,12 @@ def result_table(slide, left_label, right_label, rows, left, top, width, height,
     whole design turns on those being independent, and a single run-on label
     ("caption-trained, fed the real caption") hides that.
 
-    AbsRel drops from five decimals to four because the fifth never decides a
-    comparison here and costs scanning time; RMSE and delta1 keep the precision
-    the evaluator reports. The assertion below is why: at two decimals the
-    night-time RMSE pair 3.605 / 3.598 both print as 3.60, so one of two equal
-    looking cells would carry the red mark. A rounding that hides the very
-    difference the cell is marked for is worse than a wide column.
+    Every column keeps the precision the evaluator reports. Shortening them was
+    tried and reverted twice: two decimals print the RMSE pair 3.605 / 3.598
+    identically, so one of two equal-looking cells carried the red mark, and
+    four decimals turn 0.07996 into 0.0800, which reads as eight point zero when
+    the value is below it. The assertion below catches the first kind; the
+    second has no automatic guard, which is the reason for this paragraph.
     """
     n = len(rows) + 2
     shape = slide.shapes.add_table(n, 7, Inches(left), Inches(top),
@@ -127,7 +130,7 @@ def result_table(slide, left_label, right_label, rows, left, top, width, height,
         cell_text(cell, label, size=size, bold=False, align=PP_ALIGN.LEFT)
         col = 1
         for side, other in ((lv, rv), (rv, lv)):
-            for i, fmt in enumerate(("{:.4f}", "{:.3f}", "{:.4f}")):
+            for i, fmt in enumerate(("{:.5f}", "{:.3f}", "{:.4f}")):
                 better = side[i] > other[i] if i == 2 else side[i] < other[i]
                 assert fmt.format(side[i]) != fmt.format(other[i]), (
                     f"{label}: {side[i]} and {other[i]} both print as "
@@ -274,30 +277,51 @@ def arms(prs):
 
 def objective(prs):
     slide = new(prs)
-    header(slide, "方法 · 目标函数", "训练在监督什么，以及没有监督什么")
-    top = 1.88
+    header(slide, "方法 · 目标函数", "两个分支各自在监督什么")
+    top = 1.84
     xs = [MARGIN, MARGIN + 2.05, MARGIN + 3.95, MARGIN + 6.80]
     widths = [1.80, 1.65, 2.60, 2.00]
     labels = [["深度图（米）"], ["取倒数 → 视差"],
               ["逐帧 2%/98% 分位数", "归一化到 [-1, 1]"], ["VAE 编码", "→ 目标 latent"]]
     for x, width, label in zip(xs, widths, labels):
-        box(slide, x, top, width, 0.70, label, size=11, fill=WHITE)
+        box(slide, x, top, width, 0.66, label, size=11, fill=WHITE)
     for index in range(3):
-        arrow(slide, xs[index] + widths[index] + 0.06, top + 0.35, xs[index + 1] - 0.06)
-    write(textbox(slide, MARGIN + 3.95, top + 0.76, 2.60, 0.3),
+        arrow(slide, xs[index] + widths[index] + 0.06, top + 0.33, xs[index + 1] - 0.06)
+    write(textbox(slide, MARGIN + 3.95, top + 0.70, 2.60, 0.28),
           ["↑ 绝对尺度在这一步丢失"], size=10.5, colour=BAD, bold=True)
-    table(slide, [["目标函数中的项", "监督什么", "状态"],
-                  ["L_dense（深度分支）", "给热像，预测它的归一化视差 latent", ("开 · 权重 1.0", {"colour": GOOD})],
-                  ["L_recon（重建分支）", "给热像，重建热像自身的 latent", ("开 · 权重 1.0", {"colour": GOOD})],
-                  ["L_image（米制 L1）", "解码成深度图后，在激光点上按米监督", ("关 · 权重 0", {"colour": BAD})],
-                  ["L_metric（逆深度 L1）", "用训练集冻结的全局尺度按米监督", ("关 · 权重 0", {"colour": BAD})],
-                  ["（无）", "没有任何一项引用 caption", ("不存在", {"colour": BAD})]],
-          MARGIN, 3.05, BODY_W, 2.4, [2.6, 6.4, 2.0], size=11.5,
-          align=[PP_ALIGN.LEFT, PP_ALIGN.LEFT, PP_ALIGN.CENTER])
-    write(textbox(slide, MARGIN, 5.58, BODY_W, 0.5),
-          ["重建分支在约一千步后损失降到深度分支的百分之一，此后几乎不提供梯度 —— 因为输入里已经含有热像 latent。"],
-          size=11.5, colour=GREY)
-    conclusion(slide, "目标函数里没有「米」，也没有任何一项要求模型去读 caption —— Iris 的目标函数与此逐字相同。")
+    write(textbox(slide, MARGIN + 9.05, top + 0.12, 3.1, 0.5),
+          ["深度分支的目标", "（重建分支的目标是热像自身）"], size=10.5, colour=GREY)
+
+    body = 2.92
+    box(slide, MARGIN, body, 5.85, 2.55,
+        [("L_dense　深度分支", {"size": 14, "bold": True, "colour": INK, "space_after": 7}),
+         ("输入　[热像 latent ‖ 加噪 latent]　任务开关 [1,0]　文本＝caption", {"size": 11.5}),
+         ("目标　该帧归一化视差图的 VAE latent", {"size": 11.5}),
+         ("损失　两者在 latent 空间的 MSE", {"size": 11.5, "space_after": 7}),
+         ("教模型：从热像推断相对深度。这是唯一在学正事的项。",
+          {"size": 11.5, "bold": True, "colour": GOOD, "space_after": 7}),
+         ("掩码取伪深度有效区 ∪ 天空，8×8 池化到 latent 分辨率；实测覆盖 100%，"
+          "因此等价于全 1。", {"size": 10.5, "colour": GREY})],
+        fill=WHITE, line=GOOD, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP)
+
+    box(slide, MARGIN + 6.25, body, 5.85, 2.55,
+        [("L_recon　重建分支", {"size": 14, "bold": True, "colour": INK, "space_after": 7}),
+         ("输入　同一张热像 latent　任务开关 [0,1]　文本＝空串", {"size": 11.5}),
+         ("目标　热像自身的 VAE latent", {"size": 11.5}),
+         ("损失　同样是 latent 空间的 MSE，掩码恒为全 1", {"size": 11.5, "space_after": 7}),
+         ("教模型：学深度时不要毁掉输入的细结构（Lotus 的「细节保持器」）。",
+          {"size": 11.5, "bold": True, "colour": GOOD, "space_after": 7}),
+         ("但输入的前四个通道已经就是热像 latent，这接近恒等映射：损失从第 20 步的 0.53 "
+          "掉到第 1300 步的 0.001，约为深度分支的百分之一，此后几乎不提供梯度。",
+          {"size": 10.5, "colour": GREY})],
+        fill=WHITE, line=RULE, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP)
+
+    write(textbox(slide, MARGIN, 5.62, BODY_W, 0.5),
+          ["两项都只比较 latent：目标函数里没有任何一个量的单位是米，也没有任何一项引用 caption。"],
+          size=13, colour=BAD, bold=True)
+    conclusion(slide, "文本只作为条件输入进入 cross-attention，没有梯度要求模型去读它 —— "
+                      "Iris 的目标函数与此逐字相同。")
+
 
 
 def limits(prs):
