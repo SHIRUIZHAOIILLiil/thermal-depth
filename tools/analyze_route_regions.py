@@ -56,6 +56,24 @@ from train_route_suite import (  # noqa: E402
 )
 
 DEPTH_BANDS = ((0.0, 10.0, "near <10m"), (10.0, 30.0, "mid 10-30m"), (30.0, 80.0, "far >30m"))
+
+
+def bands_from_edges(edges: list[float]) -> tuple[tuple[float, float, str], ...]:
+    """Turn `--depth-bands 0 10 20 40 60 80` into the (low, high, name) triples.
+
+    The default three bands answer "near or far?"; a finer split is for asking
+    where a metric gap lives, which needs enough resolution to see whether the
+    error grows smoothly or falls off a cliff. Kept as a flag rather than a new
+    default so every number reported before this stays reproducible.
+    """
+    if len(edges) < 2:
+        raise ValueError("--depth-bands needs at least two edges")
+    out = []
+    for low, high in zip(edges, edges[1:]):
+        if high <= low:
+            raise ValueError(f"--depth-bands must increase, got {low} then {high}")
+        out.append((low, high, f"{low:g}-{high:g}m"))
+    return tuple(out)
 ROW_BANDS = ((0.0, 1 / 3, "top"), (1 / 3, 2 / 3, "middle"), (2 / 3, 1.0, "bottom"))
 BOUNDARY_WINDOW = 9          # neighbourhood side length, pixels
 BOUNDARY_RATIO = 1.25        # local max/min depth ratio that counts as a discontinuity
@@ -101,6 +119,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-max-edge", type=int, default=0)
     parser.add_argument("--gt-decode-fp32", action="store_true", default=True)
     parser.add_argument("--bootstrap", type=int, default=10000)
+    parser.add_argument(
+        "--depth-bands",
+        type=float,
+        nargs="+",
+        metavar="EDGE",
+        help=(
+            "Bin edges in metres, e.g. `0 10 20 40 60 80`. Default is the three "
+            "coarse bands this tool has always used."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -125,12 +153,14 @@ def boundary_mask(depth: np.ndarray, valid: np.ndarray) -> np.ndarray:
     return valid & (span > BOUNDARY_RATIO)
 
 
-def strata_for(gt: np.ndarray, valid: np.ndarray) -> dict[str, np.ndarray]:
+def strata_for(gt: np.ndarray, valid: np.ndarray,
+               depth_bands: tuple[tuple[float, float, str], ...] = DEPTH_BANDS
+               ) -> dict[str, np.ndarray]:
     """name -> boolean mask (already intersected with `valid`)."""
     height = gt.shape[0]
     rows = np.arange(height)[:, None] / height
     strata: dict[str, np.ndarray] = {"all": valid}
-    for low, high, name in DEPTH_BANDS:
+    for low, high, name in depth_bands:
         strata[f"depth/{name}"] = valid & (gt >= low) & (gt < high)
     for low, high, name in ROW_BANDS:
         band = (rows >= low) & (rows < high)
@@ -143,6 +173,8 @@ def strata_for(gt: np.ndarray, valid: np.ndarray) -> dict[str, np.ndarray]:
 
 @torch.no_grad()
 def score_checkpoint(model: RouteModel, checkpoint: Path, rows: list[dict], prompt_for, args) -> dict:
+    depth_bands = (bands_from_edges(args.depth_bands) if getattr(args, "depth_bands", None)
+                   else DEPTH_BANDS)
     payload = torch.load(checkpoint.resolve(), map_location="cpu", weights_only=False)
     if payload.get("route") != args.route:
         raise SystemExit(f"{checkpoint}: route {payload.get('route')!r} != --route {args.route!r}")
@@ -151,6 +183,8 @@ def score_checkpoint(model: RouteModel, checkpoint: Path, rows: list[dict], prom
 
     per_frame: dict[str, list[float]] = {}
     pixel_totals: dict[str, list[float]] = {}
+    sse_totals: dict[str, float] = {}
+    abs_totals: dict[str, float] = {}
     for index, row in enumerate(rows):
         image_tensor, _ = load_input_tensor(row, model.modality, args)
         prediction = model.predict_disparity(row, image_tensor, prompt_for(index))
@@ -170,19 +204,42 @@ def score_checkpoint(model: RouteModel, checkpoint: Path, rows: list[dict], prom
         aligned = 1.0 / np.clip(raw.astype(np.float64) * scale + shift, 1e-3, None)
         aligned = np.clip(aligned, args.min_depth, args.max_depth)
         error = np.abs(aligned - gt) / np.maximum(gt, 1e-6)
+        squared = (aligned - gt) ** 2
 
-        for name, mask in strata_for(gt, valid).items():
+        for name, mask in strata_for(gt, valid, depth_bands).items():
             count = int(mask.sum())
             if count == 0:
                 continue
             per_frame.setdefault(name, []).append(float(error[mask].mean()))
             pixel_totals.setdefault(name, []).append(float(count))
+            # RMSE is a sum over pixels, so asking which band drives it means
+            # pooling squared error over pixels rather than averaging per frame:
+            # a band can carry a huge error and still be irrelevant to the total
+            # if it holds few pixels. Both halves are reported for that reason.
+            sse_totals[name] = sse_totals.get(name, 0.0) + float(squared[mask].sum())
+            abs_totals[name] = abs_totals.get(name, 0.0) + float(error[mask].sum())
         if (index + 1) % 500 == 0:
             print(f"    {index + 1}/{len(rows)}", flush=True)
 
+    pixels = {name: float(np.sum(values)) for name, values in pixel_totals.items()}
+    total_sse = sse_totals.get("all", 0.0)
+    pooled = {}
+    for name, sse in sse_totals.items():
+        n = pixels.get(name, 0.0)
+        if n <= 0:
+            continue
+        pooled[name] = {
+            "pixels": n,
+            "pixel_share": n / pixels["all"] if pixels.get("all") else float("nan"),
+            "sse": sse,
+            "sse_share": sse / total_sse if total_sse else float("nan"),
+            "rmse": float(np.sqrt(sse / n)),
+            "abs_rel": abs_totals[name] / n,
+        }
     return {
         "per_frame": per_frame,
-        "pixel_counts": {name: float(np.sum(values)) for name, values in pixel_totals.items()},
+        "pixel_counts": pixels,
+        "pooled": pooled,
     }
 
 
@@ -294,6 +351,27 @@ def main() -> None:
         cells = "".join(f"{np.mean(results[name]['per_frame'][stratum]):>16.4f}" for name in names)
         print(f"{stratum:24s} {cells}")
 
+    # Which band actually drives the total? RMSE is a pixel-pooled quantity, so
+    # the answer is the share of squared error, not the per-band RMSE: a band
+    # can be wildly wrong and still contribute nothing if it holds few pixels.
+    for name in names:
+        pooled = results[name].get("pooled") or {}
+        bands = [k for k in pooled if k.startswith("depth/")]
+        if not bands:
+            continue
+        print("")
+        print(f"[{aliases[name]}] 按 GT 距离分段（像素池化）")
+        print(f"{'band':16s}{'pixels':>14s}{'pixel%':>9s}"
+              f"{'sum sq err':>15s}{'sq err%':>9s}{'RMSE':>9s}{'AbsRel':>9s}")
+        print("-" * 81)
+        for band in bands + ["all"]:
+            row = pooled.get(band)
+            if row is None:
+                continue
+            print(f"{band.replace('depth/',''):16s}{row['pixels']:>14,.0f}"
+                  f"{100*row['pixel_share']:>8.2f}%{row['sse']:>15,.0f}"
+                  f"{100*row['sse_share']:>8.2f}%{row['rmse']:>9.3f}{row['abs_rel']:>9.4f}")
+
     report: dict = {
         "strata": {},
         "checkpoints": names,
@@ -301,6 +379,7 @@ def main() -> None:
         "route": args.route,
         "val_manifest": str(args.val_manifest),
         "caption_mode": {name: results[name]["caption_mode"] for name in results},
+        "pooled": {name: results[name].get("pooled") for name in results},
         "caption_rotation": rotation,
     }
     for stratum in strata:
