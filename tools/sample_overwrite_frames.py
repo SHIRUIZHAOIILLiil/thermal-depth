@@ -75,6 +75,24 @@ def measure(row: dict, args: argparse.Namespace) -> dict | None:
     if pseudo.shape != gt.shape:
         return None
 
+    # How much of the 8-bit range the frame survives into. The thermal PNG is
+    # 16-bit and AnyThermalEncoder._array_to_uint8 stretches it by min-max with
+    # no percentile clip, so a single hot pixel -- a streetlight, an exhaust --
+    # compresses the whole scene into the bottom of the range before it is
+    # quantised. The existing guard only rejects constant and all-white frames,
+    # so this passes silently, and AnyThermal used the same conversion when the
+    # pseudo depth for this frame was built.
+    raw = np.asarray(Image.open(args.ms2_root / row["thermal_path"]), dtype=np.float32)
+    lo, hi = float(raw.min()), float(raw.max())
+    u8 = (np.clip((raw - lo) / (hi - lo) * 255.0, 0, 255).round().astype(np.uint8)
+          if hi > lo else np.zeros_like(raw, np.uint8))
+    p1, p99 = np.percentile(u8, [1, 99])
+    thermal_stats = {
+        "thermal_raw_max_over_p99": float(hi / max(np.percentile(raw, 99), 1e-6)),
+        "thermal_used_range": float((p99 - p1) / 255.0),
+        "thermal_levels": int(len(np.unique(u8))),
+    }
+
     real = np.isfinite(gt) & (gt > D_MIN) & (gt < D_MAX)
     if not real.any():
         return None
@@ -94,6 +112,7 @@ def measure(row: dict, args: argparse.Namespace) -> dict | None:
         "pseudo_negative_fraction": float(np.mean(pseudo <= 0)),
         "pseudo_min": float(pseudo.min()),
         "pseudo_max": float(pseudo.max()),
+        **thermal_stats,
     }
 
 
@@ -122,6 +141,16 @@ def main() -> None:
     print(report([r["target_rmse"] for r in records], "两目标整体 RMSE（米）"))
     print(report([r["pseudo_negative_fraction"] * 100 for r in records],
                  "伪深度非正像素", "%"))
+    print(report([r["thermal_used_range"] * 100 for r in records],
+                 "热像用掉的灰度范围", "%"))
+    print(report([r["thermal_levels"] for r in records], "热像不同灰阶数"))
+    starved = [r for r in records if r["thermal_used_range"] < 0.25]
+    print("")
+    print(f"热像动态范围 <25% 的帧：{len(starved)} / {len(records)} "
+          f"（{len(starved)/len(records):.1%}）")
+    for r in sorted(starved, key=lambda r: r["thermal_used_range"])[:5]:
+        print(f"    {r['id']}  用掉 {r['thermal_used_range']:.1%}  "
+              f"{r['thermal_levels']} 个灰阶  max/p99 = {r['thermal_raw_max_over_p99']:.2f}")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     summary = args.out_dir / "overwrite_stats.json"
