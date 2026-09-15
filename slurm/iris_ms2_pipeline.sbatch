@@ -54,8 +54,12 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 # Must match the value the checkpoint was trained under; see lotus/pipeline.py.
 export IRIS_TEXT_PADDING="${IRIS_TEXT_PADDING:-legacy}"
 export IRIS_DECODE_CLAMP="${IRIS_DECODE_CLAMP:-0}"
+# ⚠️ 必须与该 checkpoint 训练时一致：它改的是送进 VAE 的热像张量，用训练时没见过
+# 的口径评分，和用错 CAPTION_MODE 是同一类错误。
+export IRIS_THERMAL_STRETCH="${IRIS_THERMAL_STRETCH:-minmax}"
 echo "text pad  = $IRIS_TEXT_PADDING"
 echo "decode clamp = $IRIS_DECODE_CLAMP  (1 = 与 Lotus 一致，先裁再取通道均值)"
+echo "thermal   = $IRIS_THERMAL_STRETCH  (须与训练时一致)"
 
 : "${RUN:?必须指定 RUN（训练输出目录名）}"
 STEPS="${STEPS:-1000 2000 3000 5000 8000}"

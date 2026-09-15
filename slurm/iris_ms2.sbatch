@@ -162,6 +162,10 @@ export PREDICTION_TYPE="${PREDICTION_TYPE:-sample}"
 export PURE_PSEUDO="${PURE_PSEUDO:-0}"
 export RANDOM_FLIP="${RANDOM_FLIP:-1}"
 export IRIS_TEXT_PADDING="${IRIS_TEXT_PADDING:-legacy}"
+# minmax（默认，2026-07-29 以来所有数字的口径）| percentile（量化前先做 1%/99%
+# 裁剪，也就是 BridgeMultiSpectralDepth 对同一批帧做的事）。⚠️ 它同时改变训练
+# 和评估的输入，所以换了之后的数字不能和旧数字并表。
+export IRIS_THERMAL_STRETCH="${IRIS_THERMAL_STRETCH:-minmax}"
 export LAMBDA_IMAGE="${LAMBDA_IMAGE:-0}"
 export LR_SCHEDULER="${LR_SCHEDULER:-constant}"
 export LR_WARMUP="${LR_WARMUP:-0}"
@@ -210,6 +214,7 @@ echo "steps     = $MAX_TRAIN_STEPS (ckpt every $CKPT_STEP)"
 echo "target    = $([[ "$PURE_PSEUDO" == "1" ]] && echo pure-pseudo || echo completed-with-lidar)   lambda_image=$LAMBDA_IMAGE"
 echo "flip      = $([[ "$RANDOM_FLIP" == "1" ]] && echo on || echo off)"
 echo "text pad  = $IRIS_TEXT_PADDING（legacy = batch 内最长/推理不补；max_length = 两侧都补到 77）"
+echo "thermal   = $IRIS_THERMAL_STRETCH（minmax = 历史口径；percentile = 量化前 1%/99% 裁剪）"
 echo "resume    = ${RESUME_FROM:-<off>}"
 echo "lr        = 3e-05 / $LR_SCHEDULER (warmup $LR_WARMUP, total_iter $LR_TOTAL_ITER)"
 echo "output    = $OUTPUT_DIR"

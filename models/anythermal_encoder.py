@@ -5,6 +5,7 @@ This module intentionally does not depend on Lotus, Marigold, or diffusion code.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple, TypedDict, Union
 
@@ -412,10 +413,28 @@ class AnyThermalEncoder:
         if min_value >= 0.0 and max_value <= 1.0:
             array = array * 255.0
         elif min_value < 0.0 or max_value > 255.0:
-            if max_value == min_value:
+            # MS2's thermal is 16-bit and its scene occupies a narrow band of the
+            # raw range, so a single hot pixel -- a streetlight, an exhaust --
+            # sets max_value and pushes everything else into the bottom of the
+            # 8-bit range before rounding. Measured over 500 training frames,
+            # the median frame loses 31% of its neighbouring-pixel differences
+            # to that rounding where a 1%/99% clip would lose 16%, and on the
+            # worst frames it is 87% against 35%. The test split is hit harder
+            # than the training split, rainy3 worst of all.
+            #
+            # The percentile branch is the clip BridgeMultiSpectralDepth applies
+            # to the same frames (TensorIWMM), which is what every published
+            # baseline in our comparison table was run under. It stays behind a
+            # flag because it changes the input to training and evaluation alike,
+            # so every number recorded before it would no longer be comparable.
+            if os.environ.get("IRIS_THERMAL_STRETCH") == "percentile":
+                low, high = (float(v) for v in np.percentile(array, (1.0, 99.0)))
+            else:
+                low, high = min_value, max_value
+            if high <= low:
                 array = np.zeros_like(array)
             else:
-                array = (array - min_value) / (max_value - min_value) * 255.0
+                array = (array - low) / (high - low) * 255.0
 
         return np.clip(array, 0, 255).round().astype(np.uint8)
 

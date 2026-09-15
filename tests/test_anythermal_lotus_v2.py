@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 import unittest
 
 import numpy as np
 import torch
 
+from models.anythermal_encoder import AnyThermalEncoder
 from models.anythermal_lotus_v2 import (
     distill_condition_latent,
     encode_condition_latent,
@@ -122,3 +124,64 @@ class ConditionTeacherTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThermalStretchFlag(unittest.TestCase):
+    """IRIS_THERMAL_STRETCH picks how a 16-bit frame reaches the 8-bit input.
+
+    The default has to stay byte-identical: it is the conversion behind every
+    number recorded since 2026-07-29, and a silent change would make old and
+    new results look comparable when they are not.
+    """
+
+    @staticmethod
+    def _frame():
+        # One very hot pixel over a narrow scene -- the MS2 case that motivated
+        # the flag. Min-max puts the scene in the bottom of the range; a 1%/99%
+        # clip discards the outlier and keeps the scene.
+        rng = np.random.default_rng(0)
+        frame = rng.integers(3400, 4200, size=(64, 128)).astype(np.float32)
+        frame[0, 0] = 15600.0
+        return frame
+
+    def _convert(self, mode):
+        previous = os.environ.get("IRIS_THERMAL_STRETCH")
+        if mode is None:
+            os.environ.pop("IRIS_THERMAL_STRETCH", None)
+        else:
+            os.environ["IRIS_THERMAL_STRETCH"] = mode
+        try:
+            return AnyThermalEncoder._array_to_uint8(self._frame())
+        finally:
+            if previous is None:
+                os.environ.pop("IRIS_THERMAL_STRETCH", None)
+            else:
+                os.environ["IRIS_THERMAL_STRETCH"] = previous
+
+    def test_default_matches_minmax_and_is_unchanged(self):
+        frame = self._frame()
+        expected = np.clip((frame - frame.min()) / (frame.max() - frame.min()) * 255.0,
+                           0, 255).round().astype(np.uint8)
+        for mode in (None, "minmax", "anything-else"):
+            np.testing.assert_array_equal(self._convert(mode), expected)
+
+    def test_percentile_recovers_the_range_the_outlier_took(self):
+        default = self._convert(None)
+        clipped = self._convert("percentile")
+        self.assertLess(len(np.unique(default)), 40)
+        self.assertGreater(len(np.unique(clipped)), 200)
+
+    def test_uint8_input_is_returned_untouched_in_both_modes(self):
+        already = np.arange(256, dtype=np.uint8).reshape(16, 16)
+        for mode in (None, "percentile"):
+            previous = os.environ.get("IRIS_THERMAL_STRETCH")
+            if mode:
+                os.environ["IRIS_THERMAL_STRETCH"] = mode
+            try:
+                np.testing.assert_array_equal(
+                    AnyThermalEncoder._array_to_uint8(already), already)
+            finally:
+                if previous is None:
+                    os.environ.pop("IRIS_THERMAL_STRETCH", None)
+                else:
+                    os.environ["IRIS_THERMAL_STRETCH"] = previous
