@@ -87,10 +87,26 @@ def measure(row: dict, args: argparse.Namespace) -> dict | None:
     u8 = (np.clip((raw - lo) / (hi - lo) * 255.0, 0, 255).round().astype(np.uint8)
           if hi > lo else np.zeros_like(raw, np.uint8))
     p1, p99 = np.percentile(u8, [1, 99])
+    # The direct cost, rather than a proxy for it: of the neighbouring pixel
+    # pairs that differ in the raw 16-bit frame, what fraction end up equal
+    # after quantisation -- a difference that is gone, not merely reduced.
+    # `clip` is the same measure under a 1%/99% clip before quantising, i.e.
+    # what the official baseline preprocessing would have left, so the gap
+    # between the two is what our choice of min-max costs on this frame.
+    lo_c, hi_c = np.percentile(raw, [1, 99])
+    clipped = (np.clip((raw - lo_c) / max(hi_c - lo_c, 1e-6) * 255.0, 0, 255)
+               .round().astype(np.uint8))
+    raw_step = np.abs(np.diff(raw, axis=1))
+    differs = raw_step > 0
+    def flattened(quantised):
+        step = np.abs(np.diff(quantised.astype(np.int16), axis=1))
+        return float(np.mean(step[differs] == 0)) if differs.any() else float("nan")
     thermal_stats = {
         "thermal_raw_max_over_p99": float(hi / max(np.percentile(raw, 99), 1e-6)),
         "thermal_used_range": float((p99 - p1) / 255.0),
         "thermal_levels": int(len(np.unique(u8))),
+        "flattened_now": flattened(u8),
+        "flattened_clipped": flattened(clipped),
     }
 
     real = np.isfinite(gt) & (gt > D_MIN) & (gt < D_MAX)
@@ -144,6 +160,12 @@ def main() -> None:
     print(report([r["thermal_used_range"] * 100 for r in records],
                  "热像用掉的灰度范围", "%"))
     print(report([r["thermal_levels"] for r in records], "热像不同灰阶数"))
+    print(report([r["flattened_now"] * 100 for r in records],
+                 "相邻差别被抹平 现状", "%"))
+    print(report([r["flattened_clipped"] * 100 for r in records],
+                 "相邻差别被抹平 若裁剪", "%"))
+    cost = np.array([r["flattened_now"] - r["flattened_clipped"] for r in records])
+    print(report(list(cost * 100), "其中归因于 min-max", "%"))
     starved = [r for r in records if r["thermal_used_range"] < 0.25]
     print("")
     print(f"热像动态范围 <25% 的帧：{len(starved)} / {len(records)} "
