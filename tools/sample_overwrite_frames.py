@@ -39,7 +39,10 @@ def parse_args() -> argparse.Namespace:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--ms2-root", type=Path, required=True)
-    parser.add_argument("--pseudo-dir", type=Path, required=True)
+    # Optional so the thermal-side statistics can be measured on the test
+    # split, which has no pseudo depth by design -- calibrating it would
+    # mean fitting to the test GT.
+    parser.add_argument("--pseudo-dir", type=Path)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--sample", type=int, default=200,
                         help="How many frames to measure.")
@@ -67,13 +70,17 @@ def rows_from(manifest: Path, sample: int, seed: int) -> list[dict]:
 
 def measure(row: dict, args: argparse.Namespace) -> dict | None:
     gt_path = args.ms2_root / row["thermal_depth_path"]
-    pseudo_path = args.pseudo_dir / f"{row['id']}.npy"
-    if not gt_path.is_file() or not pseudo_path.is_file():
+    if not gt_path.is_file():
         return None
     gt = np.asarray(Image.open(gt_path), dtype=np.float32) / args.depth_scale
-    pseudo = np.load(pseudo_path, allow_pickle=False).astype(np.float32)
-    if pseudo.shape != gt.shape:
-        return None
+    pseudo = None
+    if args.pseudo_dir is not None:
+        pseudo_path = args.pseudo_dir / f"{row['id']}.npy"
+        if not pseudo_path.is_file():
+            return None
+        pseudo = np.load(pseudo_path, allow_pickle=False).astype(np.float32)
+        if pseudo.shape != gt.shape:
+            return None
 
     # How much of the 8-bit range the frame survives into. The thermal PNG is
     # 16-bit and AnyThermalEncoder._array_to_uint8 stretches it by min-max with
@@ -112,6 +119,9 @@ def measure(row: dict, args: argparse.Namespace) -> dict | None:
     real = np.isfinite(gt) & (gt > D_MIN) & (gt < D_MAX)
     if not real.any():
         return None
+    if pseudo is None:
+        return {"id": row["id"], "sequence": row.get("sequence", ""),
+                "coverage": float(real.mean()), **thermal_stats}
     pure = np.clip(pseudo, D_MIN, D_MAX)
     completed = np.clip(np.where(real, gt, pseudo), D_MIN, D_MAX)
     change = completed[real] - pure[real]
@@ -148,15 +158,16 @@ def main() -> None:
 
     records = [r for r in (measure(row, args) for row in rows) if r]
     if not records:
-        raise SystemExit("没有一帧同时有激光和伪深度，检查 --pseudo-dir")
+        raise SystemExit("没有一帧可测；给了 --pseudo-dir 就检查它，否则检查 --ms2-root")
     print(f"[data] {len(records)} 帧同时有激光与伪深度\n")
 
     print(report([r["coverage"] * 100 for r in records], "激光覆盖", "%"))
-    print(report([r["change_median"] for r in records], "改动量中位（米）"))
-    print(report([r["change_p95"] for r in records], "改动量 p95（米）"))
-    print(report([r["target_rmse"] for r in records], "两目标整体 RMSE（米）"))
-    print(report([r["pseudo_negative_fraction"] * 100 for r in records],
-                 "伪深度非正像素", "%"))
+    if "change_median" in records[0]:
+        print(report([r["change_median"] for r in records], "改动量中位（米）"))
+        print(report([r["change_p95"] for r in records], "改动量 p95（米）"))
+        print(report([r["target_rmse"] for r in records], "两目标整体 RMSE（米）"))
+        print(report([r["pseudo_negative_fraction"] * 100 for r in records],
+                     "伪深度非正像素", "%"))
     print(report([r["thermal_used_range"] * 100 for r in records],
                  "热像用掉的灰度范围", "%"))
     print(report([r["thermal_levels"] for r in records], "热像不同灰阶数"))
@@ -182,6 +193,8 @@ def main() -> None:
 
     # Export at evenly spaced coverage quantiles, so the figure carries a sparse
     # frame and a dense one rather than whichever looked best.
+    if args.export == 0 or args.pseudo_dir is None:
+        return
     ordered = sorted(records, key=lambda r: r["coverage"])
     picks = [ordered[round(q * (len(ordered) - 1))]
              for q in np.linspace(0.05, 0.95, args.export)]
