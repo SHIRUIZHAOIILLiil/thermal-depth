@@ -62,6 +62,11 @@ ROUTE_DEFAULT_ALIGN = {
     "anythermal-midas": "ssi",
     "sp-dit": "median",
     "spdit": "median",
+    # Published RGB models run on thermal without adaptation. Each is
+    # aligned in the space it natively emits: a depth-space affine and a
+    # disparity-space affine are different function families, and forcing
+    # one on the other reported Marigold at 0.265 once.
+    "depth-anything-v2": "ssi_disparity",
 }
 
 # official metric -> unified-v1 per_image.csv column carrying the comparable number
