@@ -76,6 +76,7 @@ ALIGN_MODE="${ALIGN_MODE:-ssi_disparity}"
 case "$ALIGN_MODE" in
   ssi_disparity) EVAL_SUFFIX="" ;;
   ssi)           EVAL_SUFFIX="_affine_invariant_depth_space" ;;
+  ssi_log)       EVAL_SUFFIX="_affine_invariant_log_space" ;;
   *) echo "!! ALIGN_MODE 只支持 ssi_disparity | ssi。median 和 none 的文件名还多一段"
      echo "!! metric_source，本脚本没接那条路，别在这里凑合。"; exit 1 ;;
 esac
@@ -118,7 +119,7 @@ echo "test 臂       = $TEST_PROMPTS"
 # 在热像 caption 还是 RGB caption 下选出来的。
 echo "val manifest = ${VAL_MANIFEST:-<脚本默认：RGB caption>}"
 echo "test manifest= $TEST_MANIFEST"
-echo "对齐          = $ALIGN_MODE   (须与训练的 norm_type 一致：trunc_disparity→ssi_disparity，truncnorm→ssi)"
+echo "对齐          = $ALIGN_MODE   (须与训练的 norm_type 一致：trunc_disparity→ssi_disparity，truncnorm→ssi，log_truncnorm→ssi_log)"
 echo "指纹          = val:$VAL_FP  test:$TEST_FP  (进入结果目录名)"
 echo "============"
 

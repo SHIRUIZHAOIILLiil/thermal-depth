@@ -535,7 +535,7 @@ def parse_args() -> argparse.Namespace:
     # a metric claim, so the two live side by side and are never merged.
     parser.add_argument(
         "--align-mode",
-        choices=("ssi_disparity", "ssi", "median", "none"),
+        choices=("ssi_disparity", "ssi", "ssi_log", "median", "none"),
         default="ssi_disparity",
         help=(
             "How the prediction is brought to metres before the official metrics. "
@@ -543,7 +543,13 @@ def parse_args() -> argparse.Namespace:
             "to TEST GT -- every published number in this project used it. 'none' fits "
             "nothing and needs --metric-source to say how the raw output becomes an "
             "inverse depth. 'ssi' and 'median' are the upstream BMSD variants, exposed "
-            "for completeness."
+            "for completeness. ssi_log fits the same two parameters against "
+            "log(GT) and exponentiates, which is the only space that can score a "
+            "log_truncnorm target: the per-frame bounds come from that frame's own "
+            "GT and cannot be read back at test time, so the fit has to absorb "
+            "them, and it can only do that where the normalisation was affine. "
+            "Scoring such a target with ssi instead is off by a factor of thirty, "
+            "and the number it returns looks perfectly reasonable."
         ),
     )
     parser.add_argument(
@@ -1404,6 +1410,7 @@ def permute_captions(rows: list[dict], seed: int) -> dict:
 EVALUATION_LABELS = {
     "ssi_disparity": "affine_invariant",
     "ssi": "affine_invariant_depth_space",
+    "ssi_log": "affine_invariant_log_space",
     "median": "metric_median_scaled",
     "none": "metric_no_test_alignment",
 }
