@@ -55,7 +55,8 @@ def parse_args() -> argparse.Namespace:
         "--norm-types",
         nargs="+",
         default=["disparity", "truncnorm", "instnorm"],
-        choices=["disparity", "truncnorm", "instnorm"],
+        choices=["disparity", "trunc_disparity", "truncnorm", "instnorm",
+                 "log_truncnorm"],
         help="disparity is what this checkpoint trains under; the others are run "
              "beside it so a bad ceiling can be attributed. Per-image min-max on "
              "disparity is outlier-sensitive -- one near pixel compresses the rest -- "
@@ -152,6 +153,21 @@ def main() -> int:
                 source = dense
                 lo = float(np.quantile(dense, args.truncnorm_min))
                 hi = float(np.quantile(dense, 1.0 - args.truncnorm_min))
+            elif norm == "trunc_disparity":
+                # What the line actually trains under. Without it the other rows
+                # have nothing to beat.
+                source = 1.0 / dense
+                lo = float(np.quantile(source, args.truncnorm_min))
+                hi = float(np.quantile(source, 1.0 - args.truncnorm_min))
+            elif norm == "log_truncnorm":
+                # d(log d)/dd = 1/d, so a fixed step in this space is a fixed
+                # *relative* depth error everywhere. Depth space spends its
+                # resolution on the far field and disparity space on the near
+                # one, which is why truncnorm bought RMSE with AbsRel; this is
+                # the representation where that trade has no near or far side.
+                source = np.log(np.maximum(dense, 1e-6))
+                lo = float(np.quantile(source, args.truncnorm_min))
+                hi = float(np.quantile(source, 1.0 - args.truncnorm_min))
             else:
                 source = 1.0 / dense
                 lo, hi = float(source.min()), float(source.max())
@@ -167,11 +183,19 @@ def main() -> int:
             # Align exactly as every other number here is aligned, in whichever
             # space this convention produced -- otherwise this measures a scale
             # convention rather than the VAE.
-            target = gt_disparity if norm == "disparity" else gt
-            scale, shift = fit_scale_shift(round_trip.astype(np.float32),
+            in_disparity = norm in ("disparity", "trunc_disparity")
+            target = gt_disparity if in_disparity else gt
+            # Log space is left before fitting, deliberately. A scale+shift on
+            # log depth is d**a * exp(b) -- a power law, a different function
+            # family from the affine every other row here is scored under, and
+            # comparing across families is the mistake that reported Marigold at
+            # 0.265. Exponentiating first keeps the alignment fixed so this
+            # measures the representation and nothing else.
+            fit_input = np.exp(round_trip) if norm == "log_truncnorm" else round_trip
+            scale, shift = fit_scale_shift(fit_input.astype(np.float32),
                                            target.astype(np.float32), valid)
-            fitted = round_trip * scale + shift
-            aligned = (1.0 / np.clip(fitted, 1e-3, None)) if norm == "disparity" else fitted
+            fitted = fit_input * scale + shift
+            aligned = (1.0 / np.clip(fitted, 1e-3, None)) if in_disparity else fitted
             aligned = np.clip(aligned, args.min_depth, args.max_depth)
 
             record[f"abs_rel__{norm}"] = float(np.mean(np.abs(aligned[valid] - gt[valid]) / gt[valid]))
