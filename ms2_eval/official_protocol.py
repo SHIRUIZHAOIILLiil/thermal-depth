@@ -31,7 +31,7 @@ import numpy as np
 OFFICIAL_METRICS = ("abs_diff", "abs_rel", "sq_rel", "log10", "rmse", "rmse_log", "a1", "a2", "a3")
 DEFAULT_MIN_DEPTH_M = 1e-3
 DEFAULT_MAX_DEPTH_M = 80.0  # official value for MS2 and ViViD
-ALIGN_MODES = ("ssi", "ssi_disparity", "median", "none")
+ALIGN_MODES = ("ssi", "ssi_disparity", "ssi_log", "median", "none")
 
 PROTOCOL_REFERENCE: dict[str, Any] = {
     "name": "BridgeMultiSpectralDepth-official-MS2-depth-eval",
@@ -46,6 +46,14 @@ PROTOCOL_REFERENCE: dict[str, Any] = {
             "inverted to depth; same 2-parameter budget as ssi but respects affine-disparity outputs. "
             "NOT in the upstream code -- extension for disparity-space models, everything after "
             "alignment (mask, clamp, metric formulas, aggregation) stays official"
+        ),
+        "ssi_log": (
+            "per-image least-squares scale+shift of RAW output vs log(gt), exponentiated "
+            "back to depth; same 2-parameter budget as ssi. A target normalised between "
+            "quantiles of log depth is affine in log space, so only a fit in that space "
+            "absorbs the per-frame normalisation -- and it has to be absorbed by the fit, "
+            "because recovering it from the frame's own bounds would be reading test GT "
+            "to preprocess. NOT in the upstream code, same extension status as ssi_disparity"
         ),
         "median": "per-image median(gt)/median(pred) scaling, no shift (metric-model path)",
         "none": "no alignment (predictions already metric and calibrated)",
@@ -194,6 +202,17 @@ def evaluate_sample(
         scale, shift = fit_scale_shift(pred, gt_disparity.astype(np.float32), valid)
         aligned_disparity = np.clip(pred.astype(np.float64) * scale + shift, 1e-3, None)
         aligned = 1.0 / aligned_disparity
+        row.update({"alignment_scale": scale, "alignment_shift": shift})
+    elif align == "ssi_log":
+        gt_log = np.zeros_like(gt, np.float64)
+        gt_log[valid] = np.log(np.maximum(gt[valid].astype(np.float64), 1e-6))
+        scale, shift = fit_scale_shift(pred, gt_log.astype(np.float32), valid)
+        # Clamped before the exponential: a raw output far outside its trained
+        # range would otherwise overflow to inf, and the metrics would come back
+        # nan rather than bad. The bounds sit far outside [min_depth, max_depth]
+        # so they never touch a prediction that is merely wrong.
+        aligned_log = np.clip(pred.astype(np.float64) * scale + shift, -9.0, 9.0)
+        aligned = np.exp(aligned_log)
         row.update({"alignment_scale": scale, "alignment_shift": shift})
     elif align == "median":
         ratio = median_scale_ratio(pred, gt, valid)

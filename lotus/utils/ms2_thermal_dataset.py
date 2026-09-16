@@ -300,6 +300,25 @@ class MS2ThermalDataset(Dataset):
             # 1/depth. The pair alone cannot say which, so whoever inverts it
             # has to be told the norm_type as well.
             norm_lo, norm_hi = float(dmin), float(dmax)
+        elif self.norm_type == "log_truncnorm":
+            # d(log d)/dd = 1/d, so a fixed step here is a fixed *relative* depth
+            # error at every distance. Disparity space spends its resolution on
+            # the near field and depth space on the far one, which is why
+            # truncnorm bought RMSE and paid for it in AbsRel; this is the
+            # representation where that trade has no near or far side. Measured
+            # through the frozen VAE it also survives the round trip best by a
+            # wide margin -- relative error 0.0096, against 0.0204 for instnorm
+            # and 0.0316 for the trunc_disparity this line trains under.
+            # The quantiles are what keeps it clear of instnorm's failure: that
+            # one took per-frame min-max, so a single outlier pixel fixed the
+            # whole frame's scale and the target's meaning moved frame to frame.
+            log_depth = torch.log(depth.clamp(min=1e-6))
+            dmin = torch.quantile(log_depth[valid_mask], self.truncnorm_min)
+            dmax = torch.quantile(log_depth[valid_mask], self.truncnorm_max)
+            depth_norm = ((log_depth - dmin) / (dmax - dmin + 1e-5) - 0.5) * 2.0
+            # Bounds of log depth. Whoever inverts this needs the norm_type too:
+            # the pair alone cannot say which space it quantised.
+            norm_lo, norm_hi = float(dmin), float(dmax)
         elif self.norm_type == "perscene_norm":
             depth_norm = ((depth / self.d_max) - 0.5) * 2.0
         elif self.norm_type == "disparity":

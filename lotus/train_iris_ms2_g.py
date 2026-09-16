@@ -294,7 +294,24 @@ def run_evaluation(pipeline, task, args, step, accelerator):
             for dataset_name, config_path in test_depth_dataset_configs.items():
                 eval_dir = os.path.join(args.output_dir, f'evaluation-{step:05d}', task, dataset_name)
                 test_dataset_config = os.path.join(test_data_dir, config_path)
-                alignment_type = "least_square_disparity" if "disparity" in args.norm_type else "least_square"
+                # Which space the two-parameter fit runs in follows the target,
+                # and it is spelled out rather than inferred from a substring:
+                # log_truncnorm contains neither "disparity" nor anything else
+                # the old test looked for, so it would have taken the depth-space
+                # branch and scored every checkpoint in the wrong space -- and
+                # these numbers choose the checkpoint. A normalisation this
+                # evaluator has no alignment for stops the run instead.
+                if "disparity" in args.norm_type:
+                    alignment_type = "least_square_disparity"
+                elif args.norm_type in ("truncnorm", "instnorm", "perscene_norm"):
+                    alignment_type = "least_square"
+                else:
+                    raise ValueError(
+                        f"No alignment space for --norm_type {args.norm_type!r} in this "
+                        "in-training evaluator. A log target needs a log-space fit "
+                        "(ms2_eval.official_protocol has ssi_log); scoring it with "
+                        "least_square silently reports a number that is off by ~30x."
+                    )
                 metric_tracker = evaluation_depth(eval_dir, test_dataset_config, test_data_dir, eval_mode="generate_prediction",
                             gen_prediction=gen_depth, pipeline=pipeline, save_pred_vis=args.save_pred_vis, alignment=alignment_type)
                 print(dataset_name,',', 'abs_relative_difference: ', metric_tracker.result()['abs_relative_difference'], 'delta1_acc: ', metric_tracker.result()['delta1_acc'], 'delta2_acc: ', metric_tracker.result()['delta2_acc'])
@@ -467,6 +484,12 @@ def image_depth_l1_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds,
         # from (whole range rather than the 2/98 quantiles), and the bounds are
         # carried per sample, so the arithmetic here is identical.
         d_hat = (lo + y * (hi - lo + 1e-5)).clamp(min=1e-3)
+    elif norm_type == "log_truncnorm":
+        # Bounds are quantiles of log depth, so the inverse is an exponential.
+        # The exponent is clamped before exp rather than the depth after it: a
+        # decoder output well outside [-1, 1] would overflow to inf, and inf in
+        # a masked mean is nan, which kills the step instead of costing it.
+        d_hat = torch.exp((lo + y * (hi - lo + 1e-5)).clamp(min=-9.0, max=9.0))
     else:
         raise ValueError(
             f"image_depth_l1_loss has no inverse for norm_type={norm_type!r}; "
@@ -663,7 +686,7 @@ def parse_args():
         "--norm_type",
         type=str,
         choices=['instnorm','truncnorm','perscene_norm','disparity','trunc_disparity',
-                 'global_metric_disparity'],
+                 'global_metric_disparity','log_truncnorm'],
         default='trunc_disparity',
         help=(
             'The normalization type for the depth prediction. Every option but the '
