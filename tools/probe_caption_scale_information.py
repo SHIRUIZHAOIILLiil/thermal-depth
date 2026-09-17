@@ -91,14 +91,28 @@ def build_features(captions: list[str], vocab: list[str]) -> np.ndarray:
     return features
 
 
-def ridge_cv(features: np.ndarray, target: np.ndarray, folds: int, alpha: float, seed: int) -> float:
-    """Out-of-fold R^2 of a ridge fit. Closed form, no sklearn."""
+def ridge_cv(features: np.ndarray, target: np.ndarray, folds: int, alpha: float,
+             seed: int, groups: np.ndarray | None = None) -> float:
+    """Out-of-fold R^2 of a ridge fit. Closed form, no sklearn.
+
+    With `groups`, a fold is a whole drive: train on the other drives, test on
+    this one. Random folds cannot answer what this probe is asked. These are
+    10 Hz drives, so neighbouring frames are the same place seconds apart and a
+    random split leaves a near-duplicate of every test frame in training. Worse,
+    the drives differ in typical depth, so a bag of words that merely recognises
+    *which drive this is* scores well without any sentence describing a distance
+    -- and that is exactly the part that would not survive a new scene, which is
+    the only place it would ever need to work.
+    """
     rng = np.random.default_rng(seed)
-    order = rng.permutation(len(target))
     predictions = np.zeros_like(target)
-    for fold in range(folds):
-        test = order[fold::folds]
-        train = np.setdiff1d(order, test, assume_unique=False)
+    if groups is not None:
+        splits = [np.flatnonzero(groups == g) for g in np.unique(groups)]
+    else:
+        order = rng.permutation(len(target))
+        splits = [order[fold::folds] for fold in range(folds)]
+    for test in splits:
+        train = np.setdiff1d(np.arange(len(target)), test, assume_unique=False)
         x, y = features[train], target[train]
         gram = x.T @ x
         penalty = alpha * np.eye(gram.shape[0])
@@ -129,6 +143,10 @@ def main() -> None:
     print(f"[data] {len(rows)} frames with both a caption and alignment parameters", flush=True)
 
     captions = [row["caption"] for row in rows]
+    sequences = np.array([str(row.get("sequence") or row.get("sequence_id") or "?")
+                          for row in rows])
+    print("[groups] " + "  ".join(f"{q}x{int((sequences == q).sum())}"
+                                  for q in np.unique(sequences)), flush=True)
     scale = np.array([alignment[row["id"]][0] for row in rows], np.float64)
     shift = np.array([alignment[row["id"]][1] for row in rows], np.float64)
 
@@ -172,23 +190,34 @@ def main() -> None:
         "per_sample": str(args.per_sample),
         "vocabulary": len(vocab),
         "folds": args.folds,
+        "sequences": sorted(set(sequences.tolist())),
         "ridge_alpha": args.ridge,
         "r2": {},
     }
-    print(f"\n{'target':24s} {'caption':>10s} {'permuted':>10s} {'rotated':>9s} {'length':>8s}")
-    print("-" * 64)
+    print()
+    print(f"{'target':24s} {'caption':>10s} {'permuted':>10s} {'rotated':>9s}"
+          f" {'length':>8s} {'CAP/seq':>9s} {'PERM/seq':>9s}")
+    print("-" * 84)
     for name, target in targets.items():
         mask = keep if name == "log_median_gt_depth" else np.ones(len(target), bool)
+        grouped = sequences[mask]
         cells = {
             "caption": ridge_cv(real[mask], target[mask], args.folds, args.ridge, args.seed),
             "permuted": ridge_cv(shuffled[mask], target[mask], args.folds, args.ridge, args.seed),
             "rotated_half": ridge_cv(rotated[mask], target[mask], args.folds, args.ridge, args.seed),
             "length_only": ridge_cv(length_only[mask], target[mask], args.folds, args.ridge, args.seed),
+            # The pair that decides whether the signal is a sentence describing a
+            # distance or a vocabulary recognising a road.
+            "caption_by_sequence": ridge_cv(real[mask], target[mask], args.folds, args.ridge,
+                                            args.seed, groups=grouped),
+            "permuted_by_sequence": ridge_cv(shuffled[mask], target[mask], args.folds, args.ridge,
+                                             args.seed, groups=grouped),
         }
         report["r2"][name] = cells
         print(
             f"{name:24s} {cells['caption']:>10.4f} {cells['permuted']:>10.4f} "
-            f"{cells['rotated_half']:>9.4f} {cells['length_only']:>8.4f}"
+            f"{cells['rotated_half']:>9.4f} {cells['length_only']:>8.4f} "
+            f"{cells['caption_by_sequence']:>9.4f} {cells['permuted_by_sequence']:>9.4f}"
         )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
