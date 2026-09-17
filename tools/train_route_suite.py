@@ -1755,6 +1755,13 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
         {
             "evaluation_mode": label,
             "align_mode": args.align_mode,
+            # How the 16-bit thermal frame was stretched to 8 bits before the
+            # encoder saw it. It has to match training and nothing checks that:
+            # a mismatch raises nothing, it just feeds the model a distribution
+            # it was not trained on and quietly costs accuracy. Until now the
+            # value lived only in the job's stdout, which does not outlive the
+            # scratch cleanup, so a result could not be audited after the fact.
+            "thermal_stretch": os.environ.get("IRIS_THERMAL_STRETCH", "minmax"),
             "metric_calibration": metric,
             "test_gt_used_for_fitting": args.align_mode != "none",
             "route": args.route,
