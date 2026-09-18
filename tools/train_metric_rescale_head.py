@@ -292,7 +292,7 @@ def main() -> None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimiser.step()
 
-            if step % 50 == 0:
+            if step % 50 == 0 or (args.smoke and step % 5 == 0):
                 with torch.no_grad():
                     relative_error = (((predicted - gt).abs()
                                        / gt.clamp(min=D_MIN)) * valid).sum() / count
