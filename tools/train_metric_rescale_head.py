@@ -73,6 +73,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-captions", action="store_true",
                         help="Ablation arm: embed an empty string for every frame. "
                              "The only honest way to price the text branch.")
+    parser.add_argument("--global-only", action="store_true",
+                        help="Ablation arm: drop the per-pixel residuals and fit "
+                             "the two scalars alone. That is the design the metric "
+                             "adaptation line already had, so it is the number the "
+                             "per-pixel maps have to beat to justify existing. "
+                             "Text cannot reach two scalars, so this arm ignores "
+                             "--no-captions: there is one global arm, not two.")
     parser.add_argument("--stretch", default="percentile", choices=("percentile", "minmax"),
                         help="Must match the arm that produced --relative-dir.")
     parser.add_argument("--epochs", type=int, default=2)
@@ -142,8 +149,18 @@ class RescaleHead(nn.Module):
     removes an expressible degree of freedom rather than one bias.
     """
 
-    def __init__(self, width: int, text_dim: int, a_init: float, b_init: float):
+    def __init__(self, width: int, text_dim: int, a_init: float, b_init: float,
+                 global_only: bool = False):
         super().__init__()
+        self.global_only = global_only
+        self.a_global = nn.Parameter(torch.tensor(float(a_init)))
+        self.b_global = nn.Parameter(torch.tensor(float(b_init)))
+        if global_only:
+            # Two scalars and nothing else: the metric adaptation design, fitted
+            # rather than frozen. Built with no trunk at all rather than a trunk
+            # whose output is discarded, so the arm cannot quietly carry the
+            # optimiser state or the parameter count of the thing it controls for.
+            return
         self.stem = nn.Sequential(
             nn.Conv2d(2, width, 5, stride=2, padding=2), nn.GroupNorm(8, width), nn.GELU(),
             nn.Conv2d(width, width, 3, stride=2, padding=1), nn.GroupNorm(8, width), nn.GELU(),
@@ -160,12 +177,13 @@ class RescaleHead(nn.Module):
         self.to_ab = nn.Conv2d(width, 2, 3, padding=1)
         nn.init.zeros_(self.to_ab.weight)
         nn.init.zeros_(self.to_ab.bias)
-        self.a_global = nn.Parameter(torch.tensor(float(a_init)))
-        self.b_global = nn.Parameter(torch.tensor(float(b_init)))
 
     def forward(self, thermal: torch.Tensor, relative: torch.Tensor,
                 text: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         n, _, h, w = thermal.shape
+        if self.global_only:
+            ones = torch.ones((n, 1, h, w), device=thermal.device, dtype=thermal.dtype)
+            return self.a_global * ones, self.b_global * ones
         features = self.stem(torch.cat([thermal, relative], dim=1))
         _, channels, fh, fw = features.shape
         tokens = features.flatten(2).transpose(1, 2)
@@ -230,10 +248,15 @@ def main() -> None:
     for parameter in text_encoder.parameters():
         parameter.requires_grad_(False)
 
-    model = RescaleHead(args.width, text_encoder.config.hidden_size, span, low).to(args.device)
+    model = RescaleHead(args.width, text_encoder.config.hidden_size, span, low,
+                        global_only=args.global_only).to(args.device)
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[model] 可训参数 {trainable / 1e6:.2f} M   "
-          f"caption={'off' if args.no_captions else 'on'}", flush=True)
+    arm = "global-only" if args.global_only else (
+        "per-pixel, caption off" if args.no_captions else "per-pixel, caption on")
+    print(f"[model] 臂 = {arm}   可训参数 {trainable / 1e6:.3f} M", flush=True)
+    if args.global_only and not args.no_captions:
+        print("[note] global-only 下文本到不了两个标量，这一臂与 --no-captions 等价",
+              flush=True)
 
     loader = DataLoader(Frames(rows, args), batch_size=args.batch_size, shuffle=True,
                         num_workers=args.workers, collate_fn=collate, drop_last=True)
