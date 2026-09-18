@@ -37,6 +37,7 @@ would be circular.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import math
 import random
@@ -258,12 +259,20 @@ def main() -> None:
         print("[note] global-only 下文本到不了两个标量，这一臂与 --no-captions 等价",
               flush=True)
 
+    # The shuffle draws from its own generator, not the global RNG. Otherwise the
+    # arms differ in more than the ablation: global-only builds no trunk, so it
+    # consumes fewer random numbers at construction and every arm then walks a
+    # different data order. That showed up as a step-0 loss of 2.47 m against
+    # 1.88 m for arms that are, at step 0, the same function.
+    shuffle_rng = torch.Generator().manual_seed(args.seed)
     loader = DataLoader(Frames(rows, args), batch_size=args.batch_size, shuffle=True,
-                        num_workers=args.workers, collate_fn=collate, drop_last=True)
+                        num_workers=args.workers, collate_fn=collate, drop_last=True,
+                        generator=shuffle_rng)
     optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     step = 0
+    recent: collections.deque[float] = collections.deque(maxlen=200)
     for epoch in range(args.epochs):
         for batch in loader:
             thermal = batch["thermal"].to(args.device)
@@ -292,12 +301,19 @@ def main() -> None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimiser.step()
 
+            with torch.no_grad():
+                relative_error = float((((predicted - gt).abs()
+                                         / gt.clamp(min=D_MIN)) * valid).sum() / count)
+            recent.append(relative_error)
             if step % 50 == 0 or (args.smoke and step % 5 == 0):
-                with torch.no_grad():
-                    relative_error = (((predicted - gt).abs()
-                                       / gt.clamp(min=D_MIN)) * valid).sum() / count
+                # A running mean beside the batch value. One batch is 8 frames and
+                # swings by a factor of two between consecutive prints, so the raw
+                # number cannot rank two arms -- reading it that way is how a
+                # difference gets claimed from noise.
+                window = sum(recent) / len(recent)
                 print(f"  epoch {epoch} step {step:6d}  L1 {loss.item():.4f} m  "
-                      f"AbsRel {relative_error.item():.4f}", flush=True)
+                      f"AbsRel {relative_error:.4f}  近 {len(recent)} 步均值 {window:.4f}",
+                      flush=True)
             step += 1
             if args.smoke and step >= 20:
                 torch.save({"model": model.state_dict(), "a_init": span, "b_init": low},
