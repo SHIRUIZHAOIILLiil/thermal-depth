@@ -24,7 +24,28 @@
 # integrations/ppd/prepare_ms2.py --ppd-weights ... --ckpt-dir ... first, or
 # this trains from random initialisation and never says so.
 
+# main.py prints cfg.exp_name before anything else, so a config without it dies
+# on the banner rather than on anything to do with training.
+exp_name: ppd_ms2_thermal
 output_dir: ???          # pass on the command line: output_dir=...
+
+# Their top-level keys, carried over at their own values. A config missing any
+# of them dies during setup on a key lookup, which reads like a bug in the
+# integration rather than an incomplete config.
+seed: 666
+print_cfg: True
+confirm_delete_previous_dir: False
+# ⚠️ Theirs is True, and it means something different from what it sounds like:
+# train_net calls trainer.fit(..., ckpt_path=None) regardless, so this does not
+# restore an optimiser state. What it governs is whether find_last_ckpt_path
+# runs at all -- which is the hook the converted weights arrive through, so it
+# has to stay on.
+resume_training: True
+logger:
+  _target_: pytorch_lightning.loggers.TensorBoardLogger
+  save_dir: ${output_dir}
+  name: ''
+  version: tb
 
 data:
   _target_: ppd.data.general_datamodule.GeneralDataModule
@@ -99,11 +120,15 @@ callbacks:
     save_top_k: 8
 
 pl_trainer:
+  # Everything here is forwarded as **cfg.pl_trainer, and train_net.py already
+  # passes accelerator, logger and callbacks itself -- naming any of those here
+  # is a duplicate keyword argument and a TypeError before the first batch.
   devices: 1
   num_nodes: 1
-  accelerator: gpu
   strategy: auto
   precision: bf16-mixed
+  num_sanity_val_steps: 0
+  log_every_n_steps: 50
   # Their schedule is 500 x 2000 on eight GPUs. One GPU at a tenth of that is
   # still 100k samples, and the point is a comparator trained to convergence on
   # our data rather than a reproduction of their curve.
