@@ -1,0 +1,111 @@
+# Pixel-Perfect Depth on MS2 thermal, from their released weights, on one GPU.
+#
+# Based on ppd/configs/train_finetune.yaml. What differs from theirs, and why:
+#
+#   one dataset      MS2 thermal, not the five synthetic RGB sets. This is the
+#                    whole point: a comparator trained on our data, our target,
+#                    our split.
+#   no Resize        theirs resizes to 1024x768. Ours stays at native 256x640,
+#                    which is safe because the DiT uses RoPE computed from the
+#                    token grid -- there is no learned absolute position table
+#                    to mismatch, so the released weights transfer to a
+#                    different resolution unchanged. 256 and 640 are both
+#                    multiples of 16, the effective patch size (PatchEmbed is
+#                    built with patch_size*2).
+#   no input_size    their config passes score_model.input_size, which DiT's
+#                    __init__ does not accept. Left in, hydra raises.
+#   semantics DA2    the released ppd.pth is the DA2-semantics variant; MoGe2 is
+#                    a different checkpoint. The encoder is frozen either way.
+#   devices 1        strategy auto, since ddp with one device is pointless.
+#
+# ⚠️ The checkpoint dirpath below is where find_last_ckpt_path looks for
+# weights to start from, and it only globs "*.ckpt" and then indexes
+# ["state_dict"]. Their released ppd.pth is neither, so run
+# integrations/ppd/prepare_ms2.py --ppd-weights ... --ckpt-dir ... first, or
+# this trains from random initialisation and never says so.
+
+output_dir: ???          # pass on the command line: output_dir=...
+
+data:
+  _target_: ppd.data.general_datamodule.GeneralDataModule
+  train_dataset:
+    pretrain: False
+    dataset_opts:
+      - _target_: ppd.data.ms2_thermal.Dataset
+        data_root: ???           # $SCRATCH/data/ms2
+        split_path: ???          # the JSON prepare_ms2.py wrote
+        split: train
+        dataset_name: 'ms2_thermal'
+        stretch: percentile      # ⚠️ must match the arm being compared against
+        overwrite_with_lidar: True
+        transforms:
+          - _target_: ppd.data.transform.PrepareForNet
+  train_loader_opts:
+    batch_size: 4
+  # No val datasets: theirs are five RGB benchmarks that are not on this
+  # machine, and checkpoint selection here follows our own rule -- val on the
+  # official MS2 sequences, scored out of band by the official protocol.
+  val_dataset:
+    dataset_opts: []
+
+model:
+  _target_: ppd.models.depth_estimation_model.DepthEstimationModel
+  output_dir: ${output_dir}/results
+  save_vis_depth: True
+  pipeline:
+    _target_: ppd.models.ppd_train.PixelPerfectDepth
+    config:
+      pretrain: False
+      semantics_model: DA2
+      semantics_pth: ???         # checkpoints/depth_anything_v2_vitl.pth
+      score_model:
+        _target_: ppd.models.dit.DiT
+        depth: 24
+        hidden_size: 1024
+        patch_size: 8
+        num_heads: 16
+        in_channels: 4
+        out_channels: 1
+      diffusion:
+        schedule:
+          type: lerp
+          T: 1000
+        sampler:
+          type: euler
+          prediction_type: v_lerp
+        timesteps:
+          training:
+            type: logitnormal
+            loc: 0.0
+            scale: 1.0
+          sampling:
+            type: uniform
+            steps: 4
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 1e-4
+    weight_decay: 0.0
+
+  lr_table:
+    _target_: ppd.utils.lr_table.LRTable
+    default_lr: 1e-4
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${output_dir}/checkpoints/
+    filename: "e{epoch:03d}-s{step:06d}"
+    save_top_k: 8
+
+pl_trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  strategy: auto
+  precision: bf16-mixed
+  # Their schedule is 500 x 2000 on eight GPUs. One GPU at a tenth of that is
+  # still 100k samples, and the point is a comparator trained to convergence on
+  # our data rather than a reproduction of their curve.
+  max_epochs: 25
+  limit_train_batches: 2000
