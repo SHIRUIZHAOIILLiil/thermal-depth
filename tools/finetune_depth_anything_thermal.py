@@ -87,30 +87,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def thermal_to_rgb(path: Path, stretch: str) -> np.ndarray:
-    """16-bit thermal to the 3-channel 8-bit-valued float DA2 expects."""
+def thermal_to_uint8_rgb(path: Path, stretch: str) -> np.ndarray:
+    """16-bit thermal to the 3-channel uint8 image DA2's processor expects.
+
+    uint8 HWC, not a float tensor, because the model's own DPTImageProcessor
+    takes it from here: resize to 518 keeping aspect ratio at a multiple of 14,
+    rescale, then normalise with ImageNet statistics. Feeding the network a raw
+    [0,1] tensor skips all three, and the zero-shot numbers this run has to be
+    comparable with went through the processor -- which is how a first step
+    landed at 0.3069 instead of the 0.15 those numbers say.
+    """
     raw = np.asarray(Image.open(path), dtype=np.float32)
     if stretch == "percentile":
         low, high = (float(v) for v in np.percentile(raw, (1.0, 99.0)))
     else:
         low, high = float(raw.min()), float(raw.max())
-    unit = (np.zeros(raw.shape, np.float32) if high <= low
-            else np.clip((raw - low) / (high - low), 0.0, 1.0).astype(np.float32))
-    return np.repeat(unit[None], 3, axis=0)
+    eight = (np.zeros(raw.shape, np.uint8) if high <= low
+             else np.clip((raw - low) / (high - low) * 255.0, 0, 255).round().astype(np.uint8))
+    return np.repeat(eight[:, :, None], 3, axis=2)
 
 
 class ThermalFrames(Dataset):
     """Thermal in, target disparity out, plus the mask the loss is taken over."""
 
-    def __init__(self, rows: list[dict], args: argparse.Namespace):
-        self.rows, self.args = rows, args
+    def __init__(self, rows: list[dict], args: argparse.Namespace, processor):
+        self.rows, self.args, self.processor = rows, args, processor
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def __getitem__(self, index: int):
         row, args = self.rows[index], self.args
-        image = thermal_to_rgb(args.ms2_root / row["thermal_path"], args.stretch)
+        image = thermal_to_uint8_rgb(args.ms2_root / row["thermal_path"], args.stretch)
+        pixel_values = self.processor(images=image, return_tensors="pt").pixel_values[0]
         gt = np.asarray(Image.open(args.ms2_root / row["thermal_depth_path"]),
                         dtype=np.float32) / 256.0
         real = np.isfinite(gt) & (gt > D_MIN) & (gt < D_MAX)
@@ -123,12 +132,21 @@ class ThermalFrames(Dataset):
         else:
             dense, valid = np.clip(gt, D_MIN, D_MAX), real
         return {
-            "image": torch.from_numpy(image),
+            "pixel_values": pixel_values,
             # DA2 emits affine-invariant inverse depth, so the target is disparity
             # and the fit happens in that space. Supervising it against depth would
             # be the wrong function family -- worth a factor of thirty here before.
             "disparity": torch.from_numpy(1.0 / np.maximum(dense, D_MIN)),
             "valid": torch.from_numpy(valid),
+            # The lidar, kept separately. The loss trains against the completed
+            # map, matching our own line, but the number watched during training
+            # is scored on the real returns -- because that is what the zero-shot
+            # figures were scored on, and a diagnostic measured against a
+            # different reference cannot say whether the two are comparable. The
+            # completed map is itself 6.25 AbsRel away from the lidar.
+            "lidar_disparity": torch.from_numpy(
+                1.0 / np.maximum(np.clip(gt, D_MIN, D_MAX), D_MIN)),
+            "lidar_valid": torch.from_numpy(real),
         }
 
 
@@ -187,7 +205,8 @@ def main() -> None:
     target = "补全伪 GT（激光覆写）" if args.pseudo_dir else "稀疏激光"
     print(f"[data] {len(rows)} 帧   目标 = {target}   thermal = {args.stretch}", flush=True)
 
-    from transformers import AutoModelForDepthEstimation
+    from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+    processor = AutoImageProcessor.from_pretrained(args.hf_id)
     model = AutoModelForDepthEstimation.from_pretrained(args.hf_id).to(args.device)
     model.train()
 
@@ -222,19 +241,22 @@ def main() -> None:
     ])
 
     shuffle_rng = torch.Generator().manual_seed(args.seed)
-    loader = DataLoader(ThermalFrames(rows, args), batch_size=args.batch_size, shuffle=True,
-                        num_workers=args.workers, drop_last=True, generator=shuffle_rng)
+    loader = DataLoader(ThermalFrames(rows, args, processor), batch_size=args.batch_size,
+                        shuffle=True, num_workers=args.workers, drop_last=True,
+                        generator=shuffle_rng)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     recent: collections.deque[float] = collections.deque(maxlen=200)
     step = 0
     while step < args.steps:
         for batch in loader:
-            image = batch["image"].to(args.device)
+            pixel_values = batch["pixel_values"].to(args.device)
             disparity = batch["disparity"].to(args.device)
             valid = batch["valid"].to(args.device)
+            lidar_disparity = batch["lidar_disparity"].to(args.device)
+            lidar_valid = batch["lidar_valid"].to(args.device)
 
-            predicted = model(pixel_values=image).predicted_depth
+            predicted = model(pixel_values=pixel_values).predicted_depth
             if predicted.shape[-2:] != disparity.shape[-2:]:
                 predicted = F.interpolate(predicted[:, None], disparity.shape[-2:],
                                           mode="bilinear", align_corners=False)[:, 0]
@@ -242,8 +264,13 @@ def main() -> None:
             # fit one scale to several frames and score a different quantity.
             losses, errors = [], []
             for i in range(predicted.shape[0]):
-                loss_i, abs_rel_i, _ = masked_ssi_l1(predicted[i], disparity[i], valid[i])
+                loss_i, _, _ = masked_ssi_l1(predicted[i], disparity[i], valid[i])
                 losses.append(loss_i)
+                # Scored on the lidar, which is the reference the zero-shot
+                # numbers used. The gradient still comes from the completed map.
+                with torch.no_grad():
+                    _, abs_rel_i, _ = masked_ssi_l1(
+                        predicted[i].detach(), lidar_disparity[i], lidar_valid[i])
                 errors.append(abs_rel_i)
             loss = torch.stack(losses).mean()
 
