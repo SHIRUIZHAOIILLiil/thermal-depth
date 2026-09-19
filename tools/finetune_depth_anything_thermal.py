@@ -73,6 +73,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--smoke", action="store_true", help="20 steps, then stop.")
+    parser.add_argument("--expect-initial-absrel", nargs=2, type=float,
+                        default=(0.08, 0.30), metavar=("LOW", "HIGH"),
+                        help="Band the first step's AbsRel must fall in. Before any "
+                             "training this is zero-shot DA2 on thermal, which "
+                             "measured 0.153 / 0.165 / 0.172 on the three test "
+                             "conditions, so a first step outside this band means "
+                             "the thermal conversion or the loss space does not "
+                             "match the run those numbers came from -- and the two "
+                             "would then not be comparable, which is the only "
+                             "reason to train this at all. Pass 0 0 to disable.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
 
@@ -243,6 +253,14 @@ def main() -> None:
             optimiser.step()
 
             recent.append(float(torch.stack(errors).mean()))
+            low, high = args.expect_initial_absrel
+            if step == 0 and high > 0 and not low <= recent[0] <= high:
+                raise SystemExit(
+                    f"⛔ 第一步 AbsRel {recent[0]:.4f} 不在 [{low}, {high}] 内。\n"
+                    "   未经训练时这就是 DA2 在热像上的零样本成绩（实测 0.153 / "
+                    "0.165 / 0.172）。落在band外说明热像转换或损失空间与那次评估"
+                    "不一致，训出来的数和零样本那一行不可比 —— 而可比正是做这条"
+                    "线的唯一理由。先查，别训。")
             if step % 50 == 0 or (args.smoke and step % 5 == 0):
                 print(f"  step {step:6d}  SSI-L1 {loss.item():.5f}  "
                       f"AbsRel {recent[-1]:.4f}  近 {len(recent)} 步均值 "
