@@ -183,11 +183,29 @@ def main() -> None:
 
     # Their split of the learning rate, by parameter name. A single rate would
     # either move the pretrained encoder too fast or leave the head too slow.
+    #
+    # DepthAnythingForDepthEstimation assigns exactly three submodules --
+    # backbone, neck, head -- so the prefix is enough and a substring test is
+    # not: the backbone is a DINOv2 whose own layers are named
+    # backbone.encoder.layer.N, and matching "encoder" anywhere would keep
+    # working by luck until something in the neck was named that way too.
     encoder, decoder = [], []
     for name, parameter in model.named_parameters():
-        (encoder if "backbone" in name or "encoder" in name else decoder).append(parameter)
-    print(f"[model] 编码器 {sum(p.numel() for p in encoder)/1e6:.1f} M @ lr {args.encoder_lr}   "
-          f"解码器 {sum(p.numel() for p in decoder)/1e6:.1f} M @ lr {args.decoder_lr}", flush=True)
+        (encoder if name.startswith("backbone.") else decoder).append(parameter)
+    encoder_size = sum(p.numel() for p in encoder)
+    decoder_size = sum(p.numel() for p in decoder)
+    print(f"[model] 编码器 {encoder_size/1e6:.1f} M @ lr {args.encoder_lr}   "
+          f"解码器 {decoder_size/1e6:.1f} M @ lr {args.decoder_lr}", flush=True)
+    # A silently empty group would train half the network at the wrong rate and
+    # still converge to something reportable.
+    if not encoder or not decoder:
+        raise SystemExit(
+            f"参数分组失败：编码器 {len(encoder)} 个张量，解码器 {len(decoder)} 个。"
+            f"顶层模块是 {sorted({n.split('.')[0] for n, _ in model.named_parameters()})}")
+    if encoder_size < decoder_size:
+        raise SystemExit(
+            f"编码器({encoder_size/1e6:.1f} M)不该小于解码器({decoder_size/1e6:.1f} M)；"
+            "前缀多半对不上了")
     optimiser = torch.optim.AdamW([
         {"params": encoder, "lr": args.encoder_lr},
         {"params": decoder, "lr": args.decoder_lr},
