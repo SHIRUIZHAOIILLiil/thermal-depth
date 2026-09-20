@@ -126,9 +126,24 @@ model:
 
 callbacks:
   model_checkpoint:
+    # ⚠️ Without _target_ this stays a DictConfig, and Lightning's first call
+    # into it is getattr(callback, "on_exception") while handling some other
+    # error -- so the real failure is replaced by "Missing key on_exception"
+    # and never printed.
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
     dirpath: ${output_dir}/checkpoints/
     filename: "e{epoch:03d}-s{step:06d}"
-    save_top_k: 8
+    auto_insert_metric_name: false
+    # Theirs monitors val/relative_abs_rel and keeps the best eight. Ours has no
+    # val set -- selection happens out of band, on the official MS2 val
+    # sequences under the official protocol, the same rule every other arm in
+    # this project is selected by -- so a monitor here would wait forever for a
+    # metric that is never logged. Save on a step count instead and let the
+    # selection happen where it can be compared.
+    save_top_k: -1
+    every_n_train_steps: 2000
+    save_weights_only: true
+    save_last: true
 
 pl_trainer:
   # Everything here is forwarded as **cfg.pl_trainer, and train_net.py already
