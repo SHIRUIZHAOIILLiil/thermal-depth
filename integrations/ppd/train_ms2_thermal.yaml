@@ -29,6 +29,17 @@
 exp_name: ppd_ms2_thermal
 output_dir: ???          # pass on the command line: output_dir=...
 
+# Machine paths live at the top and are referenced by interpolation below,
+# rather than being overridden in place on the command line. ppd/configs/config.py
+# merges OmegaConf.from_cli() onto the file, and from_cli parses
+# "data.train_dataset.dataset_opts.0.data_root=..." into a dict keyed "0" --
+# list indices are Hydra override syntax, not plain OmegaConf -- so merging it
+# onto a list raises "Cannot merge DictConfig with ListConfig". Top-level
+# scalars merge without complaint.
+ms2_root: ???            # ms2_root=$SCRATCH/data/ms2
+ms2_split: ???           # ms2_split=$SCRATCH/runs/ppd_ms2/splits/train.json
+semantics_pth: ???       # semantics_pth=checkpoints/depth_anything_v2_vitl.pth
+
 # Their top-level keys, carried over at their own values. A config missing any
 # of them dies during setup on a key lookup, which reads like a bug in the
 # integration rather than an incomplete config.
@@ -53,8 +64,8 @@ data:
     pretrain: False
     dataset_opts:
       - _target_: ppd.data.ms2_thermal.Dataset
-        data_root: ???           # $SCRATCH/data/ms2
-        split_path: ???          # the JSON prepare_ms2.py wrote
+        data_root: ${ms2_root}
+        split_path: ${ms2_split}
         split: train
         dataset_name: 'ms2_thermal'
         stretch: percentile      # ⚠️ must match the arm being compared against
@@ -78,7 +89,7 @@ model:
     config:
       pretrain: False
       semantics_model: DA2
-      semantics_pth: ???         # checkpoints/depth_anything_v2_vitl.pth
+      semantics_pth: ${semantics_pth}
       score_model:
         _target_: ppd.models.dit.DiT
         depth: 24
