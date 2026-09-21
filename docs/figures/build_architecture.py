@@ -186,7 +186,7 @@ def metric_head():
     block(ax, 6.45, 1.05, 3.05, 3.15, "重标定头", "0.39 M · 唯一训练的部分",
           state="train", radius=0.14)
     arrow(ax, 2.80, 3.75, 6.45, 3.55)
-    ax.text(4.60, 3.88, "相对深度 y（0 到 1）", ha="center", fontsize=9.5,
+    ax.text(4.60, 3.88, "相对深度 y，没有单位", ha="center", fontsize=9.5,
             color=MUTED)
     arrow(ax, 2.80, 2.45, 6.45, 2.62)
     arrow(ax, 5.90, 1.15, 6.45, 1.70)

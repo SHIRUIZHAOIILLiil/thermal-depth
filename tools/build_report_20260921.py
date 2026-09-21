@@ -258,7 +258,7 @@ def chain(prs):
         slide.shapes.add_picture(str(picture), Inches(MARGIN), Inches(1.72),
                                  width=Inches(BODY_W))
     write(textbox(slide, MARGIN, 3.80, BODY_W, 2.4), [
-        "网络吐出的是一张 0 到 1 的图，稠密但没有单位；官方激光有单位但只覆盖约四分之一的像素。"
+        "网络吐出的是一张稠密的相对深度图，没有单位；官方激光有单位但只覆盖约四分之一的像素。"
         "每一帧在有激光的那些像素上拟合两个数，就把整张图换算成米 —— 图中红色那行公式即是。",
         ("这两个数是逐帧拟合的，绝对尺度在造训练目标时就被除掉了，所以模型输出没有单位是必然的。",
          {"colour": GREY, "size": 12}),

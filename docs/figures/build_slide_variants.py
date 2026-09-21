@@ -68,7 +68,7 @@ def metric_chain_slide():
     # direction must not.
     ax2.imshow(y, cmap="turbo_r", vmin=0, vmax=1, interpolation="nearest")
     ax2.set_title("网络直接输出", fontsize=15, pad=7)
-    ax2.set_xlabel("稠密，0 到 1，没有单位", fontsize=12, color="#C00000", labelpad=4)
+    ax2.set_xlabel("稠密，没有单位", fontsize=12, color="#C00000", labelpad=4)
 
     ax3 = fig.add_subplot(gs[0, 2])
     ax3.imshow(metres, **depth_kw)
