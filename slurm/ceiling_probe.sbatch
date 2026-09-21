@@ -122,6 +122,7 @@ python tools/probe_vae_roundtrip_ceiling.py \
   --pseudo-dir "$PSEUDO_DIR" \
   --output-dir "$OUT/probe" \
   --norm-types log_truncnorm trunc_disparity \
+  --log-fit-space log \
   --lotus-model-path "${SD2_REPO:-Manojb/stable-diffusion-2-1-base}" \
   --stride 1 --limit 100000 \
   --local-files-only
