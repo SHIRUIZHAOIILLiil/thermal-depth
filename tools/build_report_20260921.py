@@ -1,6 +1,6 @@
 """汇报：log 目标线、双种子、caption 三层、米制映射、架构（2026-09-21）。
 
-九页，一页一件事。表只放该放的数：三个指标一起，原始值并排，不放胜率、不放
+十页，一页一件事。表只放该放的数：三个指标一起，原始值并排，不放胜率、不放
 置信区间、不放相对差值 —— 让读者自己看两行的差，而不是替他算好。
 
 精度按评估器报的位数写。此前两次缩位都出过事：两位小数把 3.605 / 3.598 印成
@@ -176,6 +176,35 @@ def caption_levels(prs):
     conclusion(slide, "文本确实在起作用，而且能分清是哪一部分在起作用")
 
 
+# ── 对比：同一数据上训练的热像模型 ────────────────────────────────────────
+def against_anythermal(prs):
+    slide = new_slide(prs)
+    header(slide, "对比", "和一个在同一批数据上训练过的热像模型")
+    rows = [
+        ["场景 / 模型"] + METRICS,
+        ["白天　AnyThermal", "0.0810", "2.614", "0.9424"],
+        ["白天　我们", "0.0737", "2.924", "0.9453"],
+        ["夜间　AnyThermal", "0.0872", "2.514", "0.9380"],
+        ["夜间　我们", "0.0763", "2.639", "0.9482"],
+        ["雨天　AnyThermal", "0.1020", "3.159", "0.9048"],
+        ["雨天　我们", "0.0965", "3.538", "0.9099"],
+    ]
+    check_paired_rows_differ(rows)
+    # Shaded by pair, and no row is marked better, because none is: two of the
+    # three metrics go our way and the third does not. Marking a winner row
+    # here would assert something the numbers refuse.
+    tbl = table(slide, rows, MARGIN, 1.62, BODY_W, 3.30, [2.3, 1, 1, 1],
+                size=14, align=NUMCOLS, highlight=(1, 2, 5, 6))
+    unbold(tbl, rows_from=1)
+    footnote(slide, "AnyThermal 的深度监督也是 MS2 训练集 + 稀疏激光，与我们同源；"
+                    "两边各在自己的原生空间逐帧拟合两个参数。", top=5.10)
+    write(textbox(slide, MARGIN, 5.48, BODY_W, 0.9), [
+        "我们的训练目标由它的预测标定而来，所以赢的那两项说明的是"
+        "「激光覆写和训练补进了它没有的东西」，不是架构更好。",
+    ], size=12.5, space_after=5)
+    conclusion(slide, "AbsRel 与 δ1 三个场景都更好，RMSE 三个场景都更差")
+
+
 # ── 5. 架构：出来的是什么 ──────────────────────────────────────────────────
 def chain(prs):
     slide = new_slide(prs)
@@ -302,7 +331,8 @@ def target(prs):
 def build(path: Path) -> None:
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(W), Inches(H)
-    for page in (cover, objective, seeds, caption_levels, chain, target,
+    for page in (cover, objective, seeds, caption_levels, against_anythermal,
+                 chain, target,
                  arch_backbone, arch_loss, arch_inference):
         page(prs)
     path.parent.mkdir(parents=True, exist_ok=True)
