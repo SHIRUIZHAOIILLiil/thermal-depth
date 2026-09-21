@@ -324,15 +324,14 @@ def target(prs):
     header(slide, "训练目标", "官方 GT 覆盖约四分之一，训练用的那张是补出来的")
     picture = FIGURES / "slide_gt_density.png"
     if picture.is_file():
-        slide.shapes.add_picture(str(picture), Inches(MARGIN), Inches(1.60),
-                                 width=Inches(BODY_W))
-    write(textbox(slide, MARGIN, 4.32, BODY_W, 1.9), [
+        fit_height(slide, picture, top=1.58, height=2.95)
+    write(textbox(slide, MARGIN, 4.70, BODY_W, 1.7), [
         "整帧覆盖 26.9%，但激光集中在路面：最密的一块有 76.6%，天空一个点都没有。"
         "所以官方 GT 看着像稠密的，在有结构的地方它确实接近稠密。",
-        ("训练用的是右上那张：伪深度铺满，再把真实激光盖上去。两者是不同的东西。",
+        ("训练用的是右边那张：伪深度铺满，再把真实激光盖上去。两者是不同的东西。",
          {"colour": GREY, "size": 12}),
     ], size=13, space_after=7)
-    conclusion(slide, "放大到像素级，稀疏与补全的差别一眼可见")
+    conclusion(slide, "官方 GT 只在有结构的地方接近稠密；训练用的那张是补出来的")
 
 
 def build(path: Path) -> None:

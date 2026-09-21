@@ -63,7 +63,10 @@ def metric_chain_slide():
     ax.set_title("热像输入", fontsize=15, pad=7)
 
     ax2 = fig.add_subplot(gs[0, 1])
-    ax2.imshow(y, cmap="viridis", vmin=0, vmax=1, interpolation="nearest")
+    # Same colour map as the panels either side: near red, far blue. The scale
+    # differs (0 to 1, not metres) and that is what the caption is for; the
+    # direction must not.
+    ax2.imshow(y, cmap="turbo_r", vmin=0, vmax=1, interpolation="nearest")
     ax2.set_title("网络直接输出", fontsize=15, pad=7)
     ax2.set_xlabel("稠密，0 到 1，没有单位", fontsize=12, color="#C00000", labelpad=4)
 
@@ -100,16 +103,10 @@ def gt_density_slide():
     lo, hi = np.percentile(completed, [2, 98])
     depth_kw = dict(cmap="turbo_r", vmin=lo, vmax=hi, interpolation="nearest")
 
-    size = 64
-    counts = np.add.reduceat(
-        np.add.reduceat(real.astype(np.int32),
-                        np.arange(0, real.shape[0], size), axis=0),
-        np.arange(0, real.shape[1], size), axis=1)
-    by, bx = np.unravel_index(counts.argmax(), counts.shape)
-    window = (slice(by * size, by * size + size), slice(bx * size, bx * size + size))
-
-    fig = plt.figure(figsize=(16.0, 3.55), dpi=150)
-    gs = fig.add_gridspec(1, 3, width_ratios=[1.6, 1.6, 1], wspace=0.06,
+    # 两格：官方 GT 与训练目标。像素级放大那一格拿掉了 —— 它证明的「最密的一块
+    # 有 77%」这句话，页面正文里已经直接写着了，一格图只是把同一句话再说一遍。
+    fig = plt.figure(figsize=(12.2, 3.55), dpi=150)
+    gs = fig.add_gridspec(1, 2, wspace=0.06,
                           left=0.004, right=0.996, top=0.79, bottom=0.11)
 
     ax = fig.add_subplot(gs[0, 0])
@@ -126,18 +123,11 @@ def gt_density_slide():
     ax2.set_xlabel("伪深度铺满 + 真实激光盖上去", fontsize=12,
                    color="#C00000", labelpad=4)
 
-    ax3 = fig.add_subplot(gs[0, 2])
-    ax3.imshow(np.zeros((size, size)), cmap="gray", vmin=0, vmax=1,
-               interpolation="nearest")
-    ax3.imshow(np.where(real[window], lidar[window], np.nan), **depth_kw)
-    ax3.set_title(f"放大：最密的一块 {real[window].mean():.0%}", fontsize=15, pad=7)
-    ax3.set_xlabel("一个方块 = 一个像素", fontsize=12, color="#C00000", labelpad=4)
-
-    for axis in (ax, ax2, ax3):
+    for axis in (ax, ax2):
         axis.set_xticks([]); axis.set_yticks([])
     out = "slide_gt_density.png"
     fig.savefig(out, bbox_inches="tight", facecolor="white")
-    print(f"写入 {out}   整帧 {coverage:.1%}  最密块 {real[window].mean():.1%}")
+    print(f"写入 {out}   整帧覆盖 {coverage:.1%}")
 
 
 if __name__ == "__main__":
