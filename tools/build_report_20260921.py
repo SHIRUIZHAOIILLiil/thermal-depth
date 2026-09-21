@@ -1,6 +1,6 @@
 """汇报：log 目标线、双种子、caption 三层、米制映射、架构（2026-09-21）。
 
-十页，一页一件事。表只放该放的数：三个指标一起，原始值并排，不放胜率、不放
+十一页，一页一件事。表只放该放的数：三个指标一起，原始值并排，不放胜率、不放
 置信区间、不放相对差值 —— 让读者自己看两行的差，而不是替他算好。
 
 精度按评估器报的位数写。此前两次缩位都出过事：两位小数把 3.605 / 3.598 印成
@@ -163,6 +163,32 @@ def seeds(prs):
         "两个种子的六组结果彼此接近，并且都明显优于上一页的基线那一栏。",
     ], size=13, space_after=5)
     conclusion(slide, "不是单次运行的运气")
+
+
+# ── caption：两条臂 ────────────────────────────────────────────────────────
+def caption_arms(prs):
+    slide = new_slide(prs)
+    header(slide, "caption", "两次独立训练：一条给文本，一条从头到尾不给")
+    rows = [
+        ["场景 / 这条臂"] + METRICS,
+        ["白天　训练与推理都不给", "0.07446", "2.925", "0.9455"],
+        ["白天　训练与推理都给", "0.07333", "2.914", "0.9459"],
+        ["夜间　训练与推理都不给", "0.07736", "2.670", "0.9459"],
+        ["夜间　训练与推理都给", "0.07601", "2.626", "0.9490"],
+        ["雨天　训练与推理都不给", "0.09779", "3.547", "0.9057"],
+        ["雨天　训练与推理都给", "0.09654", "3.542", "0.9098"],
+    ]
+    check_paired_rows_differ(rows)
+    table(slide, rows, MARGIN, 1.62, BODY_W, 3.30, [2.5, 1, 1, 1],
+          size=14, align=NUMCOLS, highlight=(2, 4, 6))
+    footnote(slide, "种子 43，全帧。种子 42 在同样九格上方向一致。"
+                    "⚠️ 两条臂各自按 val 选点，是否选在同一步尚未核对。", top=5.10)
+    write(textbox(slide, MARGIN, 5.48, BODY_W, 0.9), [
+        "三个场景、三个指标都偏向带 caption 的那条臂。但每一格的差都很小 —— "
+        "小于换一个 checkpoint 本身会产生的跳动。",
+        ("所以这一页立的是「方向一致」，不是「差得多」。", {"bold": True, "size": 13}),
+    ], size=12.5, space_after=5)
+    conclusion(slide, "两次独立训练，带 caption 的那条在每个场景都更好")
 
 
 # ── 4. caption 分两层 ──────────────────────────────────────────────────────
@@ -337,7 +363,8 @@ def target(prs):
 def build(path: Path) -> None:
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(W), Inches(H)
-    for page in (cover, objective, seeds, caption_levels, against_anythermal,
+    for page in (cover, objective, seeds, caption_arms, caption_levels,
+                 against_anythermal,
                  chain, target,
                  arch_backbone, arch_loss, arch_inference):
         page(prs)
