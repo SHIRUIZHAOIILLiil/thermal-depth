@@ -122,8 +122,20 @@ RMSE 2.614 / 2.514 / 3.159,δ1 0.9424 / 0.9380 / 0.9048。**不用再跑。**
 东西**,不说明架构更好。⭐ **这一句必须进表注**,审稿人翻到伪 GT 来源就会问。
 措辞按项目规矩走「监督部分来自 AnyThermal 的预测」,禁用 teacher / distill。
 
-⚠️ 待核:那 0.0810 是不是 MS2 零样本。若是,它和我们(在 MS2 train 上训过)的
-比较带着与 DA2 零样本同向的偏差,只是没那么极端。
+✅ **已核(2026-09-21):不是零样本。** AnyThermal 的深度监督就是
+**MS2 自己的 train split + 稀疏 LiDAR GT**,和我方同源(`AIRE_RESULTS_20260802.md`
+§复现验证,出处是它论文 §III-B / §III-F / §VI-C:"depth baselines are trained on
+the evaluation datasets")。复现核对:它 Table IV 报 0.0883 / 2.7432(三条件平均),
+我方重跑 0.0821(仅 day),量级吻合。
+
+⛔ **坑**:它 §III-B 有一句 "MS² reserved for zero-shot evaluation" —— **那句只管
+VPR,不管深度**。只看那句会把它误判成零样本。
+
+⭐ 所以这个对比**在数据上是公平的**,和 DA2 零样本不是一回事,赢它有含义。剩下的
+差异要进表注:骨干 DINOv2 ViT-B/14 vs SD U-Net;深度头 MiDaS vs 扩散单步 x0;
+**训练时骨干冻结只训头 vs 整个 U-Net 解冻**。最后一条可能不只是差异而是解释 ——
+稀疏激光在远端与天空无信号,全解冻的 U-Net 在无监督区漂移,冻结骨干保住了 DINOv2
+的语义先验,这对得上我方 RMSE 全输而 AbsRel/δ1 全赢的形状。
 
 ---
 
