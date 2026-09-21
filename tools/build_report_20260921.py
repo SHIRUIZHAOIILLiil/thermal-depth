@@ -35,7 +35,7 @@ METRICS = ["AbsRel ↓", "RMSE (m) ↓", "δ1 ↑"]
 NUMCOLS = [PP_ALIGN.LEFT] + [PP_ALIGN.CENTER] * 3
 
 
-def new(prs):
+def new_slide(prs):
     return prs.slides.add_slide(prs.slide_layouts[6])
 
 
@@ -72,7 +72,7 @@ def check_paired_rows_differ(rows: list[list[str]]) -> None:
 
 # ── 1. 封面 ────────────────────────────────────────────────────────────────
 def cover(prs):
-    slide = new(prs)
+    slide = new_slide(prs)
     bar = slide.shapes.add_shape(1, Inches(0), Inches(0), Inches(W), Inches(2.55))
     bar.fill.solid(); bar.fill.fore_color.rgb = INK
     bar.line.fill.background(); bar.shadow.inherit = False
@@ -91,7 +91,7 @@ def cover(prs):
 
 # ── 2. 换 log 目标 ─────────────────────────────────────────────────────────
 def objective(prs):
-    slide = new(prs)
+    slide = new_slide(prs)
     header(slide, "训练目标", "把目标从视差空间换到 log 深度空间")
     rows = [
         ["场景 / 训练目标"] + METRICS,
@@ -117,7 +117,7 @@ def objective(prs):
 
 # ── 3. 双种子 ──────────────────────────────────────────────────────────────
 def seeds(prs):
-    slide = new(prs)
+    slide = new_slide(prs)
     header(slide, "复现", "换一个随机种子重训，结论不变")
     rows = [
         ["场景 / 种子"] + METRICS,
@@ -154,7 +154,7 @@ def seeds(prs):
 
 # ── 4. caption 分两层 ──────────────────────────────────────────────────────
 def caption_levels(prs):
-    slide = new(prs)
+    slide = new_slide(prs)
     header(slide, "caption", "同一份权重，只换推理时给的文本")
     rows = [
         ["推理时喂进去的文本"] + METRICS,
@@ -178,7 +178,7 @@ def caption_levels(prs):
 
 # ── 5. 架构：出来的是什么 ──────────────────────────────────────────────────
 def chain(prs):
-    slide = new(prs)
+    slide = new_slide(prs)
     header(slide, "架构", "网络直接出的没有单位，米是后面加上去的")
     # The slide variant: one frame across, not three down. The document figure
     # at full body width stands 6.6 inches tall on a 7.5 inch slide.
@@ -225,7 +225,7 @@ def code(slide, left, top, width, height, lines, *, size=10):
 
 
 def arch_backbone(prs):
-    slide = new(prs)
+    slide = new_slide(prs)
     header(slide, "架构", "只有 U-Net 在训练，其余全部冻结")
     picture = FIGURES / "arch_backbone.png"
     if picture.is_file():
@@ -240,7 +240,7 @@ def arch_backbone(prs):
 
 
 def arch_loss(prs):
-    slide = new(prs)
+    slide = new_slide(prs)
     header(slide, "损失", "两项 latent MSE，权重都是 1")
     write(textbox(slide, MARGIN, 1.52, BODY_W, 0.42), [
         "L = 1.0 × SL_A（深度分支） + 1.0 × SL_R（热像重建分支）",
@@ -266,29 +266,25 @@ def arch_loss(prs):
     conclusion(slide, "损失没变，变的是送进损失的那个目标处在哪个空间")
 
 
-def arch_metric(prs):
-    slide = new(prs)
-    header(slide, "架构（第二阶段）", "把没有单位的输出学成米：仍在实验")
-    picture = FIGURES / "arch_metric_head.png"
+def arch_inference(prs):
+    slide = new_slide(prs)
+    header(slide, "推理", "网络出的是 [-1, 1]，米是评估器逐帧贴上去的")
+    picture = FIGURES / "arch_inference.png"
     if picture.is_file():
-        art_h = 3.98
-        art_w = art_h * 1720 / 653
+        art_h = 4.62
+        art_w = art_h * 1720 / 911
         slide.shapes.add_picture(str(picture),
                                  Inches(MARGIN + (BODY_W - art_w) / 2),
-                                 Inches(1.50), height=Inches(art_h))
-    write(textbox(slide, MARGIN, 5.66, BODY_W, 1.0), [
-        "第一阶段整个冻结，只训一个 0.39 M 的小头，为每个像素出一对 A、B，"
-        "再按 D = exp(A⊙y + B) 换算成米。监督只用真实激光那约 26% 的像素。",
-        ("前面几页报的数字都不依赖这个头 —— 那些是逐帧拟合两个参数得到的（第 5 页）。"
-         "这一条线还没有可以并排比较的结果。",
-         {"colour": GREY, "size": 12}),
-    ], size=13, space_after=7)
-    conclusion(slide, "这一步是让模型自己给出米，而不是每帧现拟合")
+                                 Inches(1.46), height=Inches(art_h))
+    write(textbox(slide, MARGIN, 6.20, BODY_W, 0.40), [
+        "推理时整个网络都冻结，一次前向，没有去噪循环。虚线以下不属于模型。",
+    ], size=12.5, space_after=4)
+    conclusion(slide, "模型不产出米；那两个数每一帧重新解")
 
 
 # ── 6. 训练目标为什么是稠密的 ──────────────────────────────────────────────
 def target(prs):
-    slide = new(prs)
+    slide = new_slide(prs)
     header(slide, "训练目标", "官方 GT 覆盖约四分之一，训练用的那张是补出来的")
     picture = FIGURES / "slide_gt_density.png"
     if picture.is_file():
@@ -307,7 +303,7 @@ def build(path: Path) -> None:
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(W), Inches(H)
     for page in (cover, objective, seeds, caption_levels, chain, target,
-                 arch_backbone, arch_loss, arch_metric):
+                 arch_backbone, arch_loss, arch_inference):
         page(prs)
     path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(path)

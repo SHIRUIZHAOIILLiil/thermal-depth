@@ -146,14 +146,21 @@ def backbone():
     ax.text(cx, ly + 0.24, "两项都是 latent 上的 MSE", ha="center", fontsize=8.5,
             color=MUTED)
 
-    arrow(ax, 12.10, 4.33, lx + 0.72, ly + lh, dashed=True, colour=RED)
-    arrow(ax, 12.50, 1.85, lx + 0.30, ly, dashed=True, colour=RED)
+    # Both of these are forward: two tensors arriving at the place they are
+    # compared. Drawn red-dashed they read as gradient, which is the one thing
+    # they are not.
+    arrow(ax, 12.10, 4.33, lx, 4.33)
+    arrow(ax, 12.50, 2.05, lx + 0.45, ly)
 
-    # Gradient path: back along the bottom, up into the U-Net, and nowhere else.
-    arrow(ax, lx - 0.10, 2.90, 7.52, 2.90, colour=RED, dashed=True, width=2.0)
-    ax.text(10.2, 2.66, "梯度只回到 U-Net", ha="center", fontsize=10.5,
+    # Gradient path, routed over the top. Along the bottom it had to turn up
+    # into the U-Net across a 0.15 gap, so the arrowhead landed under the block
+    # with no visible riser and read as an arrow pointing at nothing.
+    grad = dict(colour=RED, dashed=True, width=2.0)
+    arrow(ax, cx + 1.02, ly + lh, cx + 1.02, 6.35, style="-", **grad)
+    arrow(ax, cx + 1.02, 6.35, 7.52, 6.35, style="-", **grad)
+    arrow(ax, 7.52, 6.35, 7.52, 5.60, **grad)
+    ax.text(10.9, 6.52, "梯度只回到 U-Net", ha="center", fontsize=10.5,
             color=RED, weight="bold")
-    arrow(ax, 7.52, 2.90, 7.52, 3.05, colour=RED, dashed=True, width=2.0)
 
     ax.text(0.25, 0.46,
             "损失  L = 1.0 × SL_A + 1.0 × SL_R"
@@ -215,6 +222,88 @@ def metric_head():
     print("写入 arch_metric_head.png")
 
 
+def inference():
+    """One forward pass, and where the metres are bolted on afterwards.
+
+    The recurring question is what the network actually emits. It emits a VAE
+    decode in [-1, 1], rescaled to [0, 1] -- and under this line that range
+    holds normalised *log depth*, not the disparity the old baseline trained
+    on. The variable is still called `disparity` in the code, which is a name
+    left over from the target this report is about replacing.
+
+    The band below the rule is not part of the model. It is what the evaluator
+    does, per frame, and drawing it inside the network would claim the model
+    produces metres.
+    """
+    fig, ax = plt.subplots(figsize=(15.6, 8.2), dpi=140)
+    ax.set_xlim(0, 15.6); ax.set_ylim(0, 8.2); ax.axis("off")
+
+    ax.text(0.25, 7.85, "推理", fontsize=17, weight="bold", color=INK)
+    ax.text(0.25, 7.52,
+            "一次前向，t=999，没有去噪循环；此时整个网络都是冻结的",
+            fontsize=12, color=MUTED)
+
+    if BADGE_FONT:
+        ax.text(13.62, 7.78, "❄", fontsize=13, fontname=BADGE_FONT,
+                va="center")
+        ax.text(13.90, 7.78, "= 推理时全部冻结", fontsize=11.5, color=INK,
+                va="center")
+
+    # Band A: the forward pass.
+    row, h = 5.60, 0.95
+    mid = row + h / 2
+    block(ax, 0.25, row, 1.85, h, "热像", state="data")
+    block(ax, 2.45, row, 2.15, h, "VAE 编码器", state="frozen")
+    block(ax, 4.95, row, 2.35, h, "U-Net", "865 M", state="frozen")
+    block(ax, 7.65, row, 2.00, h, "预测 latent", state="data")
+    block(ax, 10.00, row, 2.15, h, "VAE 解码器", state="frozen")
+    block(ax, 12.50, row, 2.90, h, "网络输出", "[-1, 1]", state="data")
+    for x0, x1 in ((2.10, 2.45), (4.60, 4.95), (7.30, 7.65),
+                   (9.65, 10.00), (12.15, 12.50)):
+        arrow(ax, x0, mid, x1, mid)
+
+    crow = 4.15
+    block(ax, 0.25, crow, 1.85, h, "caption", state="data")
+    block(ax, 2.45, crow, 2.35, h, "CLIP 文本编码器", state="frozen")
+    arrow(ax, 2.10, crow + h / 2, 2.45, crow + h / 2)
+    arrow(ax, 4.80, crow + h / 2, 5.70, row)
+    ax.text(5.42, 4.38, "跨注意力", ha="center", fontsize=9, color=MUTED)
+
+    ax.text(0.25, 3.76,
+            "网络这一路直接出来的是 VAE 解码后的 [-1, 1]，再 /2 + 0.5 换成 "
+            "y ∈ [0, 1]：稠密，没有单位。",
+            fontsize=11.5, color=RED)
+    ax.text(0.25, 3.46,
+            "这个区间里装的是归一化之后的 log 深度 —— 换目标之前那条基线才是视差"
+            "（代码里的变量名 disparity 是旧名字）。",
+            fontsize=11.5, color=RED)
+
+    ax.plot([0.25, 15.35], [3.10, 3.10], color="#C7CEDA", lw=1.3, ls="--")
+    ax.text(0.25, 2.84, "以下不在网络里：这是评估器逐帧做的事",
+            fontsize=13, weight="bold", color=INK)
+
+    # Band B: the two-parameter fit that puts the metres on.
+    block(ax, 0.25, 1.40, 2.45, 0.90, "网络输出 y", "0 到 1，稠密", state="data")
+    block(ax, 0.25, 0.30, 2.45, 0.90, "官方激光 GT", "约 26% 的像素", state="data")
+    block(ax, 4.30, 0.55, 3.40, 1.60, "逐帧最小二乘",
+          "只在有激光的像素上解 a、b", state="data", radius=0.12)
+    arrow(ax, 2.70, 1.85, 4.30, 1.72)
+    arrow(ax, 2.70, 0.75, 4.30, 1.00)
+
+    block(ax, 9.30, 0.90, 2.75, 0.90, "米制深度", state="data")
+    arrow(ax, 7.70, 1.35, 9.30, 1.35)
+    ax.text(10.68, 0.58, r"$D = \exp(a\,y + b)$", ha="center", fontsize=12,
+            color=RED)
+
+    ax.text(12.60, 1.50, "两个数每一帧重新解，", fontsize=11, color=RED)
+    ax.text(12.60, 1.20, "模型本身不产出米。", fontsize=11, color=RED)
+
+    fig.savefig("arch_inference.png", bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print("写入 arch_inference.png")
+
+
 if __name__ == "__main__":
     backbone()
+    inference()
     metric_head()
