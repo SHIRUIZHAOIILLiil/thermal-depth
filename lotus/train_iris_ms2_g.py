@@ -1079,16 +1079,18 @@ def parse_args():
                 "--lambda_dense / --lambda_recon may only leave 1.0 under "
                 "--metric_adaptation; the base recipe's objective is fixed."
             )
-    if args.lambda_image > 0 and args.norm_type not in ("trunc_disparity", "truncnorm"):
+    if args.lambda_image > 0 and args.norm_type not in (
+            "trunc_disparity", "truncnorm", "instnorm", "log_truncnorm"):
         # The term undoes the per-frame normalisation with the two bounds the
         # dataset recorded, and only these two branches record them. Under any
         # other norm_type those bounds are NaN, every pixel falls out of the
         # mask, and the term contributes exactly nothing while saying so only in
         # a diagnostic -- which is the failure that takes a day to notice.
         raise ValueError(
-            "--lambda_image needs --norm_type trunc_disparity or truncnorm, got "
-            f"{args.norm_type}: those are the two whose bounds the dataset records "
-            "and whose inverse image_depth_l1_loss implements."
+            f"--lambda_image cannot run under --norm_type {args.norm_type}: the "
+            "term undoes the per-frame normalisation from the two bounds the "
+            "dataset records, and image_depth_l1_loss has an inverse only for "
+            "trunc_disparity, truncnorm, instnorm and log_truncnorm."
         )
 
     # default to using the same revision for the non-ema model if not specified

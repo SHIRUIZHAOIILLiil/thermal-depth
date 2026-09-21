@@ -1,6 +1,6 @@
-"""汇报：log 目标线、双种子、caption 三层、米制映射（2026-09-21）。
+"""汇报：log 目标线、双种子、caption 三层、米制映射、架构（2026-09-21）。
 
-六页，一页一件事。表只放该放的数：三个指标一起，原始值并排，不放胜率、不放
+九页，一页一件事。表只放该放的数：三个指标一起，原始值并排，不放胜率、不放
 置信区间、不放相对差值 —— 让读者自己看两行的差，而不是替他算好。
 
 精度按评估器报的位数写。此前两次缩位都出过事：两位小数把 3.605 / 3.598 印成
@@ -17,6 +17,7 @@ from pathlib import Path
 
 from pptx import Presentation
 from pptx.enum.text import PP_ALIGN
+from pptx.dml.color import RGBColor
 from pptx.util import Inches, Pt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -194,6 +195,97 @@ def chain(prs):
     conclusion(slide, "稠密的那张没单位，有单位的那张不稠密，米来自两者之间的拟合")
 
 
+# ── 架构三页：谁训练、谁冻结、损失是什么 ───────────────────────────────────
+def code(slide, left, top, width, height, lines, *, size=10):
+    """A fixed-width excerpt with a tinted backing, so it reads as quoted code.
+
+    Lines are quoted from the source with the long comments dropped, since a
+    slide has room for the statement or for the reasoning behind it but not
+    both. `word_wrap` is off: a wrapped line of code reads as two statements.
+    """
+    from pptx.enum.shapes import MSO_SHAPE
+    plate = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left),
+                                   Inches(top), Inches(width), Inches(height))
+    plate.fill.solid(); plate.fill.fore_color.rgb = RGBColor(0xF4, 0xF6, 0xFA)
+    plate.line.color.rgb = RGBColor(0xD5, 0xDD, 0xE8)
+    plate.shadow.inherit = False
+    frame = plate.text_frame
+    frame.word_wrap = False
+    frame.margin_left = frame.margin_right = Inches(0.14)
+    frame.margin_top = frame.margin_bottom = Inches(0.09)
+    for index, line in enumerate(lines):
+        para = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
+        para.space_after = Pt(1.5)
+        run = para.add_run()
+        run.text = line
+        run.font.name = "Consolas"
+        run.font.size = Pt(size)
+        run.font.color.rgb = RGBColor(0x24, 0x2E, 0x44)
+    return plate
+
+
+def arch_backbone(prs):
+    slide = new(prs)
+    header(slide, "架构", "只有 U-Net 在训练，其余全部冻结")
+    picture = FIGURES / "arch_backbone.png"
+    if picture.is_file():
+        # Sized by height, not width: at full body width it stands 5.8 inches
+        # on a 7.5 inch slide and runs straight through the conclusion bar.
+        art_h = 5.02
+        art_w = art_h * 1769 / 847
+        slide.shapes.add_picture(str(picture),
+                                 Inches(MARGIN + (BODY_W - art_w) / 2),
+                                 Inches(1.44), height=Inches(art_h))
+    conclusion(slide, "一个网络在学，其余都是固定的编码器")
+
+
+def arch_loss(prs):
+    slide = new(prs)
+    header(slide, "损失", "两项 latent MSE，权重都是 1")
+    write(textbox(slide, MARGIN, 1.52, BODY_W, 0.42), [
+        "L = 1.0 × SL_A（深度分支） + 1.0 × SL_R（热像重建分支）",
+    ], size=16, bold=True, space_after=4)
+    code(slide, MARGIN, 2.02, BODY_W, 1.28, [
+        "anno_loss = F.mse_loss(model_pred[:bsz][mask_anno], target[:bsz][mask_anno])",
+        "rgb_loss  = F.mse_loss(model_pred[bsz:][mask_rgb],  target[bsz:][mask_rgb])",
+        "loss = args.lambda_dense * anno_loss + args.lambda_recon * rgb_loss",
+    ], size=10.5)
+    write(textbox(slide, MARGIN, 3.44, BODY_W, 0.36), [
+        "训练目标怎么算出来的（本次汇报换掉的就是这一段）",
+    ], size=13.5, bold=True, space_after=3)
+    code(slide, MARGIN, 3.86, BODY_W, 1.30, [
+        "log_depth = torch.log(depth.clamp(min=1e-6))",
+        "dmin = torch.quantile(log_depth[valid], 0.02)   # 每一帧自己的分位数",
+        "dmax = torch.quantile(log_depth[valid], 0.98)",
+        "depth_norm = ((log_depth - dmin) / (dmax - dmin) - 0.5) * 2.0",
+    ], size=10.5)
+    write(textbox(slide, MARGIN, 5.30, BODY_W, 1.0), [
+        "两个权重在基础配方里固定为 1，本次汇报的对照没有动过它们；两条臂的差别只有上面第二段里"
+        "取 log 这一下。绝对尺度就是在这一步被逐帧分位数除掉的 —— 所以模型输出没有单位是设计使然，不是缺陷。",
+    ], size=12.5, space_after=6)
+    conclusion(slide, "损失没变，变的是送进损失的那个目标处在哪个空间")
+
+
+def arch_metric(prs):
+    slide = new(prs)
+    header(slide, "架构（第二阶段）", "把没有单位的输出学成米：仍在实验")
+    picture = FIGURES / "arch_metric_head.png"
+    if picture.is_file():
+        art_h = 3.98
+        art_w = art_h * 1720 / 653
+        slide.shapes.add_picture(str(picture),
+                                 Inches(MARGIN + (BODY_W - art_w) / 2),
+                                 Inches(1.50), height=Inches(art_h))
+    write(textbox(slide, MARGIN, 5.66, BODY_W, 1.0), [
+        "第一阶段整个冻结，只训一个 0.39 M 的小头，为每个像素出一对 A、B，"
+        "再按 D = exp(A⊙y + B) 换算成米。监督只用真实激光那约 26% 的像素。",
+        ("前面几页报的数字都不依赖这个头 —— 那些是逐帧拟合两个参数得到的（第 5 页）。"
+         "这一条线还没有可以并排比较的结果。",
+         {"colour": GREY, "size": 12}),
+    ], size=13, space_after=7)
+    conclusion(slide, "这一步是让模型自己给出米，而不是每帧现拟合")
+
+
 # ── 6. 训练目标为什么是稠密的 ──────────────────────────────────────────────
 def target(prs):
     slide = new(prs)
@@ -214,7 +306,8 @@ def target(prs):
 def build(path: Path) -> None:
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(W), Inches(H)
-    for page in (cover, objective, seeds, caption_levels, chain, target):
+    for page in (cover, objective, seeds, caption_levels, chain, target,
+                 arch_backbone, arch_loss, arch_metric):
         page(prs)
     path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(path)
