@@ -53,7 +53,16 @@ export IRIS_TEXT_PADDING="${IRIS_TEXT_PADDING:-legacy}"
 export IRIS_DECODE_CLAMP="${IRIS_DECODE_CLAMP:-0}"
 
 TRAIN_MANIFEST="${TRAIN_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_train_official8_thermalcap_v3_1_untrimmed_20260821.jsonl}"
-PSEUDO_DIR="${PSEUDO_DIR:-$IRIS_RUNS/pseudo_gt/train_full/calibrated_pseudo_depth}"
+# 两个候选：official_train 是官方 8 序列划分那份（2026-08-22 起在用），
+# train_full 是划分启用之前的。探针文档里的例子写的是后者，照抄会指向旧目录。
+if [[ -z "${PSEUDO_DIR:-}" ]]; then
+  for _cand in official_train train_full; do
+    if [[ -d "$IRIS_RUNS/pseudo_gt/$_cand/calibrated_pseudo_depth" ]]; then
+      PSEUDO_DIR="$IRIS_RUNS/pseudo_gt/$_cand/calibrated_pseudo_depth"
+      break
+    fi
+  done
+fi
 CKPT="$IRIS_RUNS/iris_ms2/$RUN/converted/step${STEP}_weights.pt"
 OUT="$IRIS_RUNS/analysis/$OUT_TAG"
 SUB="$OUT/frames.jsonl"
@@ -66,8 +75,18 @@ if [[ ! -f "$CKPT" ]]; then
   ls -1 "$IRIS_RUNS/iris_ms2/$RUN/converted" 2>/dev/null | sed 's/^/     /'
   exit 1
 fi
-[[ -f "$TRAIN_MANIFEST" ]] || { echo "!! 找不到清单 $TRAIN_MANIFEST"; exit 1; }
-[[ -d "$PSEUDO_DIR" ]]     || { echo "!! 找不到伪深度 $PSEUDO_DIR"; exit 1; }
+if [[ ! -f "$TRAIN_MANIFEST" ]]; then
+  echo "!! 找不到清单 $TRAIN_MANIFEST"
+  echo "   $IRIS_MANIFEST_DIR 下的 train 清单："
+  ls -1 "$IRIS_MANIFEST_DIR" 2>/dev/null | grep -i train | sed 's/^/     /'
+  exit 1
+fi
+if [[ -z "${PSEUDO_DIR:-}" || ! -d "$PSEUDO_DIR" ]]; then
+  echo "!! 找不到伪深度目录 ${PSEUDO_DIR:-<两个候选都不存在>}"
+  echo "   $IRIS_RUNS/pseudo_gt 下现有的："
+  ls -1 "$IRIS_RUNS/pseudo_gt" 2>/dev/null | sed 's/^/     /'
+  exit 1
+fi
 
 mkdir -p "$OUT"
 cd "$IRIS_REPO"
