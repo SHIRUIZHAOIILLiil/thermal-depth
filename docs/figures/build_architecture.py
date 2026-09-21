@@ -81,8 +81,8 @@ def arrow(ax, x0, y0, x1, y1, *, style="-|>", colour=INK, dashed=False, width=1.
 
 
 def backbone():
-    fig, ax = plt.subplots(figsize=(15.6, 7.6), dpi=140)
-    ax.set_xlim(0, 15.6); ax.set_ylim(0, 7.6); ax.axis("off")
+    fig, ax = plt.subplots(figsize=(15.6, 6.75), dpi=140)
+    ax.set_xlim(0, 15.6); ax.set_ylim(0.85, 7.6); ax.axis("off")
 
     ax.text(0.25, 7.25, "第一阶段：训练主干", fontsize=17, weight="bold", color=INK)
     ax.text(0.25, 6.92, "865 M 的 U-Net 是唯一吃梯度的部分；VAE 与文本编码器全程冻结",
@@ -162,14 +162,6 @@ def backbone():
     ax.text(10.9, 6.52, "梯度只回到 U-Net", ha="center", fontsize=10.5,
             color=RED, weight="bold")
 
-    ax.text(0.25, 0.46,
-            "损失  L = 1.0 × SL_A + 1.0 × SL_R"
-            "　　（两个权重在基础配方里被固定为 1，改动需显式开启 metric 适配）",
-            fontsize=11.5, color=INK)
-    ax.text(0.25, 0.14,
-            "注意：绝对尺度在“造训练目标”那一步就被逐帧分位数除掉了，"
-            "所以网络输出必然没有单位",
-            fontsize=10.5, color=RED)
 
     fig.savefig("arch_backbone.png", bbox_inches="tight", facecolor="white")
     plt.close(fig)

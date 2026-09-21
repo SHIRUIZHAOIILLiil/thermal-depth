@@ -17,6 +17,7 @@ from pathlib import Path
 
 from pptx import Presentation
 from pptx.enum.text import PP_ALIGN
+from PIL import Image
 from pptx.dml.color import RGBColor
 from pptx.util import Inches, Pt
 
@@ -37,6 +38,18 @@ NUMCOLS = [PP_ALIGN.LEFT] + [PP_ALIGN.CENTER] * 3
 
 def new_slide(prs):
     return prs.slides.add_slide(prs.slide_layouts[6])
+
+
+def fit_height(slide, picture: Path, top: float, height: float):
+    """Place a figure by height, centred, reading its aspect off the file.
+
+    The aspect used to be written into this script as a pair of pixel counts,
+    which meant every edit to a figure silently rescaled it here -- the numbers
+    had already gone stale once by the time anyone looked.
+    """
+    width = height * Image.open(picture).size[0] / Image.open(picture).size[1]
+    slide.shapes.add_picture(str(picture), Inches(MARGIN + (BODY_W - width) / 2),
+                             Inches(top), height=Inches(height))
 
 
 def unbold(tbl, *, rows_from=1):
@@ -261,13 +274,8 @@ def arch_backbone(prs):
     header(slide, "架构", "只有 U-Net 在训练，其余全部冻结")
     picture = FIGURES / "arch_backbone.png"
     if picture.is_file():
-        # Sized by height, not width: at full body width it stands 5.8 inches
-        # on a 7.5 inch slide and runs straight through the conclusion bar.
-        art_h = 5.02
-        art_w = art_h * 1769 / 847
-        slide.shapes.add_picture(str(picture),
-                                 Inches(MARGIN + (BODY_W - art_w) / 2),
-                                 Inches(1.44), height=Inches(art_h))
+        # 按高度摆：满版心宽时它会一路压过结论条。
+        fit_height(slide, picture, top=1.44, height=5.02)
     conclusion(slide, "一个网络在学，其余都是固定的编码器")
 
 
@@ -303,11 +311,7 @@ def arch_inference(prs):
     header(slide, "推理", "网络出的是 [-1, 1]，米是评估器逐帧贴上去的")
     picture = FIGURES / "arch_inference.png"
     if picture.is_file():
-        art_h = 4.62
-        art_w = art_h * 1720 / 911
-        slide.shapes.add_picture(str(picture),
-                                 Inches(MARGIN + (BODY_W - art_w) / 2),
-                                 Inches(1.46), height=Inches(art_h))
+        fit_height(slide, picture, top=1.46, height=4.62)
     write(textbox(slide, MARGIN, 6.20, BODY_W, 0.40), [
         "推理时整个网络都冻结，一次前向，没有去噪循环。虚线以下不属于模型。",
     ], size=12.5, space_after=4)
