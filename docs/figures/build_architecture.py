@@ -124,7 +124,7 @@ def backbone():
     arrow(ax, 5.30, 1.85, 10.15, 1.85)
     block(ax, 10.15, 1.42, 2.35, 0.86, "目标 latent", state="data")
 
-    block(ax, 9.55, 3.70, 2.55, 1.25, "预测 latent", "t=999，单步", state="data")
+    block(ax, 9.55, 3.70, 2.55, 1.25, "预测 latent", state="data")
     arrow(ax, 9.00, 4.33, 9.55, 4.33)
 
     # The loss panel is laid out by hand: `block` centres its title, and this
@@ -230,7 +230,7 @@ def inference():
 
     ax.text(0.25, 7.85, "推理", fontsize=17, weight="bold", color=INK)
     ax.text(0.25, 7.52,
-            "一次前向，t=999，没有去噪循环；此时整个网络都是冻结的",
+            "一次前向，没有去噪循环；此时整个网络都是冻结的",
             fontsize=12, color=MUTED)
 
     if BADGE_FONT:
