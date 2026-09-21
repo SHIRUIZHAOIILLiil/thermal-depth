@@ -334,7 +334,7 @@ def arch_loss(prs):
 
 def arch_inference(prs):
     slide = new_slide(prs)
-    header(slide, "推理", "网络出的是 [-1, 1]，米是评估器逐帧贴上去的")
+    header(slide, "推理", "网络出的是没有单位的相对深度，米是评估器逐帧贴上去的")
     picture = FIGURES / "arch_inference.png"
     if picture.is_file():
         fit_height(slide, picture, top=1.46, height=4.62)
