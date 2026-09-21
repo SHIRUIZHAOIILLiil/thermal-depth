@@ -81,8 +81,8 @@ def arrow(ax, x0, y0, x1, y1, *, style="-|>", colour=INK, dashed=False, width=1.
 
 
 def backbone():
-    fig, ax = plt.subplots(figsize=(15.6, 6.75), dpi=140)
-    ax.set_xlim(0, 15.6); ax.set_ylim(0.85, 7.6); ax.axis("off")
+    fig, ax = plt.subplots(figsize=(15.6, 6.35), dpi=140)
+    ax.set_xlim(0, 15.6); ax.set_ylim(1.25, 7.6); ax.axis("off")
 
     ax.text(0.25, 7.25, "第一阶段：训练主干", fontsize=17, weight="bold", color=INK)
     ax.text(0.25, 6.92, "865 M 的 U-Net 是唯一吃梯度的部分；VAE 与文本编码器全程冻结",
@@ -112,8 +112,6 @@ def backbone():
     block(ax, 0.25, 1.40, 2.15, 0.90, "训练目标", "伪深度 + 激光覆写", state="data")
     block(ax, 2.85, 1.40, 2.45, 0.90, "VAE 编码器", "冻结（同一份）", state="frozen")
     arrow(ax, 2.40, 1.85, 2.85, 1.85)
-    ax.text(1.32, 1.14, "先归一化：log 深度的 2%/98% 分位 → [-1, 1]",
-            ha="center", fontsize=9.5, color=RED)
 
     # The one trainable block.
     block(ax, 6.05, 3.05, 2.95, 2.55, "U-Net", "865 M · 唯一训练的部分",
