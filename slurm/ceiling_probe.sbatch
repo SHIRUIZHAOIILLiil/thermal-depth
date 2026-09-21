@@ -44,6 +44,25 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 : "${STEP:?必须指定 STEP（checkpoint 步数）}"
 FRAMES="${FRAMES:-200}"
 PROMPT="${PROMPT:-correct}"
+
+# 对齐必须与该臂训练时的 norm_type 一致，而且上界那一行要跟着换 —— 两边不同族
+# 这组对照就没意义了，而那正是这个脚本存在的理由。
+#   log_truncnorm   -> ssi_log         上界读 log_truncnorm
+#   trunc_disparity -> ssi_disparity   上界读 trunc_disparity
+#   truncnorm       -> ssi             上界读 truncnorm
+ALIGN="${ALIGN:-ssi_log}"
+case "$ALIGN" in
+  ssi_log)       MATCH_NORM=log_truncnorm ;;
+  ssi_disparity) MATCH_NORM=trunc_disparity ;;
+  ssi)           MATCH_NORM=truncnorm ;;
+  *) echo "!! ALIGN 只支持 ssi_log | ssi_disparity | ssi，收到 $ALIGN"; exit 1 ;;
+esac
+# 臂名不是契约，所以这里只警告不拦 —— 但错配是静默的，值得喊一声。
+if [[ "$RUN" == *logtn* && "$ALIGN" != "ssi_log" ]]; then
+  echo "⚠️ 臂名含 logtn 但 ALIGN=$ALIGN —— 确认这不是错配"
+elif [[ "$RUN" != *logtn* && "$ALIGN" == "ssi_log" ]]; then
+  echo "⚠️ 臂名不含 logtn 但 ALIGN=ssi_log —— 确认这不是错配"
+fi
 OUT_TAG="${OUT_TAG:-ceiling_${RUN}_s${STEP}}"
 
 # ⚠️ 这一行不能省。iris_ms2_pipeline.sbatch 把它默认成 minmax，而 logtn 这条线
@@ -97,7 +116,7 @@ echo "臂        = $RUN  step $STEP"
 echo "帧数      = $FRAMES"
 echo "prompt    = $PROMPT   (须与训练时一致)"
 echo "thermal   = $IRIS_THERMAL_STRETCH   (须与训练时一致)"
-echo "对齐      = ssi_log   (log_truncnorm 只能在 log 空间拟合)"
+echo "对齐      = $ALIGN   (上界读 $MATCH_NORM 那一行)"
 echo "输出      = $OUT"
 echo "============"
 
@@ -142,18 +161,19 @@ python tools/train_route_suite.py \
   --val-stride 1 \
   --val-caption-mode "$PROMPT" \
   --num-inference-steps 1 \
-  --align-mode ssi_log \
+  --align-mode "$ALIGN" \
   --condition-latent mode \
   --local-files-only
 
 # --- 3. 并排 ---------------------------------------------------------------
 echo
 echo "=== 对照 ==="
-python - "$OUT" <<'PY'
+python - "$OUT" "$MATCH_NORM" <<'PY'
 import csv, json, sys
 from pathlib import Path
 
 out = Path(sys.argv[1])
+match = sys.argv[2]          # 与这次对齐配套的那一行上界
 probe = json.loads((out / "probe" / "vae_ceiling.json").read_text(encoding="utf-8"))
 by_norm = probe["summary"]["by_norm"]
 
@@ -162,7 +182,8 @@ by_norm = probe["summary"]["by_norm"]
 # an afternoon.
 rows = []
 for norm, s in by_norm.items():
-    rows.append((f"上界 {norm}", s["abs_rel_mean"], s["rmse_mean"], s["delta1_mean"]))
+    tag = " ← 与模型同族" if norm == match else ""
+    rows.append((f"上界 {norm}{tag}", s["abs_rel_mean"], s["rmse_mean"], s["delta1_mean"]))
 
 # Aggregate the model the same way the probe does: per frame, then mean over
 # frames. Reading a headline out of the eval json instead would risk a
@@ -186,9 +207,15 @@ rows.append(("模型 " + csvs[-1].parent.name,
              sum(column("rmse")) / n,
              sum(column("a1", "delta1")) / n))
 
-print(f"\n{'':28s}{'AbsRel':>10s}{'RMSE (m)':>12s}{'δ1':>10s}")
+print(f"\n{'':36s}{'AbsRel':>10s}{'RMSE (m)':>12s}{'δ1':>10s}")
 for name, a, r, d in rows:
-    print(f"{name:28s}{a:>10.5f}{r:>12.3f}{d:>10.5f}")
+    print(f"{name:36s}{a:>10.5f}{r:>12.3f}{d:>10.5f}")
+ceiling = by_norm.get(match)
+if ceiling:
+    m = rows[-1]
+    print(f"[倍数] 模型 / 同族上界   "
+          f"AbsRel {m[1] / ceiling['abs_rel_mean']:.2f}x   "
+          f"RMSE {m[2] / ceiling['rmse_mean']:.2f}x")
 print(f"\n帧数：上界 {probe['summary']['frames']}，模型 {n}")
 if probe["summary"]["frames"] != n:
     print("⚠️ 两边帧数不一致，这组对照作废 —— 查子清单是不是被两边各自抽稀了")
