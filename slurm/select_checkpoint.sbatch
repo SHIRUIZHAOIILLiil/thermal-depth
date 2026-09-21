@@ -108,41 +108,7 @@ done
 
 echo
 echo "=== val 曲线 ==="
-python - "$OUT" "$LIMIT" <<'PY'
-import json, re, sys
-from pathlib import Path
-
-out, limit = Path(sys.argv[1]), sys.argv[2]
-rows = []
-for d in sorted(out.iterdir()):
-    f = d / "metrics" / "summary.json"
-    if not f.is_file():
-        continue
-    stats = json.loads(f.read_text(encoding="utf-8"))["image_wise"]["statistics"]
-    n = int(m.group()) if (m := re.search(r"\d+", d.name)) else 0
-    rows.append((n, d.name, stats["abs_rel"], stats["rmse"], stats["a1"]))
-if not rows:
-    raise SystemExit(f"{out} 下没有 metrics/summary.json")
-rows.sort()
-
-print(f"\n{'checkpoint':>14s}{'AbsRel':>10s}{'RMSE (m)':>12s}{'δ1':>10s}")
-best = min(rows, key=lambda r: r[2])
-for _, name, a, r, d in rows:
-    mark = "  <- val 最优" if name == best[1] else ""
-    print(f"{name:>14s}{a:>10.5f}{r:>12.3f}{d:>10.5f}{mark}")
-
-# 曲线是不是还在往下走，决定「再训会不会更好」。最后一个点最优 ＝ 仍在下降，
-# 这个 20000 步的预算就没花完；中间某点最优 ＝ 已经翻头，再训只会更差。
-print(f"\n选点：{best[1]}   AbsRel {best[2]:.5f}")
-if best[1] == rows[-1][1]:
-    print("⚠️ 最优落在最后一个 checkpoint —— val 可能还在下降，预算没花完，"
-          "这个「最优」也许只是训练被截断的地方。")
-else:
-    later = [r for r in rows if r[0] > best[0]]
-    print(f"val 在此之后翻头（其后 {len(later)} 个点都更差），不是被截断的。")
-if limit != "0":
-    print(f"\n⛔ 冒烟口径（每点只用了 {limit} 帧），这条曲线不能用来定选点。")
-PY
+python tools/summarize_checkpoint_sweep.py "$OUT" --limit "$LIMIT"
 
 echo
 echo "[完成] $OUT"
