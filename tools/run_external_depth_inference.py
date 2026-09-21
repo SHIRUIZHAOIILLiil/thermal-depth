@@ -92,6 +92,13 @@ def parse_args() -> argparse.Namespace:
                         help="16-bit thermal -> 8-bit. See the module docstring "
                              "for why this is not min-max by default.")
     parser.add_argument("--limit", type=int, default=0, help="Smoke on the first N frames.")
+    parser.add_argument(
+        "--weights", type=Path,
+        help="Local fine-tuned weights to load instead of the hub id -- a "
+             "directory written by save_pretrained. Without it this evaluates "
+             "the released model, which for a thermal table means a model that "
+             "has never seen thermal, and the two must never share a row.",
+    )
     parser.add_argument("--probe-output-space", action="store_true",
                         help="Measure which space the raw output is affine in and stop. "
                              "⚠️ Point this at a TRAIN manifest: it fits to GT, and "
@@ -124,8 +131,11 @@ def load_predictor(args: argparse.Namespace, spec: dict):
     """Return a callable mapping a PIL RGB image to a raw HxW float array."""
     if args.model == "depth_anything_v2":
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+        weights = str(args.weights) if args.weights else spec["hf_id"]
         processor = AutoImageProcessor.from_pretrained(spec["hf_id"])
-        model = AutoModelForDepthEstimation.from_pretrained(spec["hf_id"])
+        model = AutoModelForDepthEstimation.from_pretrained(weights)
+        if args.weights:
+            print(f"[weights] {weights}  (预处理仍取自 {spec['hf_id']})", flush=True)
         model = model.to(args.device).eval()
 
         def predict(image):
@@ -258,6 +268,7 @@ def main() -> None:
     provenance = {
         "model": args.model,
         "hf_id": spec.get("hf_id"),
+        "weights": str(args.weights) if args.weights else None,
         "native_output": spec["output"],
         "evaluator_align": spec["align"],
         "thermal_stretch": args.stretch,
