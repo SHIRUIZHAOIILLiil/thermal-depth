@@ -183,11 +183,11 @@ def against_anythermal(prs):
     rows = [
         ["场景 / 模型"] + METRICS,
         ["白天　AnyThermal", "0.0810", "2.614", "0.9424"],
-        ["白天　我们", "0.0737", "2.924", "0.9453"],
+        ["白天　我们（带 caption）", "0.0737", "2.924", "0.9453"],
         ["夜间　AnyThermal", "0.0872", "2.514", "0.9380"],
-        ["夜间　我们", "0.0763", "2.639", "0.9482"],
+        ["夜间　我们（带 caption）", "0.0763", "2.639", "0.9482"],
         ["雨天　AnyThermal", "0.1020", "3.159", "0.9048"],
-        ["雨天　我们", "0.0965", "3.538", "0.9099"],
+        ["雨天　我们（带 caption）", "0.0965", "3.538", "0.9099"],
     ]
     check_paired_rows_differ(rows)
     # Shaded by pair, and no row is marked better, because none is: two of the
@@ -196,8 +196,9 @@ def against_anythermal(prs):
     tbl = table(slide, rows, MARGIN, 1.62, BODY_W, 3.30, [2.3, 1, 1, 1],
                 size=14, align=NUMCOLS, highlight=(1, 2, 5, 6))
     unbold(tbl, rows_from=1)
-    footnote(slide, "AnyThermal 的深度监督也是 MS2 训练集 + 稀疏激光，与我们同源；"
-                    "两边各在自己的原生空间逐帧拟合两个参数。", top=5.10)
+    footnote(slide, "我们这三行是带 caption 训练、推理给本帧 caption 的那条臂，"
+                    "与第 2–4 页同一条。AnyThermal 的深度监督也是 MS2 训练集 + 稀疏激光。",
+             top=5.10)
     write(textbox(slide, MARGIN, 5.48, BODY_W, 0.9), [
         "我们的训练目标由它的预测标定而来，所以赢的那两项说明的是"
         "「激光覆写和训练补进了它没有的东西」，不是架构更好。",
