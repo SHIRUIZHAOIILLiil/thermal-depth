@@ -196,12 +196,14 @@ def against_anythermal(prs):
     tbl = table(slide, rows, MARGIN, 1.62, BODY_W, 3.30, [2.3, 1, 1, 1],
                 size=14, align=NUMCOLS, highlight=(1, 2, 5, 6))
     unbold(tbl, rows_from=1)
-    footnote(slide, "我们这三行是带 caption 训练、推理给本帧 caption 的那条臂，"
-                    "与第 2–4 页同一条。AnyThermal 的深度监督也是 MS2 训练集 + 稀疏激光。",
-             top=5.10)
-    write(textbox(slide, MARGIN, 5.48, BODY_W, 0.9), [
-        "我们的训练目标由它的预测标定而来，所以赢的那两项说明的是"
-        "「激光覆写和训练补进了它没有的东西」，不是架构更好。",
+    footnote(slide, "官方帧集，每 10 帧抽 1（白天 2331 / 夜间 2292 / 雨天 2503）——"
+                    "外部模型的数只在这个帧集上存在。第 2–4 页按全帧计，同一条臂，两种口径差约 0.0005。",
+             top=5.06)
+    write(textbox(slide, MARGIN, 5.44, BODY_W, 1.0), [
+        "我们这三行就是第 2–4 页那条臂：带 caption 训练，推理给本帧 caption。"
+        "AnyThermal 的深度监督也是 MS2 训练集 + 稀疏激光，与我们同源。",
+        ("我们的训练目标由它的预测标定而来，所以赢的那两项说明的是"
+         "「激光覆写和训练补进了它没有的东西」，不是架构更好。", {"colour": GREY, "size": 12}),
     ], size=12.5, space_after=5)
     conclusion(slide, "AbsRel 与 δ1 三个场景都更好，RMSE 三个场景都更差")
 
