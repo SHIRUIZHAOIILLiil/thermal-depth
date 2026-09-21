@@ -64,6 +64,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--truncnorm-min", type=float, default=0.02)
     parser.add_argument(
+        "--log-fit-space", choices=("depth", "log"), default="depth",
+        help="Where the log_truncnorm row is aligned. 'depth' exponentiates "
+             "first and fits an affine in metres, which keeps this row in the "
+             "same function family as every other row here -- right when the "
+             "rows are being read against each other. 'log' fits the affine in "
+             "log space, which is what --align-mode ssi_log does, and is what "
+             "this row must use when it is read against a MODEL scored that "
+             "way. The two are non-nested: D = a*exp(u)+b is not D = "
+             "exp(a*y+b), and cross-family scoring has cost 30x here before.",
+    )
+    parser.add_argument(
         "--no-overwrite", action="store_true",
         help="Encode the pure calibrated pseudo map instead of the completed one. "
              "The control for the seam split: that map is smooth everywhere, so a "
@@ -191,10 +202,19 @@ def main() -> int:
             # comparing across families is the mistake that reported Marigold at
             # 0.265. Exponentiating first keeps the alignment fixed so this
             # measures the representation and nothing else.
-            fit_input = np.exp(round_trip) if norm == "log_truncnorm" else round_trip
-            scale, shift = fit_scale_shift(fit_input.astype(np.float32),
-                                           target.astype(np.float32), valid)
-            fitted = fit_input * scale + shift
+            if norm == "log_truncnorm" and args.log_fit_space == "log":
+                # Exactly ssi_log: least squares against log(gt), in the space
+                # the target was built in, then exponentiate. This is the row
+                # to use when the ceiling is being read against a model.
+                scale, shift = fit_scale_shift(
+                    round_trip.astype(np.float32),
+                    np.log(np.maximum(target, 1e-6)).astype(np.float32), valid)
+                fitted = np.exp(np.clip(round_trip * scale + shift, -9.0, 9.0))
+            else:
+                fit_input = np.exp(round_trip) if norm == "log_truncnorm" else round_trip
+                scale, shift = fit_scale_shift(fit_input.astype(np.float32),
+                                               target.astype(np.float32), valid)
+                fitted = fit_input * scale + shift
             aligned = (1.0 / np.clip(fitted, 1e-3, None)) if in_disparity else fitted
             aligned = np.clip(aligned, args.min_depth, args.max_depth)
 
@@ -229,6 +249,7 @@ def main() -> int:
     if not records:
         raise SystemExit("No frame produced a measurement")
     summary = {"frames": len(records), "no_overwrite": bool(args.no_overwrite),
+               "log_fit_space": args.log_fit_space,
                "lotus_model_path": args.lotus_model_path,
                "checkpoint_convention": "disparity", "by_norm": {}}
     summary["valid_fraction_p50"] = float(np.median([r["valid_fraction"] for r in records]))
@@ -253,6 +274,10 @@ def main() -> int:
         json.dumps({"summary": summary, "per_frame": records}, indent=2), encoding="utf-8")
 
     print(f"\n[frames] {len(records)}")
+    print(f"[对齐] log_truncnorm 这一行在 {args.log_fit_space} 空间拟合"
+          + ("　＝ ssi_log，可与模型的数并排"
+             if args.log_fit_space == "log"
+             else "　⚠️ 与 ssi_log 不同族，不能直接对模型的数"))
     print(f"\n{'normalisation':16s}{'AbsRel p50':>12s}{'mean':>10s}{'p90':>10s}{'往返相对误差':>16s}")
     for norm, s in summary["by_norm"].items():
         mark = "  <- checkpoint" if norm == "disparity" else ""
