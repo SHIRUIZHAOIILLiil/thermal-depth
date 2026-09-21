@@ -46,6 +46,18 @@ def main() -> None:
         print(f"{name:>14s}{abs_rel:>10.5f}{rmse:>12.3f}{delta1:>10.5f}{mark}")
 
     print(f"\n选点：{best[1]}   AbsRel {best[2]:.5f}")
+    # 「后面的点更差」对纯噪声也成立，所以先问这条曲线分不分得开。相邻两点的
+    # 典型跳动就是这个采样量下的噪声尺度；最优与次优的差比它还小，说明名次是
+    # 抖出来的，报一个选点只是在给噪声起名字。
+    jumps = sorted(abs(rows[k][2] - rows[k - 1][2]) for k in range(1, len(rows)))
+    noise = jumps[len(jumps) // 2] if jumps else 0.0
+    ordered = sorted(rows, key=lambda r: r[2])
+    margin = (ordered[1][2] - ordered[0][2]) if len(ordered) > 1 else float("inf")
+    print(f"相邻点跳动（中位）{noise:.5f}　最优与次优之差 {margin:.5f}")
+    if margin < noise:
+        print("⛔ 差距小于噪声尺度 —— 这条曲线分不出名次，不能据此选点。")
+        print("   加帧数（噪声约按 1/√N 降），或者承认这几个点在这个采样量下是平的。")
+        return
     # 最优落在最后一个点，说明 val 可能还在下降 —— 那个「最优」也许只是训练被截断
     # 的地方，和一条真正翻了头的曲线是两回事，报的时候不能混为一谈。
     if best[1] == rows[-1][1]:

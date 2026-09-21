@@ -46,7 +46,9 @@ PATTERN="${PATTERN:-step*}"
 ALIGN="${ALIGN:-ssi_disparity}"
 LIMIT="${LIMIT:-0}"
 MANIFEST="${MANIFEST:-$IRIS_MANIFEST_DIR/ms2_val_official3_thermalcap_20260821.jsonl}"
-OUT_TAG="${OUT_TAG:-select_${MODEL}_$(basename "$CKPT_ROOT")}"
+_SUFFIX=""
+[[ "${LIMIT:-0}" != "0" ]] && _SUFFIX="_smoke${LIMIT}"
+OUT_TAG="${OUT_TAG:-select_${MODEL}_$(basename "$CKPT_ROOT")${_SUFFIX}}"
 OUT="$IRIS_RUNS/analysis/$OUT_TAG"
 
 # ⚠️ 与训练时一致，错了不报错只让数变差。
