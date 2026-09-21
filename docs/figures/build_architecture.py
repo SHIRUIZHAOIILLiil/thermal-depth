@@ -257,7 +257,7 @@ def inference():
     block(ax, 4.95, row, 2.35, h, "U-Net", "865 M", state="frozen")
     block(ax, 7.65, row, 2.00, h, "预测 latent", state="data")
     block(ax, 10.00, row, 2.15, h, "VAE 解码器", state="frozen")
-    block(ax, 12.50, row, 2.90, h, "网络输出", "[-1, 1]", state="data")
+    block(ax, 12.50, row, 2.90, h, "网络输出", "标称 [-1, 1]", state="data")
     for x0, x1 in ((2.10, 2.45), (4.60, 4.95), (7.30, 7.65),
                    (9.65, 10.00), (12.15, 12.50)):
         arrow(ax, x0, mid, x1, mid)
@@ -270,8 +270,8 @@ def inference():
     ax.text(5.42, 4.38, "跨注意力", ha="center", fontsize=9, color=MUTED)
 
     ax.text(0.25, 3.76,
-            "网络这一路直接出来的是 VAE 解码后的 [-1, 1]，再 /2 + 0.5 换成 "
-            "y ∈ [0, 1]：稠密，没有单位。",
+            "网络这一路直接出来的是 VAE 解码值，再 /2 + 0.5 换成 y：稠密，没有单位。"
+            "两个区间都是标称的 —— 默认不裁剪，实际可略微越界。",
             fontsize=11.5, color=RED)
     ax.text(0.25, 3.46,
             "这个区间里装的是归一化之后的 log 深度 —— 换目标之前那条基线才是视差"
@@ -283,7 +283,7 @@ def inference():
             fontsize=13, weight="bold", color=INK)
 
     # Band B: the two-parameter fit that puts the metres on.
-    block(ax, 0.25, 1.40, 2.45, 0.90, "网络输出 y", "0 到 1，稠密", state="data")
+    block(ax, 0.25, 1.40, 2.45, 0.90, "网络输出 y", "标称 0 到 1，稠密", state="data")
     block(ax, 0.25, 0.30, 2.45, 0.90, "官方激光 GT", "约 26% 的像素", state="data")
     block(ax, 4.30, 0.55, 3.40, 1.60, "逐帧最小二乘",
           "只在有激光的像素上解 a、b", state="data", radius=0.12)
