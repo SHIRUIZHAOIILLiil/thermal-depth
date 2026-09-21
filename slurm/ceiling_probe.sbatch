@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=02:00:00
+#SBATCH --time=00:20:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #
@@ -30,6 +30,9 @@
 #   冒烟（20 帧，确认两边都真的出数）：
 #     RUN=sd2_cap_pct_logtn STEP=16000 FRAMES=20 \
 #       sbatch --time=00:40:00 --export=ALL,RUN,STEP,FRAMES ~/Iris/slurm/ceiling_probe.sbatch
+#
+#   ⏱ 实测 20 帧 3:55、200 帧 2:07 —— 瓶颈是模型加载不是帧数。头上写的 20 分钟
+#      已是五倍余量；别再申请更长，短作业才塞得进 backfill。
 #
 #   正式（200 帧）：
 #     RUN=sd2_cap_pct_logtn STEP=16000 \
