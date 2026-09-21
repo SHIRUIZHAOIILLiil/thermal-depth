@@ -38,6 +38,15 @@ def new(prs):
     return prs.slides.add_slide(prs.slide_layouts[6])
 
 
+def unbold(tbl, *, rows_from=1):
+    """Drop the bold that `table`'s highlight applies, keeping the shading."""
+    for row in range(rows_from, len(tbl.rows)):
+        for column in range(len(tbl.columns)):
+            for para in tbl.cell(row, column).text_frame.paragraphs:
+                for run in para.runs:
+                    run.font.bold = False
+
+
 def check_paired_rows_differ(rows: list[list[str]]) -> None:
     """Consecutive rows are the two arms of one comparison; they must print apart.
 
@@ -123,8 +132,17 @@ def seeds(prs):
     # 0.9098 while the values are 0.90979 and 0.90985, and a table whose whole
     # job is to put two runs side by side would be claiming they are identical.
     check_paired_rows_differ(rows)
-    table(slide, rows, MARGIN, 1.62, BODY_W, 3.30, [2.3, 1, 1, 1],
-          size=14, align=NUMCOLS, highlight=())
+    # Shaded by pair, not by winner. The previous slide marks the better row of
+    # each pair because there is a real effect to point at; here the two seeds
+    # differ by less than a rerun would, so marking one would present run-to-run
+    # noise as a result. The banding groups each pair instead, which is what the
+    # slide asks the reader to look at.
+    tbl = table(slide, rows, MARGIN, 1.62, BODY_W, 3.30, [2.3, 1, 1, 1],
+                size=14, align=NUMCOLS, highlight=(1, 2, 5, 6))
+    # `highlight` shades and bolds together. Bold is emphasis and shading is
+    # grouping, and here only grouping is meant: left as it came, four rows
+    # would read as important and the night pair as an aside.
+    unbold(tbl, rows_from=1)
     footnote(slide, "两条臂各自由验证集十个候选点自动选出最好的一个，"
                     "全程不看测试集。", top=5.10)
     write(textbox(slide, MARGIN, 5.48, BODY_W, 0.9), [
