@@ -16,7 +16,9 @@
 #
 # 补的是推理，不是训练：checkpoint 已经在盘上，这里只是给它们打分。
 #
-# ⚠️ 全程只碰 val。test 在选完之后单独跑一次，不在这个脚本里。
+# ⚠️ 默认只碰 val。选完点之后跑 test 也用这个脚本，但必须同时给 MANIFEST（test
+#    清单）和 PATTERN（**只匹配选中的那一个 checkpoint**）—— 十个点都拿 test 跑一遍
+#    再挑最好的，就是拿 test 选点，这个项目的红线。
 #
 # ── 环境变量 ────────────────────────────────────────────────────────
 #   MODEL     depth_anything_v2（默认）| pixel_perfect_depth
@@ -78,7 +80,11 @@ echo "清单      = $MANIFEST"
 echo "帧数上限  = $LIMIT   (0 ＝ 全量)"
 echo "thermal   = $IRIS_THERMAL_STRETCH"
 echo "输出      = $OUT"
-echo "⚠️ 全程只碰 val。test 在选完之后单独跑。"
+if [[ "${#CKPTS[@]}" -gt 1 && "$MANIFEST" == *test* ]]; then
+  echo "!! MANIFEST 看着是 test，但 PATTERN 匹配到 ${#CKPTS[@]} 个 checkpoint。"
+  echo "!! 十个点都跑 test 再挑最好的 ＝ 拿 test 选点。PATTERN 要指定唯一一个。"
+  exit 1
+fi
 echo "============"
 
 for ckpt in "${CKPTS[@]}"; do
