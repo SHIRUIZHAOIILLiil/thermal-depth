@@ -49,6 +49,9 @@ def main() -> None:
     # 「后面的点更差」对纯噪声也成立，所以先问这条曲线分不分得开。相邻两点的
     # 典型跳动就是这个采样量下的噪声尺度；最优与次优的差比它还小，说明名次是
     # 抖出来的，报一个选点只是在给噪声起名字。
+    if len(rows) == 1:
+        return
+
     jumps = sorted(abs(rows[k][2] - rows[k - 1][2]) for k in range(1, len(rows)))
     noise = jumps[len(jumps) // 2] if jumps else 0.0
     ordered = sorted(rows, key=lambda r: r[2])
