@@ -182,7 +182,16 @@ export MAIN_PORT="$MAIN_PROCESS_PORT"
 export NO_CAPTIONS="${NO_CAPTIONS:-0}"
 export SKY_MASK_DIR="${SKY_MASKS:-}"
 
-[[ -f "$MS2_MANIFEST" ]]     || { echo "!! 找不到 manifest: $MS2_MANIFEST"; exit 1; }
+if [[ ! -f "$MS2_MANIFEST" ]]; then
+  echo "!! 找不到 manifest: $MS2_MANIFEST"
+  case "$MS2_MANIFEST" in
+    /ms2_*|/[a-z]*.jsonl)
+      echo "!! 路径丢了前缀 —— 提交命令里大概写了 \$IRIS_MANIFEST_DIR。"
+      echo "!! 那是 env.sh 在作业内部才设的，登录节点上是空串。改用 \$SCRATCH/manifests/..." ;;
+  esac
+  ls -1 "$IRIS_MANIFEST_DIR" 2>/dev/null | grep -i train | sed 's/^/     /'
+  exit 1
+fi
 if [[ -n "$SKY_MASK_DIR" ]]; then
   [[ -d "$SKY_MASK_DIR" ]] || { echo "!! 找不到天空掩码目录: $SKY_MASK_DIR"; exit 1; }
   n_masks=$(ls "$SKY_MASK_DIR" | wc -l)
