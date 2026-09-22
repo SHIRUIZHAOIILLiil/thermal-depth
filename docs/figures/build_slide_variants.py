@@ -56,7 +56,7 @@ def metric_chain_slide():
 
     fig = plt.figure(figsize=(17.0, 3.15), dpi=150)
     gs = fig.add_gridspec(1, 4, wspace=0.05, left=0.004, right=0.996,
-                          top=0.80, bottom=0.10)
+                          top=0.80, bottom=0.02)
 
     ax = fig.add_subplot(gs[0, 0])
     ax.imshow(thermal, cmap="gray", vmin=0, vmax=1, interpolation="nearest")
@@ -68,21 +68,16 @@ def metric_chain_slide():
     # direction must not.
     ax2.imshow(y, cmap="turbo_r", vmin=0, vmax=1, interpolation="nearest")
     ax2.set_title("网络直接输出", fontsize=15, pad=7)
-    ax2.set_xlabel("稠密，没有单位", fontsize=12, color="#C00000", labelpad=4)
 
     ax3 = fig.add_subplot(gs[0, 2])
     ax3.imshow(metres, **depth_kw)
     ax3.set_title("拟合两个参数之后", fontsize=15, pad=7)
-    ax3.set_xlabel(f"$\\log D = {a:.2f}\\,y {b:+.2f}$　→　米",
-                   fontsize=12, color="#C00000", labelpad=4)
 
     ax4 = fig.add_subplot(gs[0, 3])
     ax4.imshow(np.zeros_like(lidar), cmap="gray", vmin=0, vmax=1,
                interpolation="nearest")
     ax4.imshow(np.where(real, lidar, np.nan), **depth_kw)
     ax4.set_title("官方激光 GT", fontsize=15, pad=7)
-    ax4.set_xlabel(f"有单位，但只覆盖 {real.mean():.1%}", fontsize=12,
-                   color="#C00000", labelpad=4)
 
     for ax in (ax, ax2, ax3, ax4):
         ax.set_xticks([]); ax.set_yticks([])
