@@ -28,6 +28,8 @@
 #   ALIGN     打分用的对齐，默认 ssi_disparity（DA2 的原生空间）
 #   MANIFEST  val 清单，默认官方 3 序列那份
 #   LIMIT     每个 checkpoint 只跑前 N 帧，默认 0 ＝ 全量。冒烟用 40
+#   KEEP_RAW  1 = 保留逐帧 .npy（换对齐重打分时才要）。默认 0 ＝ 打完就删，
+#             因为一个点就是 9.3 GB / 1.4 万个文件，攒起来既占配额又难删
 #   OUT_TAG   输出目录名，默认 select_<MODEL>_<CKPT_ROOT 的末级名>
 #
 # ── 用法 ────────────────────────────────────────────────────────────
@@ -47,6 +49,7 @@ MODEL="${MODEL:-depth_anything_v2}"
 PATTERN="${PATTERN:-step*}"
 ALIGN="${ALIGN:-ssi_disparity}"
 LIMIT="${LIMIT:-0}"
+KEEP_RAW="${KEEP_RAW:-0}"
 MANIFEST="${MANIFEST:-$IRIS_MANIFEST_DIR/ms2_val_official3_thermalcap_20260821.jsonl}"
 _SUFFIX=""
 [[ "${LIMIT:-0}" != "0" ]] && _SUFFIX="_smoke${LIMIT}"
@@ -78,6 +81,7 @@ echo "checkpoint= ${#CKPTS[@]} 个，来自 $CKPT_ROOT"
 echo "对齐      = $ALIGN   (须是该模型的原生空间)"
 echo "清单      = $MANIFEST"
 echo "帧数上限  = $LIMIT   (0 ＝ 全量)"
+echo "留 raw   = $KEEP_RAW   (0 = 打完分就删逐帧 .npy)"
 echo "thermal   = $IRIS_THERMAL_STRETCH"
 echo "输出      = $OUT"
 if [[ "${#CKPTS[@]}" -gt 1 && "$MANIFEST" == *test* ]]; then
@@ -112,6 +116,9 @@ for ckpt in "${CKPTS[@]}"; do
          --align "$ALIGN" --output-dir "$dest")
   [[ "$LIMIT" != "0" ]] && score+=(--limit "$LIMIT")
   python tools/run_official_ms2_evaluation.py "${score[@]}"
+  if [[ "$KEEP_RAW" != "1" ]]; then
+    rm -rf "$dest/raw_predictions"
+  fi
 done
 
 echo
