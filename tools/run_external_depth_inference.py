@@ -154,8 +154,33 @@ def load_predictor(args: argparse.Namespace, spec: dict):
         model = PixelPerfectDepth(semantics_model="da2",
                                   semantics_pth=str(args.ppd_semantics),
                                   sampling_steps=args.sampling_steps)
-        model.load_state_dict(torch.load(args.ppd_checkpoint, map_location="cpu"),
-                              strict=False)
+        # strict=False silently accepts a checkpoint whose keys match nothing,
+        # which is how a randomly initialised DiT gets evaluated and reported.
+        # Their own two loaders disagree about the layout -- the release is a
+        # bare state_dict, ours are Lightning files wrapped in "state_dict" with
+        # a "pipeline." prefix -- so try the layouts and keep the one that
+        # actually lands, then refuse if none of them does.
+        blob = torch.load(args.ppd_checkpoint, map_location="cpu")
+        if isinstance(blob, dict) and "state_dict" in blob:
+            blob = blob["state_dict"]
+        wanted = set(model.state_dict())
+        candidates = {"as-is": blob}
+        for prefix in ("pipeline.", "model."):
+            stripped = {k[len(prefix):]: v for k, v in blob.items() if k.startswith(prefix)}
+            if stripped:
+                candidates[f"strip {prefix!r}"] = stripped
+        candidates["prefix 'pipeline.'"] = {f"pipeline.{k}": v for k, v in blob.items()}
+        label, best = max(candidates.items(),
+                          key=lambda kv: len(wanted & set(kv[1])))
+        hit = len(wanted & set(best))
+        if hit < 0.5 * len(wanted):
+            raise SystemExit(
+                f"!! {args.ppd_checkpoint} 只对上 {hit}/{len(wanted)} 个参数"
+                f"（最好的一种布局是 {label}）。strict=False 会让它静默通过并"
+                f"评估一个随机初始化的模型，所以这里拒绝。")
+        print(f"[weights] {args.ppd_checkpoint}  布局 {label}  "
+              f"匹配 {hit}/{len(wanted)} 个参数", flush=True)
+        model.load_state_dict(best, strict=False)
         model = model.to(args.device).eval()
 
         def predict(image):
