@@ -21,6 +21,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("sweep_dir", type=Path)
+    parser.add_argument(
+        "--pick", action="store_true",
+        help="只打印按规则选中的 checkpoint 名，不打表。规则：val AbsRel 最低；"
+             "并列（与最优之差小于相邻点跳动的中位数）时取更早的一步。"
+             "规则是事先写进文档的，所以套用它是算术，可以交给下游作业。")
     parser.add_argument("--limit", default="0",
                         help="扫描时每个点用了多少帧；非 0 会在表下标明这是冒烟口径。")
     args = parser.parse_args()
@@ -38,6 +43,14 @@ def main() -> None:
     if not rows:
         raise SystemExit(f"{args.sweep_dir} 下没有 metrics/summary.json")
     rows.sort()
+
+    if args.pick:
+        jumps = sorted(abs(rows[k][2] - rows[k - 1][2]) for k in range(1, len(rows)))
+        noise = jumps[len(jumps) // 2] if jumps else 0.0
+        floor = min(r[2] for r in rows)
+        tied = [r for r in rows if r[2] - floor <= noise]
+        print(min(tied, key=lambda r: r[0])[1])
+        return
 
     print(f"\n{'checkpoint':>14s}{'AbsRel':>10s}{'RMSE (m)':>12s}{'δ1':>10s}")
     best = min(rows, key=lambda r: r[2])

@@ -30,6 +30,9 @@
 #   LIMIT     每个 checkpoint 只跑前 N 帧，默认 0 ＝ 全量。冒烟用 40
 #   KEEP_RAW  1 = 保留逐帧 .npy（换对齐重打分时才要）。默认 0 ＝ 打完就删，
 #             因为一个点就是 9.3 GB / 1.4 万个文件，攒起来既占配额又难删
+#   PICK_FROM 一个 val 扫描的输出目录。给了它就自动按「AbsRel 最低、并列取更早」
+#             算出 PATTERN —— 规则事先写在 BASELINE_COMPARISON_LEDGER 里，所以
+#             test 作业可以挂 --dependency 跟在扫描后面自动跑
 #   OUT_TAG   输出目录名，默认 select_<MODEL>_<CKPT_ROOT 的末级名>
 #
 # ── 用法 ────────────────────────────────────────────────────────────
@@ -46,6 +49,12 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
 : "${CKPT_ROOT:?必须指定 CKPT_ROOT（装着各步 checkpoint 的目录）}"
 MODEL="${MODEL:-depth_anything_v2}"
+if [[ -n "${PICK_FROM:-}" ]]; then
+  [[ -d "$PICK_FROM" ]] || { echo "!! 找不到扫描目录 $PICK_FROM"; exit 1; }
+  PATTERN="$(python "${IRIS_REPO:-$HOME/Iris}/tools/summarize_checkpoint_sweep.py" "$PICK_FROM" --pick)"
+  [[ -n "$PATTERN" ]] || { echo "!! 从 $PICK_FROM 取不出选点"; exit 1; }
+  echo "[选点] 按事先记录的规则，从 $PICK_FROM 取得 $PATTERN"
+fi
 PATTERN="${PATTERN:-step*}"
 ALIGN="${ALIGN:-ssi_disparity}"
 LIMIT="${LIMIT:-0}"
