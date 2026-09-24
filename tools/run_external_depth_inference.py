@@ -178,8 +178,23 @@ def load_predictor(args: argparse.Namespace, spec: dict):
                 f"!! {args.ppd_checkpoint} 只对上 {hit}/{len(wanted)} 个参数"
                 f"（最好的一种布局是 {label}）。strict=False 会让它静默通过并"
                 f"评估一个随机初始化的模型，所以这里拒绝。")
+        by_module = {}
+        for key in sorted(wanted):
+            head = key.split(".", 1)[0]
+            got, total = by_module.get(head, (0, 0))
+            by_module[head] = (got + (key in best), total + 1)
         print(f"[weights] {args.ppd_checkpoint}  布局 {label}  "
               f"匹配 {hit}/{len(wanted)} 个参数", flush=True)
+        for head, (got, total) in sorted(by_module.items()):
+            mark = "✅" if got == total else ("—— 由 semantics_pth 提供" if got == 0
+                                              else "⚠️ 部分缺失")
+            print(f"           {head:<16s} {got:>4d}/{total:<4d} {mark}", flush=True)
+        # dit 是我们训练的那部分，缺一个都说明加载路径不对。
+        dit = by_module.get("dit")
+        if dit and dit[0] != dit[1]:
+            raise SystemExit(
+                f"!! dit 只对上 {dit[0]}/{dit[1]} —— 我们训练的正是这一部分，"
+                f"缺参数意味着评估的是半随机的模型。")
         model.load_state_dict(best, strict=False)
         model = model.to(args.device).eval()
 
