@@ -50,6 +50,14 @@ PATTERN="${PATTERN:-step*}"
 ALIGN="${ALIGN:-ssi_disparity}"
 LIMIT="${LIMIT:-0}"
 KEEP_RAW="${KEEP_RAW:-0}"
+PY="python"
+if [[ "$MODEL" == "pixel_perfect_depth" ]]; then
+  export PPD_REPO="${PPD_REPO:-$SCRATCH/ppd_repo}"
+  PPD_SEM="${PPD_SEM:-$PPD_REPO/checkpoints/depth_anything_v2_vitl.pth}"
+  PY="${PPD_PY:-$HOME/.conda/envs/ppd/bin/python}"
+  [[ -x "$PY" ]]      || { echo "!! 找不到可执行的 $PY"; exit 1; }
+  [[ -e "$PPD_SEM" ]] || { echo "!! 找不到语义权重 $PPD_SEM"; exit 1; }
+fi
 MANIFEST="${MANIFEST:-$IRIS_MANIFEST_DIR/ms2_val_official3_thermalcap_20260821.jsonl}"
 _SUFFIX=""
 [[ "${LIMIT:-0}" != "0" ]] && _SUFFIX="_smoke${LIMIT}"
@@ -82,6 +90,7 @@ echo "对齐      = $ALIGN   (须是该模型的原生空间)"
 echo "清单      = $MANIFEST"
 echo "帧数上限  = $LIMIT   (0 ＝ 全量)"
 echo "留 raw   = $KEEP_RAW   (0 = 打完分就删逐帧 .npy)"
+echo "python   = $PY"
 echo "thermal   = $IRIS_THERMAL_STRETCH"
 echo "输出      = $OUT"
 if [[ "${#CKPTS[@]}" -gt 1 && "$MANIFEST" == *test* ]]; then
@@ -107,9 +116,9 @@ for ckpt in "${CKPTS[@]}"; do
   [[ "$LIMIT" != "0" ]] && infer+=(--limit "$LIMIT")
   case "$MODEL" in
     depth_anything_v2)   infer+=(--weights "$ckpt") ;;
-    pixel_perfect_depth) infer+=(--ppd-checkpoint "$ckpt") ;;
+    pixel_perfect_depth) infer+=(--ppd-checkpoint "$ckpt" --ppd-semantics "$PPD_SEM") ;;
   esac
-  python tools/run_external_depth_inference.py "${infer[@]}"
+  "$PY" tools/run_external_depth_inference.py "${infer[@]}"
 
   score=(--manifest "$MANIFEST" --data-root "$IRIS_MS2_ROOT"
          --prediction-dir "$dest/raw_predictions" --route iris-lotus
