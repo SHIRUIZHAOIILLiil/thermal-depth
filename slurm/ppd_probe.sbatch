@@ -28,6 +28,8 @@
 source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
 export PPD_REPO="${PPD_REPO:-$SCRATCH/ppd_repo}"
+PPD_PY="${PPD_PY:-$HOME/.conda/envs/ppd/bin/python}"
+[[ -x "$PPD_PY" ]] || { echo "!! 找不到可执行的 $PPD_PY"; exit 1; }
 CKPT="${CKPT:-$SCRATCH/runs/ppd_ms2/v1/checkpoints/last.ckpt}"
 FRAMES="${FRAMES:-50}"
 SEM="${SEM:-$PPD_REPO/checkpoints/depth_anything_v2_vitl.pth}"
@@ -47,9 +49,10 @@ echo "ckpt     = $CKPT"
 echo "语义权重 = $SEM"
 echo "帧数     = $FRAMES"
 echo "thermal  = $IRIS_THERMAL_STRETCH"
+echo "python   = $PPD_PY   (不是 iris 环境 —— 要 import 他们的依赖)"
 echo "============"
 
-python tools/run_external_depth_inference.py \
+"$PPD_PY" tools/run_external_depth_inference.py \
   --model pixel_perfect_depth \
   --manifest "$MANIFEST" \
   --data-root "$IRIS_MS2_ROOT" \
