@@ -149,7 +149,7 @@ def load_predictor(args: argparse.Namespace, spec: dict):
         if not repo:
             raise SystemExit(f"Set {spec['repo_env']} to the cloned pixel-perfect-depth tree")
         sys.path.insert(0, repo)
-        from ppd.pixel_perfect_depth import PixelPerfectDepth  # type: ignore
+        from ppd.models.ppd import PixelPerfectDepth  # type: ignore
 
         model = PixelPerfectDepth(semantics_model="da2",
                                   semantics_pth=str(args.ppd_semantics),
