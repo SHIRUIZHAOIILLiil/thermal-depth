@@ -64,10 +64,13 @@ MODELS = {
         "repo_env": "PPD_REPO",
         # The paper normalises its target as log depth between the 2nd and 98th
         # percentiles, and run.py min-max normalises the output for a colormap,
-        # so neither says what infer_image returns. Left unset on purpose --
-        # --probe-output-space measures it on train frames.
-        "output": "unstated; measure it",
-        "align": None,
+        # so neither says what infer_image returns. Measured rather than
+        # assumed: --probe-output-space on 50 frames of the official train
+        # split (job 7941688, 2026-09-24) put its raw output affine in log
+        # depth, which is what the paper says it trains under and what our own
+        # line now trains under -- so the two are scored in one family.
+        "output": "affine-invariant log depth (measured, not stated)",
+        "align": "ssi_log",
     },
 }
 
