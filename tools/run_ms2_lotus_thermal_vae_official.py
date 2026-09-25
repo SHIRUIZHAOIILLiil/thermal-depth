@@ -369,9 +369,25 @@ def main():
         unet_checkpoint = torch.load(
             unet_checkpoint_path, map_location="cpu", weights_only=False
         )
-        lotus.unet.load_state_dict(
-            unet_checkpoint["lotus_unet_state_dict"], strict=True
-        )
+        # 项目里有两个训练器，写出来的 .pt 结构不一样，而两边都是正当的
+        # checkpoint。以前这里只认第一种，喂第二种会 KeyError 在加载那一行 ——
+        # 报的是键名，看不出「你拿错了格式」。
+        #   lotus_unet_state_dict   train_ms2_thermal_vae_unet_gt.py
+        #   state_dicts["unet"]     convert_iris_ms2_checkpoint.py（converted/*.pt）
+        if "lotus_unet_state_dict" in unet_checkpoint:
+            unet_state = unet_checkpoint["lotus_unet_state_dict"]
+            checkpoint_layout = "lotus_unet_state_dict"
+        elif isinstance(unet_checkpoint.get("state_dicts"), dict) and \
+                "unet" in unet_checkpoint["state_dicts"]:
+            unet_state = unet_checkpoint["state_dicts"]["unet"]
+            checkpoint_layout = "state_dicts.unet"
+        else:
+            raise SystemExit(
+                f"{unet_checkpoint_path} 里没有可用的 U-Net 权重。\n"
+                f"认得的两种：lotus_unet_state_dict / state_dicts['unet']\n"
+                f"这个文件的顶层键：{sorted(unet_checkpoint)[:20]}"
+            )
+        lotus.unet.load_state_dict(unet_state, strict=True)
         loaded_vae_encoder = False
         if "vae_encoder_state_dict" in unet_checkpoint:
             lotus.vae.encoder.load_state_dict(
@@ -388,6 +404,7 @@ def main():
             ).hexdigest(),
             "unet_checkpoint_global_step": int(unet_checkpoint.get("global_step", -1)),
             "unet_checkpoint_format": str(unet_checkpoint.get("format", "?")),
+            "unet_checkpoint_layout": checkpoint_layout,
             "loaded_trained_vae_encoder": loaded_vae_encoder,
         }
         del unet_checkpoint
