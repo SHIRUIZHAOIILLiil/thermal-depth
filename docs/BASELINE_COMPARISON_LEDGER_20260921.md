@@ -273,7 +273,14 @@ condition / 跟外部模型比」这一整条支线都在同一条线下面争�
 
 写这份台账时发现三份文档在「基线几参数」上打架,记下来免得忘:
 
-1. `COMPARISON_PROTOCOL_20260826.md` §1 说 DORN/BTS/AdaBins/NeWCRF 已发表数字是
+1. ✅ **已结案（2026-09-25，见 `RESULTS_20260925_FULL_COMPARISON.md` §五）**：
+   四点九那张表用的是**我方 `ssi` 2 参数重跑**。`baseline_bench/full_test_day/`
+   的 `ssi_*` 列折算后与那张表逐位吻合，`median_*` 列对不上。
+   ⚠️ 而且「给基线 2 参数更强」只对 RMSE 与 δ1 成立 —— NeWCRF day 的 AbsRel
+   在 2 参数下反而从 0.07052 变差到 0.07106，**那一栏我们比的是它稍弱的版本**。
+   ⛔ `runs/qual/` 下的同名 CSV 只有 600 帧且条件排序反常，是定性子集，不能当结果。
+
+   ~~原文~~：`COMPARISON_PROTOCOL_20260826.md` §1 说 DORN/BTS/AdaBins/NeWCRF 已发表数字是
    **中位数缩放 1 参数**;`EXPERIMENT_LADDER_20260902.md` §5.2 说「五个基线全部是
    深度空间**两参数**」并引用了前者;同文 L264 又说「给基线 2 参数比它们发表的
    1 参数更强(NeWCRF day RMSE **2.717 → 2.430**)」。最可能是 §5.2 那张表是我方
