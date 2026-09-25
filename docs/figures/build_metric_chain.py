@@ -24,6 +24,7 @@ from PIL import Image
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib import colors
 from matplotlib import font_manager
 
 for name in ("Microsoft YaHei", "SimHei", "DengXian"):
@@ -61,8 +62,18 @@ for row, d in enumerate(dirs):
     metres = np.exp(np.clip(a * y + b, -9.0, 9.0))
     aligned_error = float(np.mean(np.abs(metres[real] - lidar[real]) / lidar[real]))
 
-    lo, hi = np.percentile(metres, [2, 98])
-    depth_kw = dict(cmap="turbo_r", vmin=lo, vmax=hi, interpolation="nearest")
+    lo, hi = (float(v) for v in np.percentile(metres, [2, 98]))
+    depth_norm = colors.FuncNorm(
+        (lambda d: -1.0 / np.clip(d, 0.5, None),
+         lambda v: -1.0 / np.clip(v, None, -1e-6)),
+        vmin=lo, vmax=hi)
+    depth_kw = dict(cmap="magma_r", norm=depth_norm, interpolation="nearest")
+
+    def metre_ticks(bar):
+        """刻度选在米制的整数上，位置由 norm 决定，所以间距会不均匀。"""
+        nice = [3, 5, 8, 12, 20, 30, 50, 80]
+        bar.set_ticks([t for t in nice if lo <= t <= hi])
+        bar.ax.tick_params(labelsize=8)
 
     def cell(column, image, title, **show):
         ax = fig.add_subplot(gs[row, column])
@@ -77,17 +88,17 @@ for row, d in enumerate(dirs):
     ax.set_ylabel(meta["id"] + "\n" + f"覆盖 {meta['coverage']:.1%}",
                   fontsize=9.5, labelpad=8, linespacing=1.6)
 
-    # Its own scale, 0 to 1, because this is not depth.
+    # 量程是它自己的 0–1，因为这不是深度 —— 但方向必须和左右两格一致：越亮越近。
+    # 曾经这一格用 viridis、邻格用别的，同一个量在相邻两张图里跑反了方向。
     ax, handle = cell(1, y, "网络直接输出　$y$",
-                      cmap="viridis", vmin=0, vmax=1, interpolation="nearest")
+                      cmap="magma_r", vmin=0, vmax=1, interpolation="nearest")
     bar = fig.colorbar(handle, ax=ax, fraction=0.030, pad=0.010)
     bar.ax.tick_params(labelsize=8)
     if row == len(dirs) - 1:
         ax.set_xlabel("稠密，但没有单位", fontsize=10, color="#555", labelpad=4)
 
     ax, handle = cell(2, metres, "拟合两个参数之后（米）")
-    bar = fig.colorbar(handle, ax=ax, fraction=0.030, pad=0.010)
-    bar.ax.tick_params(labelsize=8)
+    metre_ticks(fig.colorbar(handle, ax=ax, fraction=0.030, pad=0.010))
     ax.set_xlabel(f"$\\log D = {a:.3f}\\,y {b:+.3f}$", fontsize=10,
                   color="#C00000", labelpad=4)
 

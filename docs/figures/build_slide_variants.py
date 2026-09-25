@@ -51,8 +51,15 @@ def metric_chain_slide():
     a, b = np.polyfit(y[real].astype(np.float64),
                       np.log(lidar[real].astype(np.float64)), 1)
     metres = np.exp(np.clip(a * y + b, -9.0, 9.0))
-    lo, hi = np.percentile(metres, [2, 98])
-    depth_kw = dict(cmap="turbo_r", vmin=lo, vmax=hi, interpolation="nearest")
+    def disparity_scale(depth):
+        d = 1.0 / np.clip(depth, 0.5, None)
+        return tuple(float(v) for v in np.percentile(d, [1, 99]))
+
+    def as_disparity(depth, lo, hi):
+        d = 1.0 / np.clip(depth, 0.5, None)
+        return np.clip((d - lo) / (hi - lo + 1e-9), 0, 1)
+
+    depth_kw = dict(cmap="magma", vmin=0, vmax=1, interpolation="nearest")
 
     fig = plt.figure(figsize=(17.0, 3.15), dpi=150)
     gs = fig.add_gridspec(1, 4, wspace=0.05, left=0.004, right=0.996,
@@ -63,20 +70,20 @@ def metric_chain_slide():
     ax.set_title("热像输入", fontsize=15, pad=7)
 
     ax2 = fig.add_subplot(gs[0, 1])
-    # Same colour map as the panels either side: near red, far blue. The scale
-    # differs (0 to 1, not metres) and that is what the caption is for; the
-    # direction must not.
-    ax2.imshow(y, cmap="turbo_r", vmin=0, vmax=1, interpolation="nearest")
+    # 与左右两格同向：越亮越近。这一格的量程是网络自己的 0–1 而不是米，
+    # 那是标题在说的事；方向不能跟着变。
+    ax2.imshow(y, cmap="magma_r", vmin=0, vmax=1, interpolation="nearest")
     ax2.set_title("网络直接输出", fontsize=15, pad=7)
 
     ax3 = fig.add_subplot(gs[0, 2])
-    ax3.imshow(metres, **depth_kw)
+    _lo, _hi = disparity_scale(metres)
+    ax3.imshow(as_disparity(metres, _lo, _hi), **depth_kw)
     ax3.set_title("拟合两个参数之后", fontsize=15, pad=7)
 
     ax4 = fig.add_subplot(gs[0, 3])
     ax4.imshow(np.zeros_like(lidar), cmap="gray", vmin=0, vmax=1,
                interpolation="nearest")
-    ax4.imshow(np.where(real, lidar, np.nan), **depth_kw)
+    ax4.imshow(np.where(real, as_disparity(lidar, _lo, _hi), np.nan), **depth_kw)
     ax4.set_title("官方激光 GT", fontsize=15, pad=7)
 
     for ax in (ax, ax2, ax3, ax4):
@@ -95,8 +102,16 @@ def gt_density_slide():
     completed = np.clip(np.where(real, lidar, pseudo), D_MIN, D_MAX)
     coverage = real.mean()
 
-    lo, hi = np.percentile(completed, [2, 98])
-    depth_kw = dict(cmap="turbo_r", vmin=lo, vmax=hi, interpolation="nearest")
+    def disparity_scale(depth):
+        d = 1.0 / np.clip(depth, 0.5, None)
+        return tuple(float(v) for v in np.percentile(d, [1, 99]))
+
+    def as_disparity(depth, lo, hi):
+        d = 1.0 / np.clip(depth, 0.5, None)
+        return np.clip((d - lo) / (hi - lo + 1e-9), 0, 1)
+
+    _lo, _hi = disparity_scale(completed)
+    depth_kw = dict(cmap="magma", vmin=0, vmax=1, interpolation="nearest")
 
     # 两格：官方 GT 与训练目标。像素级放大那一格拿掉了 —— 它证明的「最密的一块
     # 有 77%」这句话，页面正文里已经直接写着了，一格图只是把同一句话再说一遍。
@@ -107,13 +122,13 @@ def gt_density_slide():
     ax = fig.add_subplot(gs[0, 0])
     ax.imshow(np.zeros_like(lidar), cmap="gray", vmin=0, vmax=1,
               interpolation="nearest")
-    ax.imshow(np.where(real, lidar, np.nan), **depth_kw)
+    ax.imshow(np.where(real, as_disparity(lidar, _lo, _hi), np.nan), **depth_kw)
     ax.set_title(f"官方激光 GT　覆盖 {coverage:.1%}", fontsize=15, pad=7)
     ax.set_xlabel("黑色 = 没有测量值，未做膨胀或插值", fontsize=12,
                   color="#C00000", labelpad=4)
 
     ax2 = fig.add_subplot(gs[0, 1])
-    ax2.imshow(completed, **depth_kw)
+    ax2.imshow(as_disparity(completed, _lo, _hi), **depth_kw)
     ax2.set_title("训练用的目标", fontsize=15, pad=7)
     ax2.set_xlabel("伪深度铺满 + 真实激光盖上去", fontsize=12,
                    color="#C00000", labelpad=4)
