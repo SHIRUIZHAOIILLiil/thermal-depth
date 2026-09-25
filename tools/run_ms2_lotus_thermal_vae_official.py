@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[1]
 LOTUS_ROOT = ROOT / "lotus"
@@ -40,6 +41,18 @@ def parse_args():
     parser.add_argument("--max-depth", type=float, default=80.0)
     parser.add_argument("--lotus-model-path", default="jingheya/lotus-depth-g-v2-1-disparity")
     parser.add_argument("--dtype", choices=("fp16", "fp32"), default="fp16")
+    parser.add_argument(
+        "--processing-res",
+        type=int,
+        default=0,
+        help=(
+            "把热像先等比放大到这个长边再进 VAE，0 ＝ 原生分辨率（默认，与训练一致）。"
+            "MS2 是 256x640，latent 是它的 1/8 ＝ 32x80，比 8 像素细的结构在编码那一步"
+            "就没了。传 1280 得到 512x1280 / latent 64x160。"
+            "⚠️ 模型训在原生分辨率上，调这个就是分布偏移，属于诊断不是配置。"
+            "预测最后会降回原生尺寸再打分，GT 一律不动。"
+        ),
+    )
     parser.add_argument(
         "--caption-mode", choices=("empty", "correct", "hard-wrong"), default="empty"
     )
@@ -162,6 +175,7 @@ class ThermalVAEPipelineBundle:
     prompts: dict[str, str]
     condition_posterior: str
     latent_adapter: ThermalVAELatentAdapter | None = None
+    processing_res: int = 0
     timestep: int = 999
     num_inference_steps: int = 1
     condition_diagnostics: list[dict] = field(default_factory=list)
@@ -172,12 +186,21 @@ def generate_thermal_vae_prediction(input_thermal, bundle, image_path=None, data
     if image_path is None:
         raise ValueError("Lotus evaluator did not provide image_path")
     thermal_path = bundle.ms2_root / image_path
-    thermal = thermal_to_lotus_input(thermal_path, processing_res=0)
+    thermal = thermal_to_lotus_input(thermal_path, processing_res=bundle.processing_res)
+    # 原生尺寸是最终要交出去的尺寸 —— GT 在这个尺寸上，不动它。
     height, width = map(int, thermal.diagnostics["raw_shape"])
+    # 进 VAE 的尺寸可以不同（--processing-res）。latent 是它的 1/8。
+    proc_h, proc_w = (int(v) for v in thermal.tensor.shape[-2:])
     lotus = bundle.lotus
     device = lotus._execution_device
     dtype = lotus.unet.dtype
-    target = (height // int(lotus.vae_scale_factor), width // int(lotus.vae_scale_factor))
+    scale_factor = int(lotus.vae_scale_factor)
+    if proc_h % scale_factor or proc_w % scale_factor:
+        raise RuntimeError(
+            f"进 VAE 的尺寸 {(proc_h, proc_w)} 不是 {scale_factor} 的整数倍；"
+            f"--processing-res {bundle.processing_res} 对 {(height, width)} 不合适"
+        )
+    target = (proc_h // scale_factor, proc_w // scale_factor)
 
     sample_seed = bundle.seeds[image_path]
     condition_seed = sample_seed + 1_000_000
@@ -270,8 +293,22 @@ def generate_thermal_vae_prediction(input_thermal, bundle, image_path=None, data
             do_denormalize=[True],
         )[0]
     disparity = np.asarray(image, np.float32).mean(axis=-1)
-    if disparity.shape != (height, width):
-        raise RuntimeError(f"Decoded shape {disparity.shape} != thermal shape {(height, width)}")
+    if disparity.shape != (proc_h, proc_w):
+        raise RuntimeError(f"Decoded shape {disparity.shape} != processed shape {(proc_h, proc_w)}")
+    if (proc_h, proc_w) != (height, width):
+        # 降回原生尺寸再交出去。GT 是稀疏的激光点，插值它会凭空造出测量值，
+        # 所以动的只能是预测这一边。
+        disparity = (
+            F.interpolate(
+                torch.from_numpy(disparity)[None, None],
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
+                antialias=True,
+            )[0, 0]
+            .numpy()
+            .astype(np.float32)
+        )
     if not np.isfinite(disparity).all():
         raise RuntimeError("Prediction contains NaN/Inf")
     return disparity
@@ -407,6 +444,7 @@ def main():
         prompts,
         args.condition_posterior,
         latent_adapter=latent_adapter,
+        processing_res=args.processing_res,
         timestep=args.timestep,
         num_inference_steps=args.num_inference_steps,
     )
