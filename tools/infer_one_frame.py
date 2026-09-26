@@ -250,7 +250,7 @@ def render(out, args, row, lidar, results) -> None:
     rows = (n + cols - 1) // cols
     fig = plt.figure(figsize=(7.6 * cols, 2.0 * rows + 0.9), dpi=150)
     gs = fig.add_gridspec(rows, cols, wspace=0.03, hspace=0.34,
-                          left=0.004, right=0.996, top=0.93, bottom=0.01)
+                          left=0.004, right=0.996, top=0.86, bottom=0.01)
 
     ax = fig.add_subplot(gs[0, 0])
     ax.imshow(thermal, cmap="gray", vmin=0, vmax=1, interpolation="nearest")
@@ -268,7 +268,7 @@ def render(out, args, row, lidar, results) -> None:
         f"{args.frame}   lidar coverage "
         f"{results[0][2]['valid_px'] / lidar.size:.1%}   same seed, text only"
         f"   ONE FRAME IS NOT EVIDENCE",
-        fontsize=13, y=0.985,
+        fontsize=13, y=0.975,
     )
     path = out / "one_frame.png"
     fig.savefig(path, bbox_inches="tight", facecolor="white")
