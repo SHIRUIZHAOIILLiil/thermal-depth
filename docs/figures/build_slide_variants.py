@@ -59,7 +59,7 @@ def metric_chain_slide():
         d = 1.0 / np.clip(depth, 0.5, None)
         return np.clip((d - lo) / (hi - lo + 1e-9), 0, 1)
 
-    depth_kw = dict(cmap="magma", vmin=0, vmax=1, interpolation="nearest")
+    depth_kw = dict(cmap="Spectral_r", vmin=0, vmax=1, interpolation="nearest")
 
     fig = plt.figure(figsize=(17.0, 3.15), dpi=150)
     gs = fig.add_gridspec(1, 4, wspace=0.05, left=0.004, right=0.996,
@@ -72,7 +72,7 @@ def metric_chain_slide():
     ax2 = fig.add_subplot(gs[0, 1])
     # 与左右两格同向：越亮越近。这一格的量程是网络自己的 0–1 而不是米，
     # 那是标题在说的事；方向不能跟着变。
-    ax2.imshow(y, cmap="magma_r", vmin=0, vmax=1, interpolation="nearest")
+    ax2.imshow(y, cmap="Spectral", vmin=0, vmax=1, interpolation="nearest")
     ax2.set_title("网络直接输出", fontsize=15, pad=7)
 
     ax3 = fig.add_subplot(gs[0, 2])
@@ -111,7 +111,7 @@ def gt_density_slide():
         return np.clip((d - lo) / (hi - lo + 1e-9), 0, 1)
 
     _lo, _hi = disparity_scale(completed)
-    depth_kw = dict(cmap="magma", vmin=0, vmax=1, interpolation="nearest")
+    depth_kw = dict(cmap="Spectral_r", vmin=0, vmax=1, interpolation="nearest")
 
     # 两格：官方 GT 与训练目标。像素级放大那一格拿掉了 —— 它证明的「最密的一块
     # 有 77%」这句话，页面正文里已经直接写着了，一格图只是把同一句话再说一遍。

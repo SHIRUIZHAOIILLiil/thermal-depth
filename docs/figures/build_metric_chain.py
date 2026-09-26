@@ -67,7 +67,7 @@ for row, d in enumerate(dirs):
         (lambda d: -1.0 / np.clip(d, 0.5, None),
          lambda v: -1.0 / np.clip(v, None, -1e-6)),
         vmin=lo, vmax=hi)
-    depth_kw = dict(cmap="magma_r", norm=depth_norm, interpolation="nearest")
+    depth_kw = dict(cmap="Spectral", norm=depth_norm, interpolation="nearest")
 
     def metre_ticks(bar):
         """刻度选在米制的整数上，位置由 norm 决定，所以间距会不均匀。"""
@@ -91,7 +91,7 @@ for row, d in enumerate(dirs):
     # 量程是它自己的 0–1，因为这不是深度 —— 但方向必须和左右两格一致：越亮越近。
     # 曾经这一格用 viridis、邻格用别的，同一个量在相邻两张图里跑反了方向。
     ax, handle = cell(1, y, "网络直接输出　$y$",
-                      cmap="magma_r", vmin=0, vmax=1, interpolation="nearest")
+                      cmap="Spectral", vmin=0, vmax=1, interpolation="nearest")
     bar = fig.colorbar(handle, ax=ax, fraction=0.030, pad=0.010)
     bar.ax.tick_params(labelsize=8)
     if row == len(dirs) - 1:
