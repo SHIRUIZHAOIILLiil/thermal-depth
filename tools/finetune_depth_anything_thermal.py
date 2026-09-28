@@ -8,12 +8,17 @@ the comparison has something at stake.
 
 Their repository releases fine-tuning code only for the metric variant, and
 metric is the wrong target for an affine-invariant table. So the recipe is
-written here instead, which is the better outcome for fairness: the supervision
-is then demonstrably the same one our own line trains under -- the official
-8-sequence split, the completed pseudo depth with lidar written over it, the
-same scale-shift-invariant loss in disparity space, the same val rule for
-picking a checkpoint. Using their trainer would mean arguing that we had not
-quietly given ourselves an easier target.
+written here instead, from the objective their paper states for the relative
+models: `L_ssi + L_gm` at a weight ratio of 1:2. Everything around it is held to
+what our own line sees -- the official 8-sequence split, the completed pseudo
+depth with lidar written over it, the same val rule for picking a checkpoint --
+so the data is shared and the objective is each model's own.
+
+The first version of this script trained on `L_ssi` alone, which is our line's
+loss rather than theirs. That is reachable as `--gm-weight 0` and reproduces
+bit-for-bit, but it is not the arm to report: gradient matching carries twice
+the weight of the data term in their recipe, and an opponent trained under a
+third of its own objective's weight is not the opponent.
 
 The encoder is not frozen. Their own metric recipe fine-tunes it at a tenth of
 the decoder's rate, and freezing it would leave an RGB-pretrained encoder
@@ -69,6 +74,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--encoder-lr", type=float, default=5e-6,
                         help="Their own metric recipe: encoder at a tenth of the decoder.")
     parser.add_argument("--decoder-lr", type=float, default=5e-5)
+    parser.add_argument("--gm-weight", type=float, default=2.0,
+                        help="Weight on the gradient-matching term relative to "
+                             "the scale-shift-invariant one. Depth Anything V2 "
+                             "states its own ratio as 1:2, so 2.0 trains their "
+                             "model under their published objective. 0 drops the "
+                             "term and reproduces the arm trained before it "
+                             "existed.")
     parser.add_argument("--ckpt-step", type=int, default=2000)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--seed", type=int, default=42)
@@ -185,6 +197,67 @@ def masked_ssi_l1(prediction: torch.Tensor, gt_disparity: torch.Tensor,
     return loss, abs_rel, count
 
 
+def gradient_matching(residual: torch.Tensor, mask: torch.Tensor,
+                      scales: int = 4) -> torch.Tensor:
+    """MiDaS's multi-scale gradient matching term, on the aligned residual.
+
+    Depth Anything V2 trains its relative models on `L_ssi + L_gm` and states the
+    ratio outright: "The weight ratio of L_ssi and L_gm is set as 1:2". Their
+    released fine-tuning code covers the metric variant only, so the term has to
+    be written here; leaving it out trains their model under a third of the
+    weight its own recipe puts on the objective, which is not a comparison they
+    would recognise.
+
+    Following the MiDaS reference: four scales by stride-2 subsampling, the
+    absolute first differences summed over both axes and all scales, divided by
+    the full-resolution valid count. A difference is counted only where both of
+    its pixels are valid, so a gradient is never taken across the edge of the
+    mask -- there the residual jumps for want of a target rather than for want
+    of sharpness.
+    """
+    total = residual.new_zeros(())
+    denominator = mask.sum().clamp_min(1).to(residual.dtype)
+    for level in range(scales):
+        stride = 2 ** level
+        r, m = residual[::stride, ::stride], mask[::stride, ::stride]
+        if r.shape[0] < 2 or r.shape[1] < 2:
+            break
+        dx = (r[:, 1:] - r[:, :-1]).abs() * (m[:, 1:] & m[:, :-1])
+        dy = (r[1:, :] - r[:-1, :]).abs() * (m[1:, :] & m[:-1, :])
+        total = total + dx.sum() + dy.sum()
+    return total / denominator
+
+
+def ssi_l1_with_gm(prediction: torch.Tensor, gt_disparity: torch.Tensor,
+                   valid: torch.Tensor, gm_weight: float,
+                   scales: int = 4) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """`L_ssi + gm_weight * L_gm`, both from one affine fit.
+
+    `gm_weight=0` reproduces `masked_ssi_l1` term for term, so the arm trained
+    before this function existed stays reachable as an ablation rather than
+    becoming unreproducible.
+    """
+    mask = valid > 0.5
+    count = int(mask.sum())
+    if count < MIN_VALID_PIXELS:
+        raise RuntimeError(f"GT valid pixels {count} below minimum {MIN_VALID_PIXELS}.")
+    with torch.no_grad():
+        pred, gt = prediction[mask], gt_disparity[mask]
+        design = torch.stack([pred, torch.ones_like(pred)], dim=1)
+        solution = torch.linalg.lstsq(design.float(), gt.float()[:, None]).solution.squeeze(1)
+        scale, shift = solution[0], solution[1]
+        if not bool(torch.isfinite(scale)) or not bool(torch.isfinite(shift)):
+            raise RuntimeError("Non-finite scale/shift in GT alignment.")
+    # The affine is fitted on the masked pixels, as before, but applied to the
+    # whole map: the gradient term needs the two spatial axes back.
+    residual = (scale * prediction + shift) - gt_disparity
+    ssi = residual[mask].abs().mean()
+    if gm_weight == 0.0:
+        return ssi, ssi, residual.new_zeros(())
+    gm = gradient_matching(residual, mask, scales)
+    return ssi + gm_weight * gm, ssi, gm
+
+
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -262,10 +335,13 @@ def main() -> None:
                                           mode="bilinear", align_corners=False)[:, 0]
             # Per frame, because the affine is per frame: pooling the batch would
             # fit one scale to several frames and score a different quantity.
-            losses, errors = [], []
+            losses, ssi_terms, gm_terms, errors = [], [], [], []
             for i in range(predicted.shape[0]):
-                loss_i, _, _ = masked_ssi_l1(predicted[i], disparity[i], valid[i])
+                loss_i, ssi_i, gm_i = ssi_l1_with_gm(
+                    predicted[i], disparity[i], valid[i], args.gm_weight)
                 losses.append(loss_i)
+                ssi_terms.append(ssi_i.detach())
+                gm_terms.append(gm_i.detach())
                 # Scored on the lidar, which is the reference the zero-shot
                 # numbers used. The gradient still comes from the completed map.
                 with torch.no_grad():
@@ -289,7 +365,9 @@ def main() -> None:
                     "不一致，训出来的数和零样本那一行不可比 —— 而可比正是做这条"
                     "线的唯一理由。先查，别训。")
             if step % 50 == 0 or (args.smoke and step % 5 == 0):
-                print(f"  step {step:6d}  SSI-L1 {loss.item():.5f}  "
+                print(f"  step {step:6d}  loss {loss.item():.5f}  "
+                      f"(SSI {torch.stack(ssi_terms).mean().item():.5f} + "
+                      f"{args.gm_weight:g}x GM {torch.stack(gm_terms).mean().item():.5f})  "
                       f"AbsRel {recent[-1]:.4f}  近 {len(recent)} 步均值 "
                       f"{sum(recent)/len(recent):.4f}", flush=True)
             step += 1
