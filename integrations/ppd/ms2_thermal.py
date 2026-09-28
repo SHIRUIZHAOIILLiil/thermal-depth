@@ -61,6 +61,13 @@ class Dataset(BaseDataset):
             low, high = float(raw.min()), float(raw.max())
         unit = (np.zeros(raw.shape, np.float32) if high <= low
                 else np.clip((raw - low) / (high - low), 0.0, 1.0).astype(np.float32))
+        # Quantised to 8 bits before dividing back out. Their base read_rgb reads
+        # an 8-bit file and divides by 255, and inference goes through the same
+        # 8-bit image (run_external_depth_inference.thermal_to_rgb, then their
+        # image2tensor). The first arm kept the continuous value here, so train
+        # and test saw different quantisations of one frame -- small, but a
+        # difference their recipe does not have.
+        unit = (np.round(unit * 255.0) / 255.0).astype(np.float32)
         # Three identical channels: the network expects colour, and a thermal
         # frame has one band. Their base class returns HWC float32 in [0,1].
         return np.repeat(unit[:, :, None], 3, axis=2)
@@ -73,6 +80,11 @@ class Dataset(BaseDataset):
             return np.clip(lidar, D_MIN, D_MAX).astype(np.float32), real.astype(np.uint8)
         pseudo = np.load(self.depth_files[index]).astype(np.float32)
         dense = np.clip(np.where(real, lidar, pseudo), D_MIN, D_MAX)
-        # Dense by construction, so every pixel is supervised -- the same
-        # coverage our own line trains under.
-        return dense.astype(np.float32), np.ones(dense.shape, np.uint8)
+        # Their base read_depth's validity rule, applied to our target: finite
+        # and deeper than 1 cm. The target is dense, so this admits almost
+        # every pixel; what it excludes is the sliver our clip puts between
+        # D_MIN and 1 cm, which their loss would never have seen. The upper end
+        # is left to their pipeline, which drops depth >= 80 from the
+        # normalisation percentiles itself.
+        valid = np.isfinite(dense) & (dense > 0.01)
+        return dense.astype(np.float32), valid.astype(np.uint8)

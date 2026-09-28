@@ -5,13 +5,22 @@
 #   one dataset      MS2 thermal, not the five synthetic RGB sets. This is the
 #                    whole point: a comparator trained on our data, our target,
 #                    our split.
-#   no Resize        theirs resizes to 1024x768. Ours stays at native 256x640,
-#                    which is safe because the DiT uses RoPE computed from the
-#                    token grid -- there is no learned absolute position table
-#                    to mismatch, so the released weights transfer to a
-#                    different resolution unchanged. 256 and 640 are both
-#                    multiples of 16, the effective patch size (PatchEmbed is
-#                    built with patch_size*2).
+#   Resize 1024x768  theirs, kept -- their Resize class with their arguments,
+#                    which stretches to exactly 1024x768 without keeping the
+#                    aspect ratio (bilinear image, nearest depth and mask).
+#                    Their own recipe does this to vkitti, whose 1242x375 frames
+#                    are wider than MS2's 640x256, so a stretched driving frame
+#                    is what this model is fine-tuned on.
+#
+#                    ⛔ The first arm (v1) left this out and trained at native
+#                    640x256 on the argument that RoPE lets the weights run at
+#                    any resolution. That is true and beside the point:
+#                    evaluation goes through their infer_image, which resizes
+#                    to the *area* of 1024x768 keeping the aspect ratio -- MS2
+#                    becomes 1408x560 -- so v1 trained on 163,840 pixels a frame
+#                    and was tested on 788,480. Their recipe trains and tests
+#                    at the same area. v1 had a 4.8x train/test gap theirs does
+#                    not.
 #   no input_size    their config passes score_model.input_size, which DiT's
 #                    __init__ does not accept. Left in, hydra raises.
 #   semantics DA2    the released ppd.pth is the DA2-semantics variant; MoGe2 is
@@ -71,6 +80,11 @@ data:
         stretch: percentile      # ⚠️ must match the arm being compared against
         overwrite_with_lidar: True
         transforms:
+          # Their train_finetune.yaml, verbatim for every dataset not already
+          # at 1024x768 (UrbanSyn, vkitti, TartanAir).
+          - _target_: ppd.data.transform.Resize
+            width: 1024
+            height: 768
           - _target_: ppd.data.transform.PrepareForNet
   train_loader_opts:
     batch_size: 4

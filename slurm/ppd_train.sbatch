@@ -31,14 +31,25 @@
 #   SEED_CKPT 起步权重。默认 $SCRATCH/runs/ppd_ms2/v1/checkpoints/e000-s000000.ckpt
 #             （integrations/ppd/prepare_ms2.py 从 ppd.pth 转出来的那个）
 #   ALLOW_ANY_CKPT=1  放行 dirpath 下的其它 .ckpt（真要断点续训时才用）
+#   BS        每步的 batch，默认用配置里的 4。显存不够时和 ACCUM 一起用
+#   ACCUM     梯度累积步数。BS=2 ACCUM=2 ＝ 有效 batch 仍是 4，和他们一致
+#
+# ⛔ 2026-09-29：v1 没做他们的 Resize(1024,768)，在原生 640x256 上训、却在
+#    infer_image 的 1408x560 上评 —— 4.8 倍的训练/测试面积差，他们的配方里没有。
+#    v2 起配置里加回了 Resize。像素多了 4.8 倍，每步也就慢这么多：v1 的 50,000
+#    步是 4:46，v2 预计一天上下。先冒烟量一次速度和显存再定墙钟。
 #
 # ── 用法 ────────────────────────────────────────────────────────────
-#   冒烟（5 批，确认真的从已发布权重起步）：
-#     sbatch --export=ALL ~/Iris/slurm/ppd_train.sbatch
+#   新臂要先建目录、把起步权重拷进去（守卫一会查）。冒烟和正式各用一个目录：
+#   冒烟会写 last.ckpt，正式跑同一个目录会被守卫一拦下（故意的）。
+#     for t in v2_smoke v2_1024; do mkdir -p $SCRATCH/runs/ppd_ms2/$t/checkpoints && cp $SCRATCH/runs/ppd_ms2/v1/checkpoints/e000-s000000.ckpt $SCRATCH/runs/ppd_ms2/$t/checkpoints/; done
 #
-#   正式：
-#     TAG=v1 BATCHES=0 EPOCHS=20 \
-#       sbatch -J ppd_v1 --time=24:00:00 --export=ALL,TAG,BATCHES,EPOCHS \
+#   冒烟（5 批，量速度和显存，确认从已发布权重起步）：
+#     TAG=v2_smoke sbatch --export=ALL,TAG ~/Iris/slurm/ppd_train.sbatch
+#
+#   正式（与 v1 同一个步数：25 epoch × 2000 批）：
+#     TAG=v2_1024 BATCHES=2000 EPOCHS=25 \
+#       sbatch -J ppd_v2 --time=48:00:00 --export=ALL,TAG,BATCHES,EPOCHS \
 #       ~/Iris/slurm/ppd_train.sbatch
 #
 # 不 source common.sh：PPD 有自己的 conda 环境（$HOME/.conda/envs/ppd），
@@ -101,6 +112,8 @@ echo "臂        = $TAG"
 echo "输出      = $OUT_DIR"
 echo "起步权重  = $(ls -la "$CKPT_DIR"/*.ckpt)"
 echo "batches   = $BATCHES   epochs = $EPOCHS"
+echo "batch     = ${BS:-4（配置默认）}   累积 = ${ACCUM:-1}"
+echo "分辨率    = Resize 1024x768（他们的 transform，见配置）"
 echo "split     = $SPLIT"
 echo "============"
 git -C "$IRIS_REPO" log --oneline -1
@@ -115,6 +128,9 @@ args=(--cfg_file ppd/configs/train_ms2_thermal.yaml
       semantics_pth=checkpoints/depth_anything_v2_vitl.pth
       "pl_trainer.max_epochs=$EPOCHS")
 [[ "$BATCHES" != "0" ]] && args+=("pl_trainer.limit_train_batches=$BATCHES")
+# 两个都是字典路径，OmegaConf.from_cli 能合进去（配置头里说的那个坑只在列表下标上）。
+[[ -n "${BS:-}" ]]    && args+=("data.train_loader_opts.batch_size=$BS")
+[[ -n "${ACCUM:-}" ]] && args+=("pl_trainer.accumulate_grad_batches=$ACCUM")
 
 set +e
 "$PPD_PY" main.py "${args[@]}" 2>&1 | tee "$LOG"
