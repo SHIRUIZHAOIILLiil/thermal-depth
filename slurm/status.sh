@@ -10,6 +10,10 @@
 #   bash ~/Iris/slurm/status.sh runs       # 各训练目录的进度与体积
 #   bash ~/Iris/slurm/status.sh wait       # 阻塞到全部作业结束，然后打印汇总
 #
+#   USER=sc23sz bash ~/Iris/slurm/status.sh   # 在别的账号（如学长的）上看 sc23sz 的作业
+#     队列、近期作业、配额都按 sc23sz 显示；日志在 sc23sz 的 home 里，读不到，
+#     「最新进度」那段会说明，而不是空着。log / err 两个子命令同理。
+#
 # 原生命令速查（不用这个脚本时）：
 #   squeue -u $USER                     我的队列。ST: PD=排队 R=运行 CG=收尾
 #   squeue -u $USER --start             排队中作业的预计启动时间
@@ -87,7 +91,7 @@ PY
     echo "等待全部作业结束……（Ctrl+C 可随时退出，不影响作业）"
     while squeue -h -u "$USER" | grep -q .; do sleep 120; done
     echo "=== 全部结束 ==="
-    sacct -S "$(date -d '2 days ago' +%F)" -X --format=JobID%12,JobName%18,State%14,Elapsed,ExitCode
+    sacct -u "$USER" -S "$(date -d '2 days ago' +%F)" -X --format=JobID%12,JobName%18,State%14,Elapsed,ExitCode
     ;;
 
   overview|*)
@@ -96,12 +100,20 @@ PY
     echo "  (t: PD=排队 R=运行 CG=收尾 | M=已运行 L=剩余时限 | R=节点或等待原因)"
     echo
     echo "=== 近两天作业 ==="
-    sacct -S "$(date -d '2 days ago' +%F)" -X --format=JobID%12,JobName%18,State%14,Elapsed,ExitCode
+    # -u 不能省：sacct 默认只列**调用者自己**的作业。USER=别人 覆盖时少了它，
+    # 这一段会不声不响地显示调用者的作业，和上面的队列对不上。
+    sacct -u "$USER" -S "$(date -d '2 days ago' +%F)" -X --format=JobID%12,JobName%18,State%14,Elapsed,ExitCode
     echo
     echo "=== 运行中作业的最新进度 ==="
     for id in $(squeue -h -u "$USER" -t R -o "%i"); do
       f=$(ls -t "$L"/*-"$id".out 2>/dev/null | head -1)
-      [ -n "$f" ] && { echo "--- $(basename "$f")"; tail -2 "$f"; }
+      if [ -n "$f" ]; then
+        echo "--- $(basename "$f")"; tail -2 "$f"
+      else
+        # 日志落在提交时的目录。看别人的作业时那通常是对方的 home，读不到 ——
+        # 说出来，而不是让这一段看起来像「没有进度可报」。
+        echo "--- 作业 $id：在 $L 下找不到日志（可能在提交者的 home 里、读不到）"
+      fi
     done
     echo
     echo "=== 配额 ==="
