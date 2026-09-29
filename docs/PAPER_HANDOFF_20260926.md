@@ -76,21 +76,19 @@
 
 ## 三、⛔ 没做的,按优先级
 
-### 1. 摘要和 Introduction 的核心主张没改 —— **必须先定**
+### 1. ~~摘要里的 offline recipe 主张~~ —— 已由论文对话重写（2026-09-29 核过）
 
-`sections/00_abstract.tex:20`：
+旧稿 `00_abstract.tex` 里「caption the training set once and leave the captioner
+off the robot」那句**已经不在了**（提交 `9c629c1`「Pose the caption question first,
+in the abstract and the introduction」）。全文剩下的 `offline` 只指离线造目标、离线
+生成 caption，都属实。⚠️ 别再按旧稿引用这一条。
 
-> "...which makes an offline recipe available --- caption the training set once
-> and leave the captioner off the robot."
+新摘要里**仍待定的一句**：「better scores on all three measures than thermally
+adapted Depth Anything V2 and Pixel-Perfect Depth」—— 用的是 v1 基线的数，而两条
+基线都在按各自配方重跑（见台账 2026-09-29 的两段修正）。出数后要重核这一句。
 
-**这在 log 线上不成立。** 收益在推理端,captioner 必须在车上。
-
-我没自作主张改。有一个数据支持的替代方向：**九成收益与 caption 的内容无关**
-(别的帧的 caption 也行),所以需要的不是「正确的描述」而是「文本通路被激活」。
-⚠️ 但「一句固定的通用 prompt 也行」**没测过** —— 我们只测到「别帧的 caption 行」。
-要写进摘要得先补一个固定 prompt 的臂(一次推理,不用训练)。
-
-`sections/01_introduction.tex` 第 60、78–90 行同一主张,连带要改。
+供参考、未改：分解表显示 caption 收益里帧内容只占约十分之一，摘要写的是
+「captions help」，读者会默认是靠内容。点不点破由论文对话定。
 
 ### 2. 页数：现在 7 页,免费 6 页
 
