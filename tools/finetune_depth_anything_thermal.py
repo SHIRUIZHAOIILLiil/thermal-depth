@@ -66,6 +66,7 @@ import collections
 import json
 import random
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -137,7 +138,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ckpt-step", type=int, default=2000)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--smoke", action="store_true", help="20 steps, then stop.")
+    parser.add_argument("--smoke", action="store_true", help="40 steps, then stop and report the steady pace.")
     parser.add_argument("--expect-initial-absrel", nargs=2, type=float,
                         default=(0.08, 0.30), metavar=("LOW", "HIGH"),
                         help="Band the first step's AbsRel must fall in. Before any "
@@ -276,6 +277,10 @@ class ThermalFrames(Dataset):
             pixel_values = self.processor(images=image, return_tensors="pt").pixel_values[0]
 
         return {
+            # Carried so that a failure can name the frame it happened on. Without
+            # it the only record of a crash is a step number, which a shuffled
+            # loader does not map back to anything.
+            "id": row["id"],
             "pixel_values": pixel_values,
             "disparity": torch.from_numpy(np.ascontiguousarray(disparity, np.float32)),
             "valid": torch.from_numpy(np.ascontiguousarray(valid, bool)),
@@ -400,6 +405,23 @@ def da2_objective(prediction: torch.Tensor, gt_disparity: torch.Tensor,
     return ssi + gm_weight * gm, ssi, gm
 
 
+def quiet_worker(_worker_id: int) -> None:
+    """One thread per DataLoader worker, for OpenCV and for torch.
+
+    Each worker otherwise opens its own OpenCV pool and its own intra-op torch
+    pool, sized to the machine, so six workers on an eight-core allocation run
+    dozens of threads against eight cores. On Aire that showed up as roughly
+    five seconds a step for a batch the GPU clears in well under one -- the
+    first v2 attempt reached step 100 after ten minutes, which at 20,000 steps
+    is a day beyond its wall clock. Parallelism comes from the workers; inside
+    each, one thread. This changes nothing about what a sample contains.
+    """
+    import cv2
+
+    cv2.setNumThreads(1)
+    torch.set_num_threads(1)
+
+
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -465,11 +487,14 @@ def main() -> None:
     shuffle_rng = torch.Generator().manual_seed(args.seed)
     loader = DataLoader(ThermalFrames(rows, args, processor), batch_size=args.batch_size,
                         shuffle=True, num_workers=args.workers, drop_last=True,
-                        generator=shuffle_rng)
+                        generator=shuffle_rng, worker_init_fn=quiet_worker)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     recent: collections.deque[float] = collections.deque(maxlen=200)
     step = 0
+    # Seconds per step since the previous report, so a smoke run measures what
+    # the wall clock has to cover instead of leaving it to a guess.
+    clock, clock_step = time.time(), 0
     while step < args.steps:
         for batch in loader:
             if args.lr_schedule == "poly":
@@ -492,6 +517,7 @@ def main() -> None:
             # Per frame, because the normalisation is per frame: pooling the
             # batch would fit one scale to several frames and score a different
             # quantity.
+            ids = batch["id"]
             losses, ssi_terms, gm_terms, errors = [], [], [], []
             for i in range(predicted.shape[0]):
                 loss_i, ssi_i, gm_i = da2_objective(
@@ -502,20 +528,58 @@ def main() -> None:
                 gm_terms.append(gm_i.detach())
                 # Scored on the lidar, under the evaluation protocol's own
                 # alignment, which is the reference the zero-shot numbers used.
+                #
+                # This is monitoring, not the objective, so it must not be able
+                # to end the run. The v2 recipe's first attempt died at 22
+                # minutes with no checkpoint and a log nobody could read, and
+                # this call raises on two conditions a random crop can meet (too
+                # few returns in the box, or a degenerate fit). A sample it cannot
+                # score is named and skipped; a non-finite *loss* is caught
+                # separately below and does stop the run.
                 with torch.no_grad():
-                    _, abs_rel_i, _ = masked_ssi_l1(
-                        predicted[i].detach(), lidar_disparity[i], lidar_valid[i])
-                errors.append(abs_rel_i)
+                    try:
+                        _, abs_rel_i, _ = masked_ssi_l1(
+                            predicted[i].detach(), lidar_disparity[i], lidar_valid[i])
+                        errors.append(abs_rel_i)
+                    except RuntimeError as err:
+                        p = predicted[i].detach()
+                        print(f"  [monitor] step {step} frame {ids[i]}: {err}   "
+                              f"lidar px {int(lidar_valid[i].sum())}   pred finite "
+                              f"{bool(torch.isfinite(p).all())} min {float(p.min()):.3g} "
+                              f"max {float(p.max()):.3g} -- not scored this step", flush=True)
             loss = torch.stack(losses).mean()
 
+            def dump_and_stop(what: str) -> None:
+                print(f"\n⛔ step {step}: {what}", flush=True)
+                for i in range(predicted.shape[0]):
+                    p = predicted[i].detach()
+                    print(f"   {ids[i]}  loss {float(losses[i]):.4g}  SSI {float(ssi_terms[i]):.4g}  "
+                          f"GM {float(gm_terms[i]):.4g}  pred finite {bool(torch.isfinite(p).all())} "
+                          f"min {float(p.min()):.3g} max {float(p.max()):.3g}  "
+                          f"target finite {bool(torch.isfinite(disparity[i]).all())} "
+                          f"max {float(disparity[i].max()):.3g}", flush=True)
+                raise SystemExit(f"stopped at step {step}: {what}; weights left as of step {step - 1}")
+
+            # Checked before the update rather than after, so that whatever went
+            # wrong is reported against the frames that caused it and never
+            # written into the weights.
+            if not bool(torch.isfinite(loss)):
+                dump_and_stop(f"non-finite loss {float(loss)}")
             optimiser.zero_grad(set_to_none=True)
             loss.backward()
-            if args.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            # max_norm=inf measures without clipping, so the recipe's "no
+            # clipping" is unchanged; --grad-clip still applies its own bound.
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(
+                model.parameters(), args.grad_clip if args.grad_clip > 0 else float("inf")))
+            if not np.isfinite(grad_norm):
+                dump_and_stop(f"non-finite gradient norm {grad_norm}")
             optimiser.step()
 
-            recent.append(float(torch.stack(errors).mean()))
+            if errors:
+                recent.append(float(torch.stack(errors).mean()))
             low, high = args.expect_initial_absrel
+            if step == 0 and high > 0 and not recent:
+                raise SystemExit("⛔ 第一步没有一个样本能在激光上打分，门禁无从判断。")
             if step == 0 and high > 0 and not low <= recent[0] <= high:
                 raise SystemExit(
                     f"⛔ 第一步 AbsRel {recent[0]:.4f} 不在 [{low}, {high}] 内。\n"
@@ -524,16 +588,27 @@ def main() -> None:
                     "不一致，训出来的数和零样本那一行不可比 —— 而可比正是做这条"
                     "线的唯一理由。先查，别训。")
             if step % 50 == 0 or (args.smoke and step % 5 == 0):
+                absrel = (f"AbsRel {recent[-1]:.4f}  近 {len(recent)} 步均值 "
+                          f"{sum(recent)/len(recent):.4f}" if recent else "AbsRel —")
+                now = time.time()
+                pace = (now - clock) / max(step - clock_step, 1)
+                clock, clock_step = now, step
                 print(f"  step {step:6d}  loss {loss.item():.5f}  "
                       f"(SSI {torch.stack(ssi_terms).mean().item():.5f} + "
                       f"{args.gm_weight:g}x GM {torch.stack(gm_terms).mean().item():.5f})  "
-                      f"lr_enc {optimiser.param_groups[0]['lr']:.2e}  "
-                      f"AbsRel {recent[-1]:.4f}  近 {len(recent)} 步均值 "
-                      f"{sum(recent)/len(recent):.4f}", flush=True)
+                      f"|grad| {grad_norm:.3g}  lr_enc {optimiser.param_groups[0]['lr']:.2e}  "
+                      f"{absrel}  {pace:.2f} s/step", flush=True)
             step += 1
+            if step == 10:
+                # Worker start-up and the first CUDA kernels land in the first
+                # few steps; the rate that decides the wall clock is after them.
+                steady_from = (time.time(), step)
 
-            if args.smoke and step >= 20:
-                print("[smoke] 20 步完成，无 NaN")
+            if args.smoke and step >= 40:
+                per_step = (time.time() - steady_from[0]) / (step - steady_from[1])
+                hours = per_step * args.steps / 3600
+                print(f"[smoke] 40 步完成，无 NaN。稳态 {per_step:.2f} s/step → "
+                      f"{args.steps} 步约 {hours:.1f} 小时（不含存盘）")
                 return
             if step % args.ckpt_step == 0 or step >= args.steps:
                 path = args.out_dir / f"step{step}"

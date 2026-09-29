@@ -32,6 +32,9 @@
 #   LEGACY    1 = 复现 v1（我方损失）；默认 0 = DA2 自己的配方
 #   STEPS     默认 20000，与 v1 一致
 #   SEED      默认 42，与 v1 一致
+#   SMOKE     1 = 只跑 40 步，最后报稳态 s/step 和 STEPS 步的预计小时数。
+#             ⚠️ 正式跑之前先冒烟定墙钟：v2 第一次投的 10 小时是拍的，而实际
+#             大约 5 s/step，两万步要一天多 —— 就算没崩也会超时。
 #
 #   sbatch --export=ALL ~/Iris/slurm/da2_train.sbatch
 #   LEGACY=1 sbatch --export=ALL,LEGACY ~/Iris/slurm/da2_train.sbatch
@@ -51,6 +54,8 @@ else
 fi
 STEPS="${STEPS:-20000}"
 SEED="${SEED:-42}"
+SMOKE="${SMOKE:-0}"
+[[ "$SMOKE" == "1" ]] && RUN_TAG="${RUN_TAG}_smoke"
 OUT="$IRIS_RUNS/da2_thermal/$RUN_TAG"
 
 # 与 v1、与我方 log 线**同一份**训练数据和目标。换了这里，重跑就白跑。
@@ -90,6 +95,7 @@ python tools/finetune_depth_anything_thermal.py \
   --out-dir "$OUT" \
   --steps "$STEPS" \
   --seed "$SEED" \
+  $([[ "$SMOKE" == "1" ]] && echo --smoke) \
   "${RECIPE[@]}"
 
 echo
