@@ -86,21 +86,34 @@ import json, shutil, sys
 from pathlib import Path
 out, mdir, root = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
 (out / "inputs").mkdir(parents=True, exist_ok=True)
-rows = []
+rows, at = [], {}
 for spec in sys.argv[4:]:
     cond, fid, mname = spec.split(":")
-    hit = [json.loads(l) for l in (mdir / mname).read_text(encoding="utf-8").splitlines()
-           if l.strip() and json.loads(l).get("id") == fid]
+    with (mdir / mname).open(encoding="utf-8") as h:   # 与 train_route_suite 的计数方式一致
+        hit = [(i, json.loads(l)) for i, l in enumerate(h)
+               if l.strip() and json.loads(l).get("id") == fid]
     if len(hit) != 1:
         raise SystemExit(f"!! {mname} 里 id={fid} 找到 {len(hit)} 行")
-    row = hit[0]
+    index, row = hit[0]
+    if index in at:
+        raise SystemExit(f"!! {fid} 与 {at[index]['id']} 在各自清单里同在第 {index} 行，补空行的办法不适用")
+    at[index] = row
     rows.append(row)
+    print(f"[帧] {cond:5s} 在 {mname} 第 {index} 行 → 噪声种子 seed+{index}")
     for kind, key in (("thermal", "thermal_path"), ("gt", "thermal_depth_path")):
         src = row.get(key) or (row.get("depth_path") if kind == "gt" else None)
         src = Path(src) if Path(src).is_absolute() else root / src
         shutil.copy2(src, out / "inputs" / f"{cond}_{fid}_{kind}.png")
     print(f"[帧] {cond:5s} {fid}  caption: {str(row.get('caption', ''))[:70]}…")
 (out / "frames.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+# Ours 的噪声种子是 seed + 该行在清单里的行号（train_route_suite.py 的 manifest_index，
+# 空行也计数）。三帧挤在一份三行清单里，种子就和主表那次不同，逐帧差到 0.003
+# （2026-10-01 作业 8024289）。所以给 Ours 另写一份：每帧放回它原来的行号，中间补空行。
+padded = []
+for index in sorted(at):
+    padded += [""] * (index - len(padded))
+    padded.append(json.dumps(at[index]))
+(out / "frames_ours.jsonl").write_text("\n".join(padded) + "\n", encoding="utf-8")
 PY
 [[ -s "$OUT/frames.jsonl" ]] || { echo "!! 子清单没建成，停"; exit 1; }
 FR="$OUT/frames.jsonl"
@@ -111,7 +124,8 @@ for st in percentile minmax; do
   done3 "$OUT/ours_$st/raw_predictions" && { echo "[skip] 已有三帧预测"; continue; }
   IRIS_THERMAL_STRETCH=$st python tools/train_route_suite.py \
     --route b_thermal_unet --output-dir "$OUT/ours_$st" --ms2-root "$IRIS_MS2_ROOT" \
-    --train-manifest "$FR" --val-manifest "$FR" --eval-checkpoint "$OURS_CKPT" \
+    --train-manifest "$OUT/frames_ours.jsonl" --val-manifest "$OUT/frames_ours.jsonl" \
+    --eval-checkpoint "$OURS_CKPT" \
     --val-caption-mode correct --align-mode ssi_log --num-inference-steps 1 \
     --condition-latent mode --val-stride 1 --save-raw-pred --local-files-only \
     || echo "!! Ours ($st) 失败"
