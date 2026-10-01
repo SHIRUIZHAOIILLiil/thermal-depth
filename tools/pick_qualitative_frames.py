@@ -115,7 +115,8 @@ def contact_sheet(picked: list[dict], path: Path, title: str) -> None:
 def official_frames(ms2_root: Path, list_file: str, step: int = 10) -> list[dict]:
     """`run_ms2_supdepth_baselines.official_frames` without its torch import, so
     this runs on a laptop: concatenate every frame of the listed sequences in
-    list order, then take [0:-1:10]. Expected 2331 / 2292 / 2503."""
+    list order, then take [0:-1:10]. Expected 2332 / 2292 / 2503 (our evaluated
+    day results hold 2331: frame 15-46-56_003700 has no caption)."""
     sequences = [s.strip() for s in (ms2_root / list_file).read_text().splitlines() if s.strip()]
     frames = []
     for sequence in sequences:

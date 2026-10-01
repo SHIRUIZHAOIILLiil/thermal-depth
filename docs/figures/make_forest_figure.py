@@ -100,9 +100,9 @@ def main() -> int:
                 if row is None:
                     continue
                 labels.append(f"{condition}, {arm_name}")
-                points.append(float(row["mean_difference"]))
-                blocks.append((float(row["ci95_low"]), float(row["ci95_high"])))
-                iids.append((float(row["iid_ci95_low"]), float(row["iid_ci95_high"])))
+                points.append(float(row["mean_difference"]) * 100.0)
+                blocks.append((float(row["ci95_low"]) * 100.0, float(row["ci95_high"]) * 100.0))
+                iids.append((float(row["iid_ci95_low"]) * 100.0, float(row["iid_ci95_high"]) * 100.0))
                 marks.append(row["separable_from_zero"] == "True")
 
     # Side by side, not stacked.  Nine rows per question is tall in one column and
@@ -113,7 +113,7 @@ def main() -> int:
     groups = [(0, split), (split, len(labels))] if len(comparisons) > 1 else [(0, len(labels))]
 
     fig, axes = plt.subplots(
-        1, len(groups), figsize=(args.width, 0.26 * (groups[0][1] - groups[0][0]) + 1.25),
+        1, len(groups), figsize=(args.width, 0.21 * (groups[0][1] - groups[0][0]) + 1.05),
         gridspec_kw={"wspace": 0.08}, squeeze=False,
     )
     axes = axes[0]
@@ -123,10 +123,10 @@ def main() -> int:
         for y, i in enumerate(range(lo, hi)):
             # The frame-level interval sits behind in a warm tone -- it must not be
             # confusable with a block interval that failed to clear zero, which is grey.
-            ax.plot(iids[i], (y, y), color="#e8c39a", lw=4.6, solid_capstyle="butt", zorder=2)
+            ax.plot(iids[i], (y, y), color="#e8c39a", lw=3.8, solid_capstyle="butt", zorder=2)
             colour = "#1f5fa0" if marks[i] else "#8c8c8c"
             ax.plot(blocks[i], (y, y), color=colour, lw=1.7, solid_capstyle="butt", zorder=3)
-            ax.plot([points[i]], [y], "o", ms=4.0, color=colour, zorder=4)
+            ax.plot([points[i]], [y], "o", ms=3.4, color=colour, zorder=4)
 
         ax.set_yticks(range(hi - lo))
         ax.invert_yaxis()
@@ -137,13 +137,13 @@ def main() -> int:
         for side in ("top", "right", "left"):
             ax.spines[side].set_visible(False)
 
-    axes[0].set_yticklabels([labels[i] for i in range(*groups[0])], fontsize=8)
+    axes[0].set_yticklabels([labels[i] for i in range(*groups[0])], fontsize=7.5)
     if len(axes) > 1:
         axes[1].set_yticklabels([])
         axes[1].tick_params(axis="y", length=0)
-    XLABEL = {"content": "AbsRel, permuted $-$ matched",
-              "presence": "AbsRel, permuted $-$ empty",
-              "total": "AbsRel, matched $-$ empty"}
+    XLABEL = {"content": "AbsRel points, permuted $-$ matched",
+              "presence": "AbsRel points, permuted $-$ empty",
+              "total": "AbsRel points, matched $-$ empty"}
     for ax, comparison in zip(axes, comparisons):
         ax.set_xlabel(XLABEL[comparison], fontsize=8)
 

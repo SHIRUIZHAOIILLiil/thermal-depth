@@ -24,6 +24,7 @@ ssh.pub
 *.log
 *.mexa64
 *.pdf
+!docs/figures/intro_caption_teaser.pdf
 *.tar
 
 # ── 实验产物 ──────────────────────────────────────────────────
