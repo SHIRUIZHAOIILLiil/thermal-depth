@@ -7,10 +7,13 @@ rows were drawn.
 
 Two versions. The default, --rows lotus0 ours, is the one usable while the
 adapted baselines' weights are locked under the retired account: our model
-next to its own zero-shot starting point (Table main's "Lotus-G, no
-adaptation" row), so the figure shows what adaptation did, and the caption
-must point the reader to Table main for the adapted baselines. The full
-version is --rows ours ppd da2.
+next to Lotus-G applied to thermal without adaptation (Table main's "Lotus-G,
+no adaptation" row). ⛔ Lotus-G is NOT our starting point -- our line starts
+from SD2.1-base, a text-to-image model with no depth head. The caption must
+call Lotus-G "the same architecture trained on synthetic RGB depth, applied
+to thermal unadapted", never "our model before adaptation", and must point
+the reader to Table main for the adapted baselines. The full version is
+--rows ours ppd da2.
 
 Every prediction goes through the evaluator's own code before it is drawn --
 `collapse_channels`, `resize_dense_prediction` to GT resolution, and the same
