@@ -27,8 +27,15 @@
 #    由自检决定哪个是当初那个。
 #
 # PPD 的环境和代码在 sc23sz 名下读不到。代码用 $PPD_REPO（学长 scratch 下的上游克隆，
-# 427a86f），环境借 iris —— 推理那条路只用到 torch/torchvision/timm/cv2/omegaconf/scipy。
-# 借来的环境数值上对不对，同样交给自检判。
+# 427a86f）；环境是叠在 iris 上的 venv，只把 timm 换成他们要的 0.9.1（iris 的 timm
+# 太旧，没有 timm.layers）。借来的环境数值上对不对，同样交给自检判。建法：
+#   python -m venv --system-site-packages /mnt/scratch/dwdh0363/ppd_venv
+#   /mnt/scratch/dwdh0363/ppd_venv/bin/pip install -q timm==0.9.1
+#
+# ⚠️ 2026-10-01：sc23sz 名下 DA2 v1 的 model.safetensors 和 PPD e014 是 -rw-------+，
+#    ACL 掩码 ---，给学长的 r-x 实际不生效（getfacl 显示 #effective:---）。只有
+#    文件主人或管理员能改。拿到可读副本后用 DA2_CKPT= / PPD_CKPT= 指过去重投；
+#    已经出了预测的模型会跳过。
 #
 # 用法（学长账号，一行，见 docs 里的交接）：
 #   sbatch ~/Iris/slurm/qual_figure_preds.sbatch
@@ -44,6 +51,7 @@ OURS_CKPT="${OURS_CKPT:-$S/iris_ms2/sd2_cap_pct_logtn_s43/converted/step18000_we
 DA2_CKPT="${DA2_CKPT:-$S/da2_thermal/v1/step16000}"
 PPD_CKPT="${PPD_CKPT:-$S/ppd_ms2/v2_1024/checkpoints/e014-s030000.ckpt}"
 export PPD_REPO="${PPD_REPO:-/mnt/scratch/dwdh0363/ppd_repo}"
+PPD_PY="${PPD_PY:-/mnt/scratch/dwdh0363/ppd_venv/bin/python}"
 PPD_SEM="${PPD_SEM:-$PPD_REPO/checkpoints/depth_anything_v2_vitl.pth}"
 OUT="${OUT:-$IRIS_RUNS/analysis/qual_figure}"
 
@@ -64,10 +72,11 @@ git log --oneline -1
 
 echo "=== 输入检查 ==="
 ok=1
-for p in "$OURS_CKPT" "$DA2_CKPT" "$PPD_CKPT" "$PPD_REPO/ppd/models/ppd.py" "$PPD_SEM"; do
-  if [[ -r "$p" ]]; then echo "  ok   $p"; else echo "  !!   读不到 $p"; ok=0; fi
+# -r 看的是权限位，被 ACL 掩码盖掉的读权限它不一定看得出；真读一个字节才算数。
+for p in "$OURS_CKPT" "$DA2_CKPT/model.safetensors" "$PPD_CKPT" "$PPD_REPO/ppd/models/ppd.py" "$PPD_SEM" "$PPD_PY"; do
+  if head -c 1 "$p" > /dev/null 2>&1; then echo "  ok   $p"; else echo "  !!   读不了 $p"; ok=0; fi
 done
-[[ -r "$PPD_CKPT" ]] && { head -c 1 "$PPD_CKPT" > /dev/null 2>&1 || { echo "  !!   $PPD_CKPT 能看见但读不出（ACL）"; ok=0; }; }
+done3() { [[ "$(ls "$1" 2>/dev/null | grep -c '[.]npy$')" == 3 ]]; }
 
 # --- 1. 三帧子清单 + GT/热像原件 ----------------------------------------------
 python - "$OUT" "$IRIS_MANIFEST_DIR" "$IRIS_MS2_ROOT" \
@@ -99,6 +108,7 @@ FR="$OUT/frames.jsonl"
 # --- 2. Ours -------------------------------------------------------------------
 for st in percentile minmax; do
   echo; echo "=== Ours  (thermal stretch = $st) ==="
+  done3 "$OUT/ours_$st/raw_predictions" && { echo "[skip] 已有三帧预测"; continue; }
   IRIS_THERMAL_STRETCH=$st python tools/train_route_suite.py \
     --route b_thermal_unet --output-dir "$OUT/ours_$st" --ms2-root "$IRIS_MS2_ROOT" \
     --train-manifest "$FR" --val-manifest "$FR" --eval-checkpoint "$OURS_CKPT" \
@@ -110,6 +120,7 @@ done
 # --- 3. DA2 v1 -----------------------------------------------------------------
 echo; echo "=== DA2 v1 ==="
 export IRIS_THERMAL_STRETCH=percentile
+if done3 "$OUT/da2/raw_predictions"; then echo "[skip] 已有三帧预测"; else
 python tools/run_external_depth_inference.py --model depth_anything_v2 --manifest "$FR" \
   --data-root "$IRIS_MS2_ROOT" --out-dir "$OUT/da2/raw_predictions" --stretch percentile \
   --weights "$DA2_CKPT" \
@@ -117,11 +128,13 @@ python tools/run_external_depth_inference.py --model depth_anything_v2 --manifes
   --prediction-dir "$OUT/da2/raw_predictions" --route iris-lotus --align ssi_disparity \
   --output-dir "$OUT/da2" \
 || echo "!! DA2 失败"
+fi
 
 # --- 4. PPD v2 -----------------------------------------------------------------
 echo; echo "=== PPD v2 ==="
-if PYTHONPATH="$PPD_REPO" python -c "from ppd.models.ppd import PixelPerfectDepth" 2> "$OUT/ppd_import.err"; then
-  python tools/run_external_depth_inference.py --model pixel_perfect_depth --manifest "$FR" \
+if done3 "$OUT/ppd/raw_predictions"; then echo "[skip] 已有三帧预测"
+elif PYTHONPATH="$PPD_REPO" "$PPD_PY" -c "from ppd.models.ppd import PixelPerfectDepth" 2> "$OUT/ppd_import.err"; then
+  "$PPD_PY" tools/run_external_depth_inference.py --model pixel_perfect_depth --manifest "$FR" \
     --data-root "$IRIS_MS2_ROOT" --out-dir "$OUT/ppd/raw_predictions" --stretch percentile \
     --ppd-checkpoint "$PPD_CKPT" --ppd-semantics "$PPD_SEM" \
   && python tools/run_official_ms2_evaluation.py --manifest "$FR" --data-root "$IRIS_MS2_ROOT" \
@@ -129,7 +142,7 @@ if PYTHONPATH="$PPD_REPO" python -c "from ppd.models.ppd import PixelPerfectDept
     --output-dir "$OUT/ppd" \
   || echo "!! PPD 失败"
 else
-  echo "!! iris 环境 import 不了 PPD："; tail -n 3 "$OUT/ppd_import.err"
+  echo "!! $PPD_PY import 不了 PPD："; tail -n 3 "$OUT/ppd_import.err"
 fi
 
 # --- 5. 自检：逐帧 AbsRel 对当初的 test CSV ----------------------------------
