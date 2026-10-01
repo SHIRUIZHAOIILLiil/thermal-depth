@@ -1,9 +1,16 @@
 """Draw fig:qual from what slurm/qual_figure_preds.sbatch packs.
 
 Columns are the three conditions; rows are thermal input, LiDAR ground truth,
-then one row per model that has predictions in the bundle. A model whose
-predictions are missing is left out rather than drawn blank, so a partial
-bundle still gives a usable figure; the printout says which rows were drawn.
+then one row per model named in --rows. A model whose predictions are missing
+from the bundle is left out rather than drawn blank; the printout says which
+rows were drawn.
+
+Two versions. The default, --rows lotus0 ours, is the one usable while the
+adapted baselines' weights are locked under the retired account: our model
+next to its own zero-shot starting point (Table main's "Lotus-G, no
+adaptation" row), so the figure shows what adaptation did, and the caption
+must point the reader to Table main for the adapted baselines. The full
+version is --rows ours ppd da2.
 
 Every prediction goes through the evaluator's own code before it is drawn --
 `collapse_channels`, `resize_dense_prediction` to GT resolution, and the same
@@ -43,12 +50,13 @@ from ms2_eval.official_protocol import (  # noqa: E402
 from ms2_eval.resize import resize_dense_prediction  # noqa: E402
 
 CONDITIONS = (("day", "Day"), ("night", "Night"), ("rainy", "Rain"))
-# (bundle directory, row label, alignment space) in drawing order.
-MODELS = (
-    ("ours_percentile", "Ours", "ssi_log"),
-    ("ppd", "PPD (adapted)", "ssi_log"),
-    ("da2", "DA2 (adapted)", "ssi_disparity"),
-)
+# (bundle directory, row label, alignment space). Drawn in the order --rows gives.
+MODELS = {
+    "lotus0": ("lotus0", "Lotus-G (no adapt.)", "ssi_disparity"),
+    "ours": ("ours_percentile", "Ours", "ssi_log"),
+    "ppd": ("ppd", "PPD (adapted)", "ssi_log"),
+    "da2": ("da2", "DA2 (adapted)", "ssi_disparity"),
+}
 D_MIN, D_MAX = 1e-3, 80.0
 
 
@@ -59,6 +67,10 @@ def parse_args() -> argparse.Namespace:
                         help="The unpacked qual_figure directory.")
     parser.add_argument("--out", type=Path, required=True,
                         help="Output path without extension; writes .png and .pdf.")
+    parser.add_argument("--rows", nargs="+", default=["lotus0", "ours"], choices=sorted(MODELS),
+                        help="Model rows under thermal and GT. Default is the version without "
+                             "adapted baselines: the zero-shot starting point, then ours. "
+                             "Full version: --rows ours ppd da2")
     parser.add_argument("--dilate", type=int, default=2,
                         help="Max-filter radius in pixels for the sparse LiDAR.")
     parser.add_argument("--width-in", type=float, default=7.16,
@@ -130,9 +142,10 @@ def main() -> None:
             raise SystemExit(f"!! {cond}: expected one frame in the bundle, found {len(hit)}")
         by_cond[cond] = hit[0]["id"]
 
-    models = [m for m in MODELS
+    wanted = [MODELS[key] for key in args.rows]
+    models = [m for m in wanted
               if all((args.bundle / m[0] / "raw_predictions" / f"{fid}.npy").is_file() for fid in by_cond.values())]
-    skipped = [m[1] for m in MODELS if m not in models]
+    skipped = [m[1] for m in wanted if m not in models]
     rows = ["Thermal", "LiDAR GT"] + [m[1] for m in models]
     print(f"[rows] {', '.join(rows)}" + (f"   (left out, predictions missing: {', '.join(skipped)})" if skipped else ""))
 

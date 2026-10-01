@@ -86,7 +86,7 @@ import json, shutil, sys
 from pathlib import Path
 out, mdir, root = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
 (out / "inputs").mkdir(parents=True, exist_ok=True)
-rows, at = [], {}
+rows, at, ordinals = [], {}, []
 for spec in sys.argv[4:]:
     cond, fid, mname = spec.split(":")
     with (mdir / mname).open(encoding="utf-8") as h:   # 与 train_route_suite 的计数方式一致
@@ -99,7 +99,11 @@ for spec in sys.argv[4:]:
         raise SystemExit(f"!! {fid} 与 {at[index]['id']} 在各自清单里同在第 {index} 行，补空行的办法不适用")
     at[index] = row
     rows.append(row)
-    print(f"[帧] {cond:5s} 在 {mname} 第 {index} 行 → 噪声种子 seed+{index}")
+    # run_ms2_lotus_thermal_vae_official.py 的种子是 seed + 该帧在**非空行**里的序号
+    with (mdir / mname).open(encoding="utf-8") as h:
+        ordinal = sum(1 for i, l in enumerate(h) if i < index and l.strip())
+    ordinals.append(f"{cond} {ordinal}\n")
+    print(f"[帧] {cond:5s} 在 {mname} 第 {index} 行（非空行序号 {ordinal}）")
     for kind, key in (("thermal", "thermal_path"), ("gt", "thermal_depth_path")):
         src = row.get(key) or (row.get("depth_path") if kind == "gt" else None)
         src = Path(src) if Path(src).is_absolute() else root / src
@@ -114,6 +118,7 @@ for index in sorted(at):
     padded += [""] * (index - len(padded))
     padded.append(json.dumps(at[index]))
 (out / "frames_ours.jsonl").write_text("\n".join(padded) + "\n", encoding="utf-8")
+(out / "ordinals.txt").write_text("".join(ordinals), encoding="utf-8")
 PY
 [[ -s "$OUT/frames.jsonl" ]] || { echo "!! 子清单没建成，停"; exit 1; }
 FR="$OUT/frames.jsonl"
@@ -130,6 +135,34 @@ for st in percentile minmax; do
     --condition-latent mode --val-stride 1 --save-raw-pred --local-files-only \
     || echo "!! Ours ($st) 失败"
 done
+
+# --- 2b. Lotus-G 零样本（主表「Lotus-G 未适配」那一行；备案版图用它当「适配前」）------
+# 当初 slurm/lotus_zeroshot.sbatch 存过逐帧 .npy；还在就直接拷，最准。不在就逐帧单独
+# 推理：该脚本的种子是 seed + 该帧在清单非空行里的序号，单帧清单里序号是 0，所以把
+# --seed 设成 20260701 + 原序号，噪声就和当初一样。
+echo; echo "=== Lotus-G zero-shot ==="
+L0="$OUT/lotus0"
+if done3 "$L0/raw_predictions"; then echo "[skip] 已有三帧预测"; else
+  mkdir -p "$L0/raw_predictions"
+  while read -r cond ordinal; do
+    fid="${FRAME[$cond]}"
+    old="$S/analysis/lotus_zeroshot_$cond/raw_predictions/$fid.npy"
+    if head -c 1 "$old" > /dev/null 2>&1; then
+      cp "$old" "$L0/raw_predictions/" && echo "[copy] $cond 当初的逐帧预测还在，直接拷"
+      continue
+    fi
+    grep -F "\"id\": \"$fid\"" "$FR" > "$L0/$cond.jsonl"
+    rm -rf "$L0/run_$cond"
+    IRIS_THERMAL_STRETCH=percentile IRIS_DECODE_CLAMP=0 python tools/run_ms2_lotus_thermal_vae_official.py \
+      --manifest "$L0/$cond.jsonl" --ms2-root "$IRIS_MS2_ROOT" --output-dir "$L0/run_$cond" \
+      --max-samples 0 --caption-mode empty --save-raw-pred --seed $((20260701 + ordinal)) \
+    && cp "$L0/run_$cond/raw_predictions/$fid.npy" "$L0/raw_predictions/" \
+    || echo "!! Lotus-G 零样本 $cond 失败"
+  done < "$OUT/ordinals.txt"
+fi
+python tools/run_official_ms2_evaluation.py --manifest "$FR" --data-root "$IRIS_MS2_ROOT" \
+  --prediction-dir "$L0/raw_predictions" --route iris-lotus --align ssi_disparity \
+  --output-dir "$L0" || echo "!! Lotus-G 零样本打分失败"
 
 # --- 3. DA2 v1 -----------------------------------------------------------------
 echo; echo "=== DA2 v1 ==="
@@ -179,12 +212,14 @@ def table(paths):
 
 ref = {
     "ours": glob.glob(f"{S}/eval/sd2_cap_pct_logtn_s43_test_*_s18000_correct/eval_*log_space*per_sample.csv"),
+    "lotus0": glob.glob(f"{S}/analysis/lotus_zeroshot_*/official/metrics/per_image.csv"),
     "da2":  glob.glob(f"{S}/analysis/da2_test_s16000_*/**/per_image.csv", recursive=True),
     "ppd":  glob.glob(f"{S}/analysis/ppdv2_test_*/**/per_image.csv", recursive=True),
 }
 new = {
     "ours_percentile": glob.glob(f"{out}/ours_percentile/eval_*per_sample.csv"),
     "ours_minmax":     glob.glob(f"{out}/ours_minmax/eval_*per_sample.csv"),
+    "lotus0":          [f"{out}/lotus0/metrics/per_image.csv"],
     "da2":             [f"{out}/da2/metrics/per_image.csv"],
     "ppd":             [f"{out}/ppd/metrics/per_image.csv"],
 }
@@ -205,7 +240,7 @@ PY
 cd "$OUT/.."
 tar czf qual_figure.tar.gz \
   qual_figure/inputs qual_figure/frames.jsonl qual_figure/selfcheck.txt \
-  $(ls -d qual_figure/ours_*/raw_predictions qual_figure/da2/raw_predictions \
+  $(ls -d qual_figure/ours_*/raw_predictions qual_figure/lotus0/raw_predictions qual_figure/da2/raw_predictions \
           qual_figure/ppd/raw_predictions 2>/dev/null)
 echo
 echo "[完成] 下载这一个文件：$(pwd)/qual_figure.tar.gz  ($(du -h qual_figure.tar.gz | cut -f1))"
