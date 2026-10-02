@@ -42,6 +42,10 @@ def main() -> None:
     parser.add_argument("--errors", action="store_true")
     parser.add_argument("--error-max", type=float, default=0.4)
     parser.add_argument("--width-in", type=float, default=7.16)
+    parser.add_argument("--box", action="append", default=[],
+                        help="col:x0,y0,x1,y1 in 0-1 image fractions, column from 0. Drawn on "
+                             "the thermal and both depth rows so they can be read against each "
+                             "other. Repeatable.")
     args = parser.parse_args()
     import matplotlib
 
@@ -100,8 +104,20 @@ def main() -> None:
                              else f"{TITLES[cond]} {n}", fontsize=7.5, pad=2)
         print(f"[{cond}] {fid}  scale {lo:.0f}-{hi:.0f} m")
 
+    from matplotlib.patches import Rectangle
+
+    box_rows = [labels.index(n) for n in ("Thermal", "w/o captions", "w/ captions")]
+    for spec in args.box:
+        col, coords = spec.split(":")
+        x0, y0, x1, y1 = (float(v) for v in coords.split(","))
+        for r in box_rows:
+            ax = axes[r, int(col)]
+            w, h = 640, 256
+            ax.add_patch(Rectangle((x0 * w, y0 * h), (x1 - x0) * w, (y1 - y0) * h,
+                                   fill=False, edgecolor="#e8202a", linewidth=1.0))
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    for ext in ("png", "pdf"):
+    for ext in ("png", "pdf", "svg"):
         fig.savefig(args.out.with_suffix(f".{ext}"), facecolor="white")
     print(f"[done] {args.out.with_suffix('.png')}")
 
