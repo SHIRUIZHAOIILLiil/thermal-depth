@@ -9,7 +9,7 @@ inference panel, which showed the old disparity line (`full8_thermalcap`) under 
 Panel A, completed-target construction, is training frame 10-59-33_000099: its
 thermal, its projected LiDAR and its completed target on one shared range (the target's
 2nd-98th log-depth percentile), so the two depth panels can be compared.
-Panel C, inference, is test frame 11-23-45_005720 and the raw output of the model in
+Panel C, inference, is test frame 15-46-56_002640 and the raw output of the model in
 Table main (log line, seed 43, step 18000, its own caption), taken from the bundle
 `slurm/qual_figure_preds.sbatch` wrote and checked frame by frame against the test CSV.
 That output is normalised log depth, so it is drawn as is, on its own 2-98 range.
@@ -32,8 +32,8 @@ from render_qualitative_figure import colour, dilate_sparse, stretch  # noqa: E4
 MS2 = Path("E:/dataset/ms2")
 OUT = ROOT / "docs" / "figures" / "figma_method_assets"
 TRAIN = ("2021-08-06-10-59-33", "000099")
-TEST = ("2021-08-06-11-23-45", "005720")
-BUNDLE = ROOT / "outputs" / "qual_figure"
+TEST = ("2021-08-13-15-46-56", "002640")
+BUNDLE = ROOT / "outputs" / "method_panel"
 
 
 def save(rgb: np.ndarray, name: str) -> None:
