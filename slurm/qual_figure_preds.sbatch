@@ -55,10 +55,12 @@ PPD_PY="${PPD_PY:-/mnt/scratch/dwdh0363/ppd_venv/bin/python}"
 PPD_SEM="${PPD_SEM:-$PPD_REPO/checkpoints/depth_anything_v2_vitl.pth}"
 OUT="${OUT:-$IRIS_RUNS/analysis/qual_figure}"
 
+# 可用 DAY_FRAME / NIGHT_FRAME / RAINY_FRAME 换帧（同时给 OUT 换目录，免得
+# 「已有三帧预测就跳过」把旧帧当成新帧）。
 declare -A FRAME=(
-  [day]=2021-08-06-11-23-45_005720
-  [night]=2021-08-13-22-03-03_006139
-  [rainy]=2021-08-06-16-45-28_005762
+  [day]="${DAY_FRAME:-2021-08-06-11-23-45_005720}"
+  [night]="${NIGHT_FRAME:-2021-08-13-22-03-03_006139}"
+  [rainy]="${RAINY_FRAME:-2021-08-06-16-45-28_005762}"
 )
 declare -A MFST=(
   [day]=ms2_test_day3_common_thermalcap_20260821.jsonl
