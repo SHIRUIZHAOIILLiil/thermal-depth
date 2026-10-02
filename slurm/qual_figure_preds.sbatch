@@ -240,9 +240,10 @@ PY
 
 # --- 6. 打包 -------------------------------------------------------------------
 cd "$OUT/.."
-tar czf qual_figure.tar.gz \
-  qual_figure/inputs qual_figure/frames.jsonl qual_figure/selfcheck.txt \
-  $(ls -d qual_figure/ours_*/raw_predictions qual_figure/lotus0/raw_predictions qual_figure/da2/raw_predictions \
-          qual_figure/ppd/raw_predictions 2>/dev/null)
+B="$(basename "$OUT")"
+tar czf "$B.tar.gz" \
+  "$B/inputs" "$B/frames.jsonl" "$B/selfcheck.txt" \
+  $(ls -d "$B"/ours_*/raw_predictions "$B/lotus0/raw_predictions" "$B/da2/raw_predictions" \
+          "$B/ppd/raw_predictions" 2>/dev/null)
 echo
-echo "[完成] 下载这一个文件：$(pwd)/qual_figure.tar.gz  ($(du -h qual_figure.tar.gz | cut -f1))"
+echo "[完成] 下载这一个文件：$(pwd)/$B.tar.gz  ($(du -h "$B.tar.gz" | cut -f1))"
