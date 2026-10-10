@@ -26,6 +26,10 @@
 #   TEST_PROMPTS test 上要评的臂，空格分隔。默认 "empty"；带 caption 的臂给 "empty correct"
 #   ROUTE        默认 b_thermal_unet
 #   VAL_STRIDE   val 抽帧，默认 4（1453 帧，与历史训练曲线同口径）
+#   FIXED_STEP   固定预算比较点；必须已包含在 STEPS 中。仍打印 val 曲线，但不拿最小点
+#                替换这个 checkpoint。
+#   VAL_ONLY=1   val 写完立即退出；不检查、不读取、不评估 test。用于调参与路线选择。
+#                默认 0，保留原来的 val 选点后自动跑 test 行为。
 #   VAL_MANIFEST 选点用的 val manifest。不设＝脚本自带的默认（RGB caption 那份）。
 #                ⚠️ 用热像 caption 训练的臂必须传对应的 val manifest —— 拿 RGB caption
 #                给它选冠军，等于在它没训过的文本分布下挑权重，和用错 SEL_PROMPT 同性质。
@@ -67,6 +71,15 @@ SEL_PROMPT="${SEL_PROMPT:?必须指定 SEL_PROMPT（empty 或 correct，须与�
 TEST_PROMPTS="${TEST_PROMPTS:-empty}"
 ROUTE="${ROUTE:-b_thermal_unet}"
 VAL_STRIDE="${VAL_STRIDE:-4}"
+VAL_ONLY="${VAL_ONLY:-0}"
+FIXED_STEP="${FIXED_STEP:-}"
+case "$VAL_ONLY" in 0|1) ;; *) echo "!! VAL_ONLY 只能是 0 或 1"; exit 1 ;; esac
+if [[ -n "$FIXED_STEP" ]]; then
+  case " $STEPS " in
+    *" $FIXED_STEP "*) ;;
+    *) echo "!! FIXED_STEP=$FIXED_STEP 不在 STEPS='$STEPS' 中"; exit 1 ;;
+  esac
+fi
 # 2026-08-31：Marigold 和 E2E-FT 用 truncnorm 训练，输出是归一化**深度**；Lotus 两条
 # 用 trunc_disparity，输出是归一化**视差**。把前者当后者读，仿射拟合救不回来 ——
 # 那天 marigold nocap 的 val 是 AbsRel 0.265 / δ1 0.504，看着像模型烂，其实是卷子错。
@@ -77,7 +90,7 @@ case "$ALIGN_MODE" in
   ssi_disparity) EVAL_SUFFIX="" ;;
   ssi)           EVAL_SUFFIX="_affine_invariant_depth_space" ;;
   ssi_log)       EVAL_SUFFIX="_affine_invariant_log_space" ;;
-  *) echo "!! ALIGN_MODE 只支持 ssi_disparity | ssi。median 和 none 的文件名还多一段"
+  *) echo "!! ALIGN_MODE 只支持 ssi_disparity | ssi | ssi_log。median 和 none 的文件名还多一段"
      echo "!! metric_source，本脚本没接那条路，别在这里凑合。"; exit 1 ;;
 esac
 
@@ -87,7 +100,12 @@ TEST_MANIFEST="${TEST_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_test_16-08-46_rgb_depth_v
 TRAIN_MANIFEST="${TRAIN_MANIFEST:-$IRIS_MANIFEST_DIR/ms2_train_day2seq_clip75_20260728.jsonl}"
 
 [[ -d "$RUN_DIR" ]]        || { echo "!! 找不到训练输出目录 $RUN_DIR"; exit 1; }
-[[ -f "$TEST_MANIFEST" ]]  || { echo "!! 找不到 test manifest $TEST_MANIFEST"; exit 1; }
+[[ -f "$TRAIN_MANIFEST" ]] || { echo "!! 找不到 train manifest $TRAIN_MANIFEST"; exit 1; }
+[[ -z "${VAL_MANIFEST:-}" || -f "$VAL_MANIFEST" ]] ||
+  { echo "!! 找不到 val manifest $VAL_MANIFEST"; exit 1; }
+if [[ "$VAL_ONLY" != "1" ]]; then
+  [[ -f "$TEST_MANIFEST" ]] || { echo "!! 找不到 test manifest $TEST_MANIFEST"; exit 1; }
+fi
 case "$SEL_PROMPT" in empty|correct) ;; *) echo "!! SEL_PROMPT 只能是 empty 或 correct"; exit 1 ;; esac
 
 # 一份结果属于哪张卷子，必须写进它的目录名。
@@ -102,8 +120,14 @@ fingerprint() {
   sha256sum "$path" | cut -c1-8
 }
 VAL_FP="$(fingerprint "${VAL_MANIFEST:-}")"
-TEST_FP="$(fingerprint "$TEST_MANIFEST")"
-VAL_PREFIX="${RUN}_val_${VAL_FP}"
+if [[ "$VAL_ONLY" == "1" ]]; then
+  TEST_FP="notest"
+else
+  TEST_FP="$(fingerprint "$TEST_MANIFEST")"
+fi
+# Stride and prompt change the actual exam. Without them, a full-val run can
+# silently reuse an older stride-4 or wrong-prompt directory and skip inference.
+VAL_PREFIX="${RUN}_val_${VAL_FP}_stride${VAL_STRIDE}_${SEL_PROMPT}"
 TEST_PREFIX="${RUN}_test_${TEST_FP}"
 
 mkdir -p "$CONV_DIR"
@@ -113,6 +137,7 @@ git log --oneline -1
 echo "=== 配置 ==="
 echo "run          = $RUN"
 echo "steps        = $STEPS"
+echo "val only/fixed = $VAL_ONLY / ${FIXED_STEP:-<按 val AbsRel 选>}"
 echo "选点 prompt   = $SEL_PROMPT   (须与训练时一致)"
 echo "test 臂       = $TEST_PROMPTS"
 # 两个 manifest 决定了 caption 是哪一版；不打出来，日后分不清一份结果是
@@ -185,8 +210,17 @@ if best in (min(scored), max(scored)) and len(scored) > 1:
 print(best)
 PY
 )
+if [[ -n "$FIXED_STEP" ]]; then
+  BEST="$FIXED_STEP"
+  echo "=== 固定预算比较：忽略 val 最小点，使用 step $BEST ==="
+fi
 echo "=== val 曲线与选点 ==="
 echo ">>> 选中 step $BEST"
+
+if [[ "$VAL_ONLY" == "1" ]]; then
+  echo "=== VAL_ONLY=1：验证结果已写完；未读取、未评估 test ==="
+  exit 0
+fi
 
 # --- 4. test 评估 ----------------------------------------------------------
 for p in $TEST_PROMPTS; do

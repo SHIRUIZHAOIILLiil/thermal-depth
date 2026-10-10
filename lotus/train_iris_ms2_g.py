@@ -431,6 +431,38 @@ def decode_metric_inverse_depth(metric_vae, x0_latent, norm):
     return y, decoded_to_inverse(y, norm)
 
 
+def decode_image_depth(metric_vae, x0_latent, norm_bounds,
+                       norm_type="trunc_disparity"):
+    """Decode a predicted latent to the unit output and metres.
+
+    Keeping this inverse in one function matters for the loss sweep: the L1
+    control and every unaligned tail-shape arm must see exactly the same depth
+    prediction. A duplicated reciprocal/exponential here would turn a loss
+    comparison into a representation comparison without raising an error.
+    """
+    device_type = x0_latent.device.type
+    with torch.autocast(device_type=device_type, enabled=False):
+        decoded = metric_vae.decode(
+            x0_latent.float() / metric_vae.config.scaling_factor, return_dict=False
+        )[0]
+    y = decoded.float().mean(dim=1, keepdim=True) / 2.0 + 0.5
+    lo = norm_bounds[:, 0].view(-1, 1, 1, 1).float()
+    hi = norm_bounds[:, 1].view(-1, 1, 1, 1).float()
+    if norm_type == "trunc_disparity":
+        q_hat = (lo + y * (hi - lo + 1e-5)).clamp(min=1e-4)
+        d_hat = 1.0 / q_hat
+    elif norm_type in ("truncnorm", "instnorm"):
+        d_hat = (lo + y * (hi - lo + 1e-5)).clamp(min=1e-3)
+    elif norm_type == "log_truncnorm":
+        d_hat = torch.exp((lo + y * (hi - lo + 1e-5)).clamp(min=-9.0, max=9.0))
+    else:
+        raise ValueError(
+            f"decode_image_depth has no inverse for norm_type={norm_type!r}; "
+            "it knows trunc_disparity, truncnorm, instnorm and log_truncnorm."
+        )
+    return y, d_hat, lo, hi
+
+
 def image_depth_l1_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds,
                         norm_type="trunc_disparity"):
     """Masked L1 between predicted and measured depth, in metres.
@@ -455,46 +487,9 @@ def image_depth_l1_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds,
     value but a gradient of the same magnitude as any other pixel. L2 would let
     one such pixel drive the step.
     """
-    device_type = x0_latent.device.type
-    # Same reasoning as decode_metric_inverse_depth: the surrounding step runs
-    # under accelerate's autocast, and decoding inside it would put this back in
-    # fp16, which underflows the gradient through the decoder to exactly zero.
-    with torch.autocast(device_type=device_type, enabled=False):
-        decoded = metric_vae.decode(
-            x0_latent.float() / metric_vae.config.scaling_factor, return_dict=False
-        )[0]
-    y = decoded.float().mean(dim=1, keepdim=True) / 2.0 + 0.5
-    lo = norm_bounds[:, 0].view(-1, 1, 1, 1).float()
-    hi = norm_bounds[:, 1].view(-1, 1, 1, 1).float()
-    # The bounds are quantiles of whatever the normalisation acted on, so the
-    # inverse differs by exactly one reciprocal. Getting this wrong produces a
-    # finite, plausible-looking depth that is not the one the network predicted.
-    if norm_type == "trunc_disparity":
-        q_hat = lo + y * (hi - lo + 1e-5)
-        # lo is a 2% quantile of 1/depth over pixels inside [d_min, d_max], so it
-        # is positive; only a decoder output below -1 can drive q_hat to zero. The
-        # floor is far below 1/d_max so it never touches a prediction that is
-        # merely far.
-        q_hat = q_hat.clamp(min=1e-4)
-        d_hat = 1.0 / q_hat
-    elif norm_type in ("truncnorm", "instnorm"):
-        # Depth directly, no reciprocal. A decoder output below -1 can put this
-        # at or under zero, so it takes the same floor the dataset clips to.
-        # instnorm shares this inverse: it differs only in where the bounds come
-        # from (whole range rather than the 2/98 quantiles), and the bounds are
-        # carried per sample, so the arithmetic here is identical.
-        d_hat = (lo + y * (hi - lo + 1e-5)).clamp(min=1e-3)
-    elif norm_type == "log_truncnorm":
-        # Bounds are quantiles of log depth, so the inverse is an exponential.
-        # The exponent is clamped before exp rather than the depth after it: a
-        # decoder output well outside [-1, 1] would overflow to inf, and inf in
-        # a masked mean is nan, which kills the step instead of costing it.
-        d_hat = torch.exp((lo + y * (hi - lo + 1e-5)).clamp(min=-9.0, max=9.0))
-    else:
-        raise ValueError(
-            f"image_depth_l1_loss has no inverse for norm_type={norm_type!r}; "
-            "it knows trunc_disparity, truncnorm and instnorm."
-        )
+    _, d_hat, lo, hi = decode_image_depth(
+        metric_vae, x0_latent, norm_bounds, norm_type=norm_type
+    )
 
     finite_bounds = torch.isfinite(lo) & torch.isfinite(hi)
     mask = (gt_valid > 0.5) & finite_bounds
@@ -513,6 +508,129 @@ def image_depth_l1_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds,
             ((d_hat[mask] - gt_depth[mask]).abs() / gt_depth[mask].clamp(min=1e-3)).mean()
         )
     return loss, count, stats
+
+
+def _ssi_log_aligned_depth(pred_y, gt_depth, mask, variance_eps=1e-8):
+    """Torch equivalent of the evaluator's per-image ssi_log fit.
+
+    The fit is per image and remains in the autograd graph. It solves
+    log(gt) ~= scale * pred_y + shift on real Train LiDAR returns, then applies
+    that affine map densely. Validation and test still go through the unchanged
+    official evaluator.
+
+    A constant raw prediction has no identifiable scale. Such a frame is
+    excluded from this auxiliary term and counted, while the latent and image
+    L1 objectives continue to train it.
+    """
+    aligned = []
+    frame_ok = []
+    scales = []
+    shifts = []
+    for index in range(pred_y.shape[0]):
+        valid = mask[index] & torch.isfinite(pred_y[index]) & torch.isfinite(gt_depth[index])
+        if int(valid.sum().detach()) < 2:
+            aligned.append(torch.ones_like(pred_y[index]))
+            frame_ok.append(False)
+            continue
+        pred_valid = pred_y[index][valid].float()
+        log_gt = torch.log(gt_depth[index][valid].float().clamp(min=1e-6))
+        pred_mean = pred_valid.mean()
+        gt_mean = log_gt.mean()
+        pred_centered = pred_valid - pred_mean
+        denominator = torch.sum(pred_centered.square())
+        if (not bool(torch.isfinite(denominator).detach())) or float(denominator.detach()) <= variance_eps:
+            aligned.append(torch.ones_like(pred_y[index]))
+            frame_ok.append(False)
+            continue
+        scale = torch.sum(pred_centered * (log_gt - gt_mean)) / denominator
+        shift = gt_mean - scale * pred_mean
+        aligned_log = (scale * pred_y[index].float() + shift).clamp(min=-9.0, max=9.0)
+        aligned.append(torch.exp(aligned_log))
+        frame_ok.append(True)
+        scales.append(scale.detach())
+        shifts.append(shift.detach())
+    return torch.stack(aligned), frame_ok, scales, shifts
+
+
+def image_depth_tail_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds,
+                          norm_type="log_truncnorm", loss_type="huber",
+                          align="none", huber_delta_m=5.0):
+    """Macro-averaged tail loss on real LiDAR pixels.
+
+    loss_type='huber' changes only the error shape relative to the current
+    metre L1: errors inside huber_delta_m are quadratic and larger errors have
+    a bounded (but stronger than L1) gradient. loss_type='sqrel' is an optional
+    direct surrogate for the official squared-relative metric.
+
+    align='none' uses the same per-frame inverse as the L1 control.
+    align='ssi_log' changes only the coordinate treatment: decoded unit output
+    is fitted to log Train GT with the evaluator's two-parameter family before
+    the same tail shape is applied. Losses are averaged per frame, not per
+    pixel, matching the evaluator's macro aggregation.
+    """
+    if loss_type not in ("huber", "sqrel"):
+        raise ValueError(f"Unknown tail loss {loss_type!r}; expected huber or sqrel")
+    if align not in ("none", "ssi_log"):
+        raise ValueError(f"Unknown tail alignment {align!r}; expected none or ssi_log")
+    if huber_delta_m <= 0:
+        raise ValueError(f"huber_delta_m must be positive, got {huber_delta_m}")
+
+    pred_y, decoded_depth, lo, hi = decode_image_depth(
+        metric_vae, x0_latent, norm_bounds, norm_type=norm_type
+    )
+    finite_bounds = torch.isfinite(lo) & torch.isfinite(hi)
+    mask = (gt_valid > 0.5) & finite_bounds & torch.isfinite(gt_depth) & (gt_depth > 0)
+    if align == "ssi_log":
+        if norm_type != "log_truncnorm":
+            raise ValueError(
+                "ssi_log tail alignment is only valid for a log_truncnorm model; "
+                f"got norm_type={norm_type!r}"
+            )
+        d_hat, frame_ok, scales, shifts = _ssi_log_aligned_depth(pred_y, gt_depth, mask)
+    else:
+        d_hat = decoded_depth
+        frame_ok = [bool(mask[index].any().detach()) for index in range(mask.shape[0])]
+        scales, shifts = [], []
+
+    frame_losses = []
+    abs_rel_terms = []
+    squared_terms = []
+    pixels = 0
+    for index, ok in enumerate(frame_ok):
+        if not ok:
+            continue
+        valid = mask[index]
+        pred = d_hat[index][valid]
+        truth = gt_depth[index][valid].float()
+        error = pred - truth
+        if loss_type == "huber":
+            per_pixel = F.huber_loss(
+                pred, truth, reduction="none", delta=float(huber_delta_m)
+            )
+        else:
+            per_pixel = error.square() / truth.clamp(min=1e-3)
+        frame_losses.append(per_pixel.mean())
+        abs_rel_terms.append((error.detach().abs() / truth.detach().clamp(min=1e-3)).mean())
+        squared_terms.append(error.detach().square().mean())
+        pixels += int(valid.sum().detach())
+
+    stats = {
+        "tail_type": loss_type,
+        "tail_align": align,
+        "lidar_pixels": pixels,
+        "frames_used": len(frame_losses),
+        "frames_degenerate": len(frame_ok) - len(frame_losses),
+        "alignment_scale_min": float(torch.stack(scales).min()) if scales else float("nan"),
+        "alignment_scale_max": float(torch.stack(scales).max()) if scales else float("nan"),
+        "alignment_shift_min": float(torch.stack(shifts).min()) if shifts else float("nan"),
+        "alignment_shift_max": float(torch.stack(shifts).max()) if shifts else float("nan"),
+    }
+    if not frame_losses:
+        return x0_latent.new_zeros(()), 0, stats
+    loss = torch.stack(frame_losses).mean()
+    stats["tail_abs_rel"] = float(torch.stack(abs_rel_terms).mean())
+    stats["tail_rmse"] = float(torch.sqrt(torch.stack(squared_terms).mean()))
+    return loss, pixels, stats
 
 
 def metric_inverse_depth_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm):
@@ -770,6 +888,42 @@ def parse_args():
             "recipe, meant for the far field, where a latent error is worth a hundred "
             "times more metres than the same error up close."
         ),
+    )
+    parser.add_argument(
+        "--lambda_tail",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight on an additional real-LiDAR tail loss. Zero keeps the current "
+            "L1 objective byte-for-byte unchanged. Use --tail_loss to select the "
+            "shape and --tail_align to isolate the effect of Train-time alignment."
+        ),
+    )
+    parser.add_argument(
+        "--tail_loss",
+        choices=("none", "huber", "sqrel"),
+        default="none",
+        help=(
+            "Shape of the optional tail term. huber is quadratic inside "
+            "--tail_huber_delta_m and linear outside; sqrel directly mirrors the "
+            "official squared-relative per-pixel expression."
+        ),
+    )
+    parser.add_argument(
+        "--tail_align",
+        choices=("none", "ssi_log"),
+        default="none",
+        help=(
+            "none uses the same per-frame inverse as image L1. ssi_log first fits "
+            "decoded unit output to log Train GT with the evaluator's two-parameter "
+            "family; it is valid only with --norm_type log_truncnorm."
+        ),
+    )
+    parser.add_argument(
+        "--tail_huber_delta_m",
+        type=float,
+        default=5.0,
+        help="Huber transition in metres for --tail_loss huber.",
     )
     parser.add_argument(
         "--pure_pseudo_target",
@@ -1092,6 +1246,33 @@ def parse_args():
             "dataset records, and image_depth_l1_loss has an inverse only for "
             "trunc_disparity, truncnorm, instnorm and log_truncnorm."
         )
+    if args.lambda_image < 0:
+        raise ValueError(f"--lambda_image must be non-negative, got {args.lambda_image}")
+    if args.lambda_tail < 0:
+        raise ValueError(f"--lambda_tail must be non-negative, got {args.lambda_tail}")
+    if args.tail_huber_delta_m <= 0:
+        raise ValueError(
+            f"--tail_huber_delta_m must be positive, got {args.tail_huber_delta_m}"
+        )
+    if args.lambda_tail == 0:
+        if args.tail_loss != "none" or args.tail_align != "none":
+            raise ValueError(
+                "--tail_loss/--tail_align were set while --lambda_tail is zero; "
+                "either enable the term or clear the stale flags."
+            )
+    else:
+        if args.tail_loss == "none":
+            raise ValueError("--lambda_tail > 0 requires --tail_loss huber or sqrel")
+        if args.norm_type not in (
+                "trunc_disparity", "truncnorm", "instnorm", "log_truncnorm"):
+            raise ValueError(
+                f"--lambda_tail cannot run under --norm_type {args.norm_type}: "
+                "the unaligned branch needs an invertible target normalisation."
+            )
+        if args.tail_align == "ssi_log" and args.norm_type != "log_truncnorm":
+            raise ValueError(
+                "--tail_align ssi_log requires --norm_type log_truncnorm"
+            )
 
     # default to using the same revision for the non-ema model if not specified
     if args.non_ema_revision is None:
@@ -1492,7 +1673,7 @@ def main():
     # the metric term's does -- and fp16 underflows that backward to exactly zero
     # (see the metric adaptation notes above), so it needs the same fp32 copy.
     metric_vae = None
-    if args.metric_adaptation or args.backbone == "e2eft" or args.lambda_image > 0:
+    if args.metric_adaptation or args.backbone == "e2eft" or args.lambda_image > 0 or args.lambda_tail > 0:
         metric_vae = copy.deepcopy(vae).to(device=accelerator.device, dtype=torch.float32)
         metric_vae.encoder = None
         metric_vae.requires_grad_(False)
@@ -1654,6 +1835,8 @@ def main():
         train_loss = 0.0
         log_ann_loss = 0.0
         log_rgb_loss = 0.0
+        log_image_loss = 0.0
+        log_tail_loss = 0.0
         log_metric_loss = 0.0
 
         for _ in range(len(train_dataloader_ms2)):
@@ -1877,7 +2060,7 @@ def main():
                     F.mse_loss(model_pred[bsz_per_task:][valid_mask_down_rgb].float(), target[bsz_per_task:][valid_mask_down_rgb].float(), reduction="mean")
                     if _two_branch else model_pred.new_zeros(())
                 )
-                # L = lambda_dense * L_dense + lambda_recon * L_I + lambda_metric * L_metric
+                # Keep image L1, tail shape/alignment, and metric adaptation separate.
                 # At the default weights of 1 and metric adaptation off this is
                 # `anno_loss + rgb_loss`, term for term, as it has always been.
                 loss = args.lambda_dense * anno_loss + args.lambda_recon * rgb_loss
@@ -1893,6 +2076,21 @@ def main():
                         norm_type=args.norm_type,
                     )
                     loss = loss + args.lambda_image * image_loss
+                tail_loss = loss.new_zeros(())
+                tail_stats = None
+                if args.lambda_tail > 0:
+                    tail_loss, _tail_px, tail_stats = image_depth_tail_loss(
+                        metric_vae,
+                        model_pred[:bsz_per_task],
+                        batch["gt_depth_values"].to(accelerator.device),
+                        batch["gt_valid_values"].to(accelerator.device),
+                        batch["norm_bounds"].to(accelerator.device),
+                        norm_type=args.norm_type,
+                        loss_type=args.tail_loss,
+                        align=args.tail_align,
+                        huber_delta_m=args.tail_huber_delta_m,
+                    )
+                    loss = loss + args.lambda_tail * tail_loss
                 metric_loss = loss.new_zeros(())
                 metric_stats = None
                 if args.metric_adaptation:
@@ -1910,13 +2108,28 @@ def main():
                 log_ann_loss += avg_anno_loss.item() / args.gradient_accumulation_steps
                 avg_rgb_loss = accelerator.gather(rgb_loss.repeat(args.train_batch_size)).mean()
                 log_rgb_loss += avg_rgb_loss.item() / args.gradient_accumulation_steps
-                train_loss = log_ann_loss + log_rgb_loss
+                train_loss = (
+                    args.lambda_dense * log_ann_loss
+                    + args.lambda_recon * log_rgb_loss
+                )
+                if args.lambda_image > 0:
+                    avg_image_loss = accelerator.gather(
+                        image_loss.detach().repeat(args.train_batch_size)
+                    ).mean()
+                    log_image_loss += avg_image_loss.item() / args.gradient_accumulation_steps
+                    train_loss = train_loss + args.lambda_image * log_image_loss
+                if args.lambda_tail > 0:
+                    avg_tail_loss = accelerator.gather(
+                        tail_loss.detach().repeat(args.train_batch_size)
+                    ).mean()
+                    log_tail_loss += avg_tail_loss.item() / args.gradient_accumulation_steps
+                    train_loss = train_loss + args.lambda_tail * log_tail_loss
                 if args.metric_adaptation:
                     avg_metric_loss = accelerator.gather(
                         metric_loss.detach().repeat(args.train_batch_size)
                     ).mean()
                     log_metric_loss += avg_metric_loss.item() / args.gradient_accumulation_steps
-                    train_loss = train_loss + log_metric_loss
+                    train_loss = train_loss + args.lambda_metric * log_metric_loss
 
                 # Backpropagate
                 accelerator.backward(loss)
@@ -1938,6 +2151,12 @@ def main():
                 # term is buying far-field metres by giving up everything else.
                 logs["SL_I"] = image_loss.detach().item()
                 logs["iAbsRel"] = image_stats.get("image_abs_rel", float("nan"))
+            if args.lambda_tail > 0:
+                logs["SL_T"] = tail_loss.detach().item()
+                if tail_stats is not None:
+                    logs["tAbsRel"] = tail_stats.get("tail_abs_rel", float("nan"))
+                    logs["tRMSE"] = tail_stats.get("tail_rmse", float("nan"))
+                    logs["tFrames"] = tail_stats.get("frames_used", 0)
             if args.metric_adaptation:
                 # SL_M is the raw term; the run's own gate is that it falls, and
                 # that mAbsRel -- unaligned, on measured pixels -- falls with it.
@@ -1952,6 +2171,23 @@ def main():
                 tracked = {"train_loss": train_loss,
                            "anno_loss": log_ann_loss,
                            "rgb_loss": log_rgb_loss}
+                if args.lambda_image > 0:
+                    tracked["image_loss"] = log_image_loss
+                    if image_stats is not None:
+                        tracked["image_abs_rel"] = image_stats.get("image_abs_rel", float("nan"))
+                if args.lambda_tail > 0:
+                    tracked["tail_loss"] = log_tail_loss
+                    if tail_stats is not None:
+                        tracked["tail_frames_used"] = tail_stats.get("frames_used", 0)
+                        tracked["tail_frames_degenerate"] = tail_stats.get("frames_degenerate", 0)
+                        if "tail_abs_rel" in tail_stats:
+                            tracked["tail_abs_rel"] = tail_stats["tail_abs_rel"]
+                            tracked["tail_rmse"] = tail_stats["tail_rmse"]
+                        if args.tail_align == "ssi_log" and tail_stats.get("frames_used", 0):
+                            tracked["tail_alignment_scale_min"] = tail_stats["alignment_scale_min"]
+                            tracked["tail_alignment_scale_max"] = tail_stats["alignment_scale_max"]
+                            tracked["tail_alignment_shift_min"] = tail_stats["alignment_shift_min"]
+                            tracked["tail_alignment_shift_max"] = tail_stats["alignment_shift_max"]
                 if args.metric_adaptation:
                     tracked["metric_loss"] = log_metric_loss
                     if metric_stats is not None:
@@ -1960,6 +2196,8 @@ def main():
                 train_loss = 0.0
                 log_ann_loss = 0.0
                 log_rgb_loss = 0.0
+                log_image_loss = 0.0
+                log_tail_loss = 0.0
                 log_metric_loss = 0.0
 
                 # Step 3's range logging. Cheap, and the only way a scale that has

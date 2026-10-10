@@ -91,6 +91,10 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   --norm_type=$NORMTYPE \
   $PURE_PSEUDO_FLAG \
   --lambda_image="${LAMBDA_IMAGE:-0}" \
+  --lambda_tail="${LAMBDA_TAIL:-0}" \
+  --tail_loss="${TAIL_LOSS:-none}" \
+  --tail_align="${TAIL_ALIGN:-none}" \
+  --tail_huber_delta_m="${TAIL_HUBER_DELTA_M:-5}" \
   --prediction_type=$PREDICTION_TYPE \
   --dataloader_num_workers=0 \
   --train_batch_size=$BATCH_SIZE \
