@@ -29,10 +29,20 @@ set -uo pipefail
 : "${SCRATCH:?这个脚本要在 Aire 上运行}"
 L="$SCRATCH/logs"
 
+# 日志写在**提交时所在的目录**（%x-%j.out 是相对路径），不一定是 $SCRATCH/logs ——
+# 2026-10-10 在 ~/Iris 里投的一批作业，这里全报「找不到日志」。先问 Slurm 实际路径，
+# 问不到（作业已离开队列）再退回去 $L 里找。
+logpath() {  # id out|err
+  local p
+  p=$(scontrol show job "$1" 2>/dev/null | grep -o "Std${2^}=[^ ]*" | cut -d= -f2)
+  [ -n "$p" ] || p=$(ls -t "$L"/*-"$1".$2 2>/dev/null | head -1)
+  echo "$p"
+}
+
 case "${1:-overview}" in
 
-  log)  tail -f "$(ls -t "$L"/*-"${2:?给个 job id}".out | head -1)" ;;
-  err)  f=$(ls -t "$L"/*-"${2:?给个 job id}".err | head -1); echo "--- $f"; tail -40 "$f" ;;
+  log)  tail -f "$(logpath "${2:?给个 job id}" out)" ;;
+  err)  f=$(logpath "${2:?给个 job id}" err); echo "--- $f"; tail -40 "$f" ;;
 
   why)
     id="${2:?给个 job id}"
@@ -106,13 +116,15 @@ PY
     echo
     echo "=== 运行中作业的最新进度 ==="
     for id in $(squeue -h -u "$USER" -t R -o "%i"); do
-      f=$(ls -t "$L"/*-"$id".out 2>/dev/null | head -1)
-      if [ -n "$f" ]; then
-        echo "--- $(basename "$f")"; tail -2 "$f"
+      f=$(logpath "$id" out); e=$(logpath "$id" err)
+      if [ -r "$f" ]; then
+        echo "--- $(basename "$f")"; tail -n 1 "$f"
+        # 训练进度条（tqdm）写在 .err，而且用 \r 刷新，不换成换行就只剩最后一大坨。
+        [ -r "$e" ] && tail -c 600 "$e" | tr '\r' '\n' | grep -E "Steps|it/s|s/it" | tail -n 1
       else
-        # 日志落在提交时的目录。看别人的作业时那通常是对方的 home，读不到 ——
-        # 说出来，而不是让这一段看起来像「没有进度可报」。
-        echo "--- 作业 $id：在 $L 下找不到日志（可能在提交者的 home 里、读不到）"
+        # 看别人的作业时，日志通常在对方的 home 里，读不到 —— 说出来，
+        # 而不是让这一段看起来像「没有进度可报」。
+        echo "--- 作业 $id：日志 ${f:-（Slurm 没给出路径）} 读不到（可能在提交者的 home 里）"
       fi
     done
     echo
