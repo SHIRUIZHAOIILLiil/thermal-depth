@@ -73,15 +73,6 @@ for pair in "day3_common test_day" "night3 test_night" "rainy3 test_rain"; do
     || echo "!! newcrf $2 失败"
 done
 
-echo; echo "=== 3b. 把参照存下来（GT 同格式 PNG + 指向它的清单），供后续评估复用 ==="
-PGT="$OUT/reference"
-if [[ -f "$PGT/manifests/ms2_test_rainy3_thermalcap_20260821_official_pseudo_dense.jsonl" ]]; then
-  echo "[skip] $PGT 已存在"
-else
-  python tools/build_test_pseudo_gt.py --ms2-root "$IRIS_MS2_ROOT" --manifest-dir "$MAN" \
-    --anythermal-root "$S/anythermal" --out "$PGT" || echo "!! 参照存档失败"
-fi
-
 echo; echo "=== 4. 打分（诊断）==="
 python tools/score_on_pseudo_gt.py --ms2-root "$IRIS_MS2_ROOT" --manifest-dir "$MAN" \
   --anythermal-root "$S/anythermal" \
