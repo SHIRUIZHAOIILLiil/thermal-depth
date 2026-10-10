@@ -41,9 +41,12 @@ python tools/make_official_subset_manifest.py --ms2-root "$IRIS_MS2_ROOT" \
   --manifest-dir "$IRIS_MANIFEST_DIR" --out "$MAN" || { echo "!! 清单失败，停"; exit 1; }
 
 echo; echo "=== 2. 我们的两个模型（补空行清单，保住噪声种子）==="
-for spec in "img|$S/iris_ms2/sd2_cap_pct_logtn_img_s43/converted/step16000_weights.pt" \
-            "cap|$S/iris_ms2/sd2_cap_pct_logtn_s43/converted/step18000_weights.pt"; do
-  k=${spec%%|*}; ckpt=${spec#*|}
+# key|checkpoint|prompt —— 每条臂用它训练时的 prompt（带 caption 的用 correct，不带的用 empty）
+for spec in "img|$S/iris_ms2/sd2_cap_pct_logtn_img_s43/converted/step16000_weights.pt|correct" \
+            "cap|$S/iris_ms2/sd2_cap_pct_logtn_s43/converted/step18000_weights.pt|correct" \
+            "img_nocap|$S/iris_ms2/sd2_nocap_pct_logtn_img_s43/converted/step16000_weights.pt|empty" \
+            "nocap|$S/iris_ms2/sd2_nocap_pct_logtn_s43/converted/step18000_weights.pt|empty"; do
+  IFS='|' read -r k ckpt prompt <<< "$spec"
   for m in day3_common night3 rainy3; do
     dest="$OUT/ours_${k}_$m"
     if [[ "$(ls "$dest/raw_predictions" 2>/dev/null | wc -l)" -gt 0 ]]; then echo "[skip] $dest"; continue; fi
@@ -51,7 +54,7 @@ for spec in "img|$S/iris_ms2/sd2_cap_pct_logtn_img_s43/converted/step16000_weigh
     IRIS_THERMAL_STRETCH=percentile python tools/train_route_suite.py \
       --route b_thermal_unet --output-dir "$dest" --ms2-root "$IRIS_MS2_ROOT" \
       --train-manifest "$man" --val-manifest "$man" --eval-checkpoint "$ckpt" \
-      --val-caption-mode correct --align-mode ssi_log --num-inference-steps 1 \
+      --val-caption-mode "$prompt" --align-mode ssi_log --num-inference-steps 1 \
       --condition-latent mode --val-stride 1 --save-raw-pred --local-files-only \
       || echo "!! ours $k $m 失败"
   done
@@ -75,6 +78,8 @@ python tools/score_on_pseudo_gt.py --ms2-root "$IRIS_MS2_ROOT" --manifest-dir "$
   --anythermal-root "$S/anythermal" \
   --model "ours_img=$OUT/ours_img_{m}/raw_predictions:ssi_log" \
   --model "ours_cap=$OUT/ours_cap_{m}/raw_predictions:ssi_log" \
+  --model "ours_img_nocap=$OUT/ours_img_nocap_{m}/raw_predictions:ssi_log" \
+  --model "ours_nocap=$OUT/ours_nocap_{m}/raw_predictions:ssi_log" \
   --model "newcrf=$OUT/newcrf_{env}/raw_predictions/newcrf:ssi" \
   --out "$OUT/score" | tee "$OUT/score_summary.txt"
 
