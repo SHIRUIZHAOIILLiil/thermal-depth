@@ -70,3 +70,12 @@ Template A = `A complex 3D scene with varying objects at different distances.`�
 `docs/LOSS_SHAPE_SWEEP_20261010.md`，提交 ed8af81。冒烟 8213972；对照 val 8214239（已完成）；
 训练 l0025 / l0100 / l0200 = 8214240 / 8214242 / 8214244，val 8214241 / 8214243 / 8214245。
 单个 checkpoint 4.9 GB。
+
+阶段 1（λ_image）全量 val（c26a5859，stride 1，prompt correct，step 16000，ssi_log）：
+
+| λ_image | 臂 | AbsRel | SqRel | RMSE | RMSE_log | a1 | a2 | a3 | 选择器判定 |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.025 | `sd2_cap_pct_logtn_img_l0025_s43` | 0.08118 | 0.29602 | 2.9954 | 0.11220 | 0.93998 | 0.99264 | 0.99908 | reject: AbsRel, a1 |
+| 0.05 | `sd2_cap_pct_logtn_img_s43`（对照） | 0.07936 | 0.28787 | 2.9457 | 0.11080 | 0.94227 | 0.99255 | 0.99878 | control |
+| 0.1 | `sd2_cap_pct_logtn_img_l0100_s43` | 0.07967 | 0.28425 | 2.9360 | 0.11055 | 0.94140 | 0.99315 | 0.99911 | eligible → **selected** |
+| 0.2 | `sd2_cap_pct_logtn_img_l0200_s43` | 0.08398 | 0.30224 | 2.9880 | 0.11476 | 0.93580 | 0.99234 | 0.99897 | reject: AbsRel, a1 |
