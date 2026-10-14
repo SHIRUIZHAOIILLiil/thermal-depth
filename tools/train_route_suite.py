@@ -459,6 +459,33 @@ def parse_args() -> argparse.Namespace:
             "restoring an ability the model has."
         ),
     )
+    parser.add_argument(
+        "--ensemble-size",
+        type=int,
+        default=1,
+        help=(
+            "Evaluation-only. Predict each frame from this many independent noise "
+            "draws and reduce them in the raw output space, before the per-frame "
+            "alignment. Member 0 uses the usual seed (seed + manifest index), so "
+            "1 (default) is bit for bit the single-prediction path."
+        ),
+    )
+    parser.add_argument(
+        "--ensemble-flip",
+        action="store_true",
+        help=(
+            "Evaluation-only. Add, for every noise draw, a prediction of the "
+            "horizontally flipped input, flipped back. The caption is not edited, "
+            "so a caption naming left/right disagrees with the flipped copy -- as "
+            "it did on the training steps the random flip hit."
+        ),
+    )
+    parser.add_argument(
+        "--ensemble-reduce",
+        choices=("mean", "median"),
+        default="mean",
+        help="How ensemble members are combined (raw output space, per pixel).",
+    )
     parser.add_argument("--seed", type=int, default=20260703)
     parser.add_argument("--log-interval", type=int, default=25)
     parser.add_argument("--device", default="cuda")
@@ -709,6 +736,12 @@ def validate_args(args: argparse.Namespace) -> None:
             f"frame's own caption against a wrong one, and mode '{args.caption_mode}' "
             "does not feed the frame its own caption."
         )
+    if args.ensemble_size < 1:
+        raise ValueError(f"--ensemble-size must be at least 1, got {args.ensemble_size}")
+    if (args.ensemble_size != 1 or args.ensemble_flip) and args.eval_checkpoint is None:
+        # Training-time validation picks checkpoints; it has to score them the way
+        # every earlier curve did, with one prediction per frame.
+        raise ValueError("--ensemble-size / --ensemble-flip are evaluation-only (--eval-checkpoint)")
     if args.num_inference_steps != 1 and args.eval_checkpoint is None:
         # Every route was fine-tuned at one fixed timestep (--timestep, 999), the
         # same recipe upstream trains Lotus-G with (lotus/train_iris_g.py:1073).
@@ -1181,11 +1214,12 @@ class RouteModel:
         donor_tensor: torch.Tensor | None = None,
         target_latent: torch.Tensor | None = None,
         return_latent: bool = False,
+        noise_offset: int = 0,
     ):
         condition = self.condition(row, image_tensor, donor_row, donor_tensor)
         noise = seeded_noise(
             (1, *condition.shape[1:]),
-            seed=self.args.seed + int(row["manifest_index"]),
+            seed=self.args.seed + int(row["manifest_index"]) + int(noise_offset),
             device=self.device,
             dtype=torch.float32,
             scale=float(self.lotus.scheduler.init_noise_sigma),
@@ -1487,6 +1521,37 @@ def prediction_to_depth(pred_y: np.ndarray, metric: dict, args) -> tuple[np.ndar
     return 1.0 / np.maximum(q, INVERSE_DEPTH_FLOOR), non_positive, floored
 
 
+# Noise seeds of ensemble member k are offset by k * this. It exceeds any manifest
+# length, so a member's seed never coincides with another frame's member-0 seed.
+ENSEMBLE_SEED_STRIDE = 1_000_003
+
+
+def ensemble_prediction(model, row, image_tensor, prompt, donor_row, donor_tensor, args):
+    """Reduce several predictions of one frame in the raw output space.
+
+    With --ensemble-size 1 and no flip this is exactly one predict_disparity call
+    with the usual seed, so every single-prediction number is reproduced.
+    """
+    size = max(1, int(getattr(args, "ensemble_size", 1)))
+    flip = bool(getattr(args, "ensemble_flip", False))
+    if size == 1 and not flip:
+        return model.predict_disparity(row, image_tensor, prompt, donor_row, donor_tensor)
+    members = []
+    for k in range(size):
+        offset = k * ENSEMBLE_SEED_STRIDE
+        members.append(model.predict_disparity(
+            row, image_tensor, prompt, donor_row, donor_tensor, noise_offset=offset))
+        if flip:
+            flipped = model.predict_disparity(
+                row, image_tensor.flip(-1), prompt, donor_row,
+                None if donor_tensor is None else donor_tensor.flip(-1), noise_offset=offset)
+            members.append(flipped.flip(-1))
+    stack = torch.stack([m.float() for m in members])
+    if getattr(args, "ensemble_reduce", "mean") == "median":
+        return stack.median(dim=0).values
+    return stack.mean(dim=0)
+
+
 @torch.no_grad()
 def run_validation(
     model: RouteModel,
@@ -1514,7 +1579,7 @@ def run_validation(
         if donors is not None:
             donor_row = donors[row["id"]]
             donor_tensor, _ = load_input_tensor(donor_row, model.modality, args)
-        prediction = model.predict_disparity(row, image_tensor, prompt, donor_row, donor_tensor)
+        prediction = ensemble_prediction(model, row, image_tensor, prompt, donor_row, donor_tensor, args)
         if raw_dir is not None:
             # Native resolution, before the resize to GT below: that is what
             # run_ms2_lotus_*_official.py --save-raw-pred writes, and
@@ -1775,6 +1840,9 @@ def run_evaluation(model: RouteModel, val_rows: list[dict], prompts: dict, args,
             "val_caption_text": args.val_caption_text,
             "caption_rotation": rotation,
             "num_inference_steps": args.num_inference_steps,
+            "ensemble_size": args.ensemble_size,
+            "ensemble_flip": args.ensemble_flip,
+            "ensemble_reduce": args.ensemble_reduce,
             "timestep": args.timestep if args.num_inference_steps == 1 else None,
             # Part of the exam, not of the model: a result read without it cannot
             # be placed beside the rest of the table.
