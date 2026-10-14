@@ -79,3 +79,12 @@ Template A = `A complex 3D scene with varying objects at different distances.`�
 | 0.05 | `sd2_cap_pct_logtn_img_s43`（对照） | 0.07936 | 0.28787 | 2.9457 | 0.11080 | 0.94227 | 0.99255 | 0.99878 | control |
 | 0.1 | `sd2_cap_pct_logtn_img_l0100_s43` | 0.07967 | 0.28425 | 2.9360 | 0.11055 | 0.94140 | 0.99315 | 0.99911 | eligible → **selected** |
 | 0.2 | `sd2_cap_pct_logtn_img_l0200_s43` | 0.08398 | 0.30224 | 2.9880 | 0.11476 | 0.93580 | 0.99234 | 0.99897 | reject: AbsRel, a1 |
+
+阶段 2（Huber 尾项，λ_image=0.1，λ_tail=0.01，δ=5 m，不对齐）同口径 val：
+
+| 臂 | AbsRel | SqRel | RMSE | RMSE_log | a1 | a2 | a3 | 选择器判定 |
+|---|---|---|---|---|---|---|---|---|
+| `sd2_cap_pct_logtn_img_l0100_s43`（对照） | 0.07967 | 0.28425 | 2.9360 | 0.11055 | 0.94140 | 0.99315 | 0.99911 | control → **selected** |
+| `sd2_cap_pct_logtn_img_l0100_tailh001_s43` | 0.08282 | 0.29477 | 2.9753 | 0.11347 | 0.93755 | 0.99268 | 0.99910 | reject: AbsRel, a1 |
+
+冒烟 8236619；训练 8236759（1-05:48:20，约 4.95 s/步）；val 8236760。按方案，阶段 3（训练时 ssi_log 对齐）因阶段 2 未通过而不做。
