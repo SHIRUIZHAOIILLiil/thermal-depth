@@ -92,6 +92,9 @@ SPLIT_LIST_FILE = {
     "test_day": "test_day_list.txt",
     "test_night": "test_night_list.txt",
     "test_rain": "test_rainy_list.txt",
+    # Not part of the benchmark. Diagnostics that steer method design run on the
+    # validation sequences so the test split stays untouched.
+    "val": "val_list.txt",
 }
 ALIGN_MODES = ("none", "median", "ssi")
 MODELS = ("dorn", "bts", "adabins", "newcrf")
@@ -379,6 +382,11 @@ def parse_args() -> argparse.Namespace:
              "alignment, so it is what the model actually predicts.",
     )
     parser.add_argument(
+        "--save-all-preds", action="store_true",
+        help="Write the raw metric prediction of every evaluated frame (same format as "
+             "--save-pred-ids), for pixel-level diagnostics.",
+    )
+    parser.add_argument(
         "--build-only",
         action="store_true",
         help=(
@@ -425,7 +433,7 @@ def main() -> int:
                     f"--expect-frames said {args.expect_frames}."
                 )
             print(f"[frames] matches --expect-frames: {len(frames)}", flush=True)
-        elif args.sample_step == 10:
+        elif args.sample_step == 10 and args.test_env in PAPER_FRAMES:
             paper = PAPER_FRAMES[args.test_env]
             drift = abs(len(frames) - paper) / paper
             if drift > FRAME_TOLERANCE:
@@ -443,6 +451,7 @@ def main() -> int:
         frames = frames[: args.limit]
         print(f"[frames] SMOKE: limited to {len(frames)}", flush=True)
 
+    save_ids = set(args.save_pred_ids or ())
     summary = {}
     for name in [m.strip() for m in args.models.split(",") if m.strip()]:
         checkpoint = args.ckpt_dir / f"MS2_MD_{CKPT_NAME[name]}_THR_ckpt.ckpt"
@@ -466,11 +475,12 @@ def main() -> int:
             if prediction.shape[-2:] != gt.shape:
                 prediction = F.interpolate(prediction, gt.shape, mode="bilinear", align_corners=False)
             pred = prediction[0, 0].float().cpu().numpy()
-            if args.save_pred_ids and frame["id"] in set(args.save_pred_ids):
+            if args.save_all_preds or frame["id"] in save_ids:
                 pred_dir = args.output_dir / "raw_predictions" / name
                 pred_dir.mkdir(parents=True, exist_ok=True)
                 np.save(pred_dir / f"{frame['id']}.npy", pred.astype(np.float32))
-                print(f"[{name}] saved prediction for {frame['id']}", flush=True)
+                if not args.save_all_preds:
+                    print(f"[{name}] saved prediction for {frame['id']}", flush=True)
             row = {"id": frame["id"], "sequence": frame["sequence"]}
             for mode in ALIGN_MODES:
                 metrics = evaluate_sample(

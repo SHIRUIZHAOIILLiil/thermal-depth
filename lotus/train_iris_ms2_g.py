@@ -43,6 +43,7 @@ prompt stays empty, as in the original.
 
 import argparse
 import copy
+import json
 import logging
 import math
 import os
@@ -633,6 +634,113 @@ def image_depth_tail_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm_bounds
     return loss, pixels, stats
 
 
+def _grad_probe_group(name):
+    """Coarse U-Net block a parameter belongs to (down_blocks.0, mid_block, conv_in, ...)."""
+    parts = name.removeprefix("module.").split(".")
+    if parts[0] in ("down_blocks", "up_blocks") and len(parts) > 1:
+        return ".".join(parts[:2])
+    return parts[0]
+
+
+def probe_gradient_terms(unet_module, terms, scale):
+    """Gradient of each loss term separately, w.r.t. the same trainable U-Net weights.
+
+    Diagnostic for `--grad_probe_batches`: no optimizer step is taken. Each term is
+    back-propagated on its own through the shared graph, its gradient copied, and the
+    pairwise cosines and norms reported globally and per U-Net block. A negative
+    cosine means one term pushes the shared weights against the other.
+
+    `scale` is the GradScaler's current scale: under fp16 autocast an unscaled
+    backward can underflow, so each term is scaled before backward and the copy is
+    unscaled again. Cosines do not depend on it; norms are divided back.
+    """
+    named = [(n, p) for n, p in unet_module.named_parameters() if p.requires_grad]
+    keys = [k for k, t in terms.items() if torch.is_tensor(t) and t.requires_grad]
+    grads = {}
+    for index, key in enumerate(keys):
+        for _, p in named:
+            p.grad = None
+        (terms[key] * scale).backward(retain_graph=index < len(keys) - 1)
+        grads[key] = [
+            None if p.grad is None else (p.grad.detach().float() / scale).reshape(-1).clone()
+            for _, p in named
+        ]
+    for _, p in named:
+        p.grad = None
+    finite = all(g is None or bool(torch.isfinite(g).all()) for k in keys for g in grads[k])
+
+    groups = {}
+    for index, (name, _) in enumerate(named):
+        groups.setdefault(_grad_probe_group(name), []).append(index)
+
+    def stats(indices):
+        sq = {k: sum(float(grads[k][i].pow(2).sum()) for i in indices if grads[k][i] is not None)
+              for k in keys}
+        out = {"norm": {k: sq[k] ** 0.5 for k in keys}, "cos": {}, "dot": {}}
+        for a_i, a in enumerate(keys):
+            for b in keys[a_i + 1:]:
+                dot = sum(float(torch.dot(grads[a][i], grads[b][i])) for i in indices
+                          if grads[a][i] is not None and grads[b][i] is not None)
+                den = (sq[a] * sq[b]) ** 0.5
+                out["dot"][f"{a}|{b}"] = dot
+                out["cos"][f"{a}|{b}"] = dot / den if den > 0 else float("nan")
+        return out
+
+    return {
+        "finite": finite,
+        "terms": {k: float(terms[k].detach()) for k in keys},
+        "global": stats(range(len(named))),
+        "groups": {g: stats(idx) for g, idx in groups.items()},
+    }
+
+
+def write_grad_probe_summary(records, args):
+    """Mean / spread of the probed cosines and norms, globally and per block."""
+    def collect(path):
+        values = {}
+        for record in records:
+            node = record
+            for key in path:
+                node = node[key]
+            for name, value in node.items():
+                values.setdefault(name, []).append(value)
+        return values
+
+    def describe(values):
+        array = np.asarray(values, dtype=np.float64)
+        return {"mean": float(np.nanmean(array)), "median": float(np.nanmedian(array)),
+                "min": float(np.nanmin(array)), "max": float(np.nanmax(array)),
+                "negative_batches": int(np.sum(array < 0)), "batches": int(array.size)}
+
+    summary = {
+        "diagnostic_only": True,
+        "checkpoint": args.resume_from_checkpoint,
+        "batches": len(records),
+        "all_finite": all(r["finite"] for r in records),
+        "weights": {"lambda_dense": args.lambda_dense, "lambda_recon": args.lambda_recon,
+                    "lambda_image": args.lambda_image, "lambda_tail": args.lambda_tail,
+                    "lambda_metric": args.lambda_metric},
+        "terms": {k: describe(v) for k, v in collect(["terms"]).items()},
+        "global_cos": {k: describe(v) for k, v in collect(["global", "cos"]).items()},
+        "global_norm": {k: describe(v) for k, v in collect(["global", "norm"]).items()},
+        "group_cos": {
+            group: {k: describe(v) for k, v in collect(["groups", group, "cos"]).items()}
+            for group in records[0]["groups"]
+        },
+    }
+    path = os.path.join(args.output_dir, "grad_probe_summary.json")
+    with open(path, "w") as handle:
+        json.dump(summary, handle, indent=2)
+    print(f"[grad_probe] summary over {len(records)} batches -> {path}")
+    for pair, stats in summary["global_cos"].items():
+        print(f"[grad_probe] cos({pair}): mean {stats['mean']:+.3f}  median {stats['median']:+.3f}  "
+              f"range [{stats['min']:+.3f}, {stats['max']:+.3f}]  negative in "
+              f"{stats['negative_batches']}/{stats['batches']} batches")
+    for term, stats in summary["global_norm"].items():
+        print(f"[grad_probe] |g_{term}| (weighted): median {stats['median']:.3e}")
+    return summary
+
+
 def metric_inverse_depth_loss(metric_vae, x0_latent, gt_depth, gt_valid, norm):
     """Masked L1 between predicted and measured inverse depth, in 1/m.
 
@@ -1169,6 +1277,19 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--grad_probe_batches",
+        type=int,
+        default=0,
+        help=(
+            "Diagnostic. If > 0, resume from --resume_from_checkpoint (an absolute "
+            "checkpoint directory), and for this many training batches back-propagate "
+            "each loss term separately and record the cosine and norm of their "
+            "gradients on the U-Net weights; no optimizer step is taken and no "
+            "checkpoint is written. Results go to <output_dir>/grad_probe.jsonl and "
+            "grad_probe_summary.json."
+        ),
+    )
+    parser.add_argument(
         "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
     )
     parser.add_argument("--noise_offset", type=float, default=0, help="The scale of noise offset.")
@@ -1245,6 +1366,17 @@ def parse_args():
             "term undoes the per-frame normalisation from the two bounds the "
             "dataset records, and image_depth_l1_loss has an inverse only for "
             "trunc_disparity, truncnorm, instnorm and log_truncnorm."
+        )
+    if args.grad_probe_batches < 0:
+        raise ValueError(f"--grad_probe_batches must be non-negative, got {args.grad_probe_batches}")
+    if args.grad_probe_batches > 0 and not (
+            args.resume_from_checkpoint
+            and os.path.isabs(args.resume_from_checkpoint)
+            and os.path.isdir(args.resume_from_checkpoint)):
+        raise ValueError(
+            "--grad_probe_batches needs --resume_from_checkpoint set to an existing absolute "
+            f"checkpoint directory, got {args.resume_from_checkpoint!r}: probing a fresh "
+            "initialisation would say nothing about the trained model."
         )
     if args.lambda_image < 0:
         raise ValueError(f"--lambda_image must be non-negative, got {args.lambda_image}")
@@ -1778,6 +1910,7 @@ def main():
 
     global_step = 0
     first_epoch = 0
+    probe_records = []
 
     # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
@@ -1798,7 +1931,12 @@ def main():
             initial_global_step = 0
         else:
             accelerator.print(f"Resuming from checkpoint {path}")
-            accelerator.load_state(os.path.join(args.output_dir, path))
+            # An absolute directory is loaded where it is, so a diagnostic can read
+            # another run's checkpoint without writing into that run's directory.
+            if os.path.isabs(args.resume_from_checkpoint) and os.path.isdir(args.resume_from_checkpoint):
+                accelerator.load_state(args.resume_from_checkpoint)
+            else:
+                accelerator.load_state(os.path.join(args.output_dir, path))
             global_step = int(path.split("-")[1])
 
             initial_global_step = global_step
@@ -2102,6 +2240,37 @@ def main():
                         metric_norm,
                     )
                     loss = loss + args.lambda_metric * metric_loss
+
+                if args.grad_probe_batches > 0:
+                    scaler = getattr(accelerator, "scaler", None)
+                    probe = probe_gradient_terms(
+                        accelerator.unwrap_model(unet),
+                        {
+                            "latent_depth": args.lambda_dense * anno_loss,
+                            "recon": args.lambda_recon * rgb_loss,
+                            "image_l1": args.lambda_image * image_loss,
+                            "tail": args.lambda_tail * tail_loss,
+                            "metric": args.lambda_metric * metric_loss,
+                        },
+                        float(scaler.get_scale()) if scaler is not None else 1.0,
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    probe["batch"] = len(probe_records)
+                    probe_records.append(probe)
+                    with open(os.path.join(args.output_dir, "grad_probe.jsonl"), "a") as handle:
+                        handle.write(json.dumps(probe) + "\n")
+                    g = probe["global"]["cos"]
+                    accelerator.print(
+                        f"[grad_probe] batch {probe['batch'] + 1}/{args.grad_probe_batches} "
+                        f"finite={probe['finite']} "
+                        + "  ".join(f"cos({k})={v:+.3f}" for k, v in g.items())
+                        + "  " + "  ".join(f"|g_{k}|={v:.3e}" for k, v in probe["global"]["norm"].items())
+                    )
+                    if len(probe_records) >= args.grad_probe_batches:
+                        write_grad_probe_summary(probe_records, args)
+                        accelerator.end_training()
+                        return
+                    continue
 
                 # Gather loss
                 avg_anno_loss = accelerator.gather(anno_loss.repeat(args.train_batch_size)).mean()
