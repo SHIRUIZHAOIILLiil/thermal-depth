@@ -108,7 +108,7 @@ B. 训练目标（2000 帧）：当前设置（上界为每帧 log 深度的 98%
 ## 8. 已提交的修改（本阶段）
 
 - `--truncnorm_max`：单独设置远处上界；不传时与原行为一致（单测 `tests/test_truncnorm_max.py`）。提交 27ec7152e。
-- 新臂 `sd2_cap_pct_logtn_img_l0100_tmax1_s43`（λ=0.1 配方 + `--truncnorm_max 1.0`）的提交脚本 `slurm/submit_arm.sh`：冒烟 → 训练 → step 16000 全量 val，依赖串联。截至本文写成尚未投递。
+- 新臂 `sd2_cap_pct_logtn_img_l0100_tmax1_s43`（λ=0.1 配方 + `--truncnorm_max 1.0`）的提交脚本 `slurm/submit_arm.sh`：冒烟 → 训练 → step 16000 全量 val，依赖串联。已投递：冒烟 8265344（00:02:06，日志 `Normalisation = log_truncnorm (truncnorm_min 0.02, truncnorm_max 1.0)`）→ 训练 8265345 → val 8265346。
 
 ## 9. 未确立的事项
 
