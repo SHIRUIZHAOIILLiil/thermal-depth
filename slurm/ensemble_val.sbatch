@@ -33,7 +33,12 @@ VAL="$IRIS_MANIFEST_DIR/ms2_val_official3_thermalcap_20260821.jsonl"
 TRAIN="$IRIS_MANIFEST_DIR/ms2_train_official8_thermalcap_v3_1_untrimmed_20260821.jsonl"
 run=$(basename "$(dirname "$(dirname "$CKPT")")"); step=$(basename "$CKPT" _weights.pt)
 fp=$(sha256sum "$VAL" | cut -c1-8)
-tag="${run}_val_${fp}_stride${VAL_STRIDE}_correct_s${step#step}_ens${ENS}$([[ "$FLIP" == 1 ]] && echo f)$([[ "$REDUCE" == median ]] && echo _median)"
+# Plain if, not `$([[ ... ]] && echo x)`: an assignment returns the status of its
+# last command substitution, so a false test there exits this script under set -e
+# with nothing printed (2026-10-14: all six configs died that way in one second).
+flip_tag=""; [[ "$FLIP" == 1 ]] && flip_tag=f || true
+reduce_tag=""; [[ "$REDUCE" == median ]] && reduce_tag=_median || true
+tag="${run}_val_${fp}_stride${VAL_STRIDE}_correct_s${step#step}_ens${ENS}${flip_tag}${reduce_tag}"
 OUT="$IRIS_RUNS/eval/$tag"
 cd "$IRIS_REPO"
 git log --oneline -1
