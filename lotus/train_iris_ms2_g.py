@@ -1144,6 +1144,16 @@ def parse_args():
         default=0.02,
     )
     parser.add_argument(
+        "--truncnorm_max",
+        type=float,
+        default=None,
+        help=(
+            "Upper quantile of the per-frame target normalisation. Default: "
+            "1 - truncnorm_min, the original symmetric pair. 1.0 uses the frame "
+            "maximum and stops the far field being clipped into one value."
+        ),
+    )
+    parser.add_argument(
         "--timestep",
         type=int,
         default=1
@@ -1765,6 +1775,7 @@ def main():
         transform=transform_ms2,
         norm_type=args.norm_type,
         truncnorm_min=args.truncnorm_min,
+        truncnorm_max=args.truncnorm_max,
         use_captions=not args.no_captions,
         metric_norm=metric_norm,
         sky_mask_dir=args.sky_mask_dir,
@@ -1908,7 +1919,7 @@ def main():
     _captioned = sum(1 for e in _probe if e["text_description"].strip())
     logger.info(f"  Num examples MS2 = {len(train_dataset_ms2)}")
     logger.info(f"  Completed depth from = {args.pseudo_gt_dir}")
-    logger.info(f"  Normalisation = {args.norm_type} (truncnorm_min {args.truncnorm_min})")
+    logger.info(f"  Normalisation = {args.norm_type} (truncnorm_min {args.truncnorm_min}, truncnorm_max {args.truncnorm_max if args.truncnorm_max is not None else 1 - args.truncnorm_min})")
     logger.info(f"  {train_dataset_ms2.sky_summary()}")
     logger.info(f"  {len(_probe)}-frame probe: input {tuple(_probe[0]['pixel_values'].shape)}, "
                 f"target covers {min(_covered) * 100:.1f}-{max(_covered) * 100:.1f}% of pixels, "

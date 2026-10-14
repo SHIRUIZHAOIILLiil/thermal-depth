@@ -79,6 +79,7 @@ class MS2ThermalDataset(Dataset):
         transform=None,
         norm_type="trunc_disparity",
         truncnorm_min=0.02,
+        truncnorm_max=None,
         depth_scale=256.0,
         d_min=1e-3,
         d_max=80.0,
@@ -124,7 +125,15 @@ class MS2ThermalDataset(Dataset):
         self.transform = transform
         self.norm_type = norm_type
         self.truncnorm_min = truncnorm_min
-        self.truncnorm_max = 1 - truncnorm_min
+        # None keeps the original symmetric pair (upper = 1 - lower). Setting it
+        # separately moves only the far bound: under log_truncnorm the 98th
+        # percentile cut 58% of the 60-80 m lidar out of the training target
+        # (tools/check_far_truncation.py, 2026-10-15), and the model's far field
+        # then sat at the top of its output range. 1.0 takes the frame maximum,
+        # which the [d_min, d_max] clip already bounds at 80 m.
+        self.truncnorm_max = 1 - truncnorm_min if truncnorm_max is None else float(truncnorm_max)
+        if not (0.5 < self.truncnorm_max <= 1.0) or not (0.0 <= truncnorm_min < 0.5):
+            raise ValueError(f"truncnorm bounds ({truncnorm_min}, {self.truncnorm_max}) out of range")
         self.depth_scale = depth_scale
         self.d_min = d_min
         self.d_max = d_max
