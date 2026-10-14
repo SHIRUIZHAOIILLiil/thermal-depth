@@ -319,7 +319,10 @@ def official_frames(ms2_root: Path, test_env: str, sample_step: int) -> list[dic
             })
         print(f"[frames] {sequence}: {len(frames)} candidates", flush=True)
     # The stride is applied once, to the concatenation, and drops the last element.
-    selected = candidates[0:-1:sample_step]
+    # The benchmark's crawl drops the last candidate, and test reproduces that. Val is
+    # not a benchmark split: there the frame set has to equal our val manifest, which
+    # keeps every frame (2026-10-14: the dropped last frame stopped the diagnostics).
+    selected = candidates[0:-1:sample_step] if test_env != "val" else candidates[::sample_step]
     print(
         f"[frames] {len(candidates)} candidates -> {len(selected)} at stride {sample_step}",
         flush=True,

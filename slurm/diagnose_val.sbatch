@@ -38,13 +38,23 @@ OUT="$IRIS_RUNS/analysis/diag_val/$TAG"
 VAL="$IRIS_MANIFEST_DIR/ms2_val_official3_thermalcap_20260821.jsonl"
 TRAIN="$IRIS_MANIFEST_DIR/ms2_train_official8_thermalcap_v3_1_untrimmed_20260821.jsonl"
 mkdir -p "$OUT"
-OUT=$(mktemp -d "$OUT/attempt_${SLURM_JOB_ID:-local}_XXXXXX")
+if [[ -n "${REUSE_ATTEMPT:-}" ]]; then
+  # Reuse step 1 of an earlier attempt whose self-check line was read and matched.
+  # NeWCRF and the analysis are always redone.
+  [[ -d "$REUSE_ATTEMPT/ours/raw_predictions" ]] && ls "$REUSE_ATTEMPT"/ours/eval_*log_space.json >/dev/null \
+    || { echo "!! REUSE_ATTEMPT=$REUSE_ATTEMPT 里没有完整的第 1 步结果"; exit 1; }
+  OUT="$REUSE_ATTEMPT"
+  rm -rf "$OUT/newcrf" "$OUT/analysis" "$OUT/analysis_stdout.txt"
+else
+  OUT=$(mktemp -d "$OUT/attempt_${SLURM_JOB_ID:-local}_XXXXXX")
+fi
 cd "$IRIS_REPO"
 git log --oneline -1
 [[ -f "$IRIS_MS2_ROOT/val_list.txt" ]] || { echo "!! $IRIS_MS2_ROOT/val_list.txt 不存在，NeWCRF 无法按序列取 val 帧"; exit 1; }
 echo "ckpt = $CKPT"; echo "out  = $OUT"
 
 echo "=== 1. 我们的模型：val 全帧，存逐像素预测 ==="
+[[ -n "${REUSE_ATTEMPT:-}" ]] && echo "[复用] $OUT/ours（上次自检已通过）" || \
   IRIS_THERMAL_STRETCH=percentile IRIS_TEXT_PADDING=legacy python tools/train_route_suite.py \
     --route b_thermal_unet --output-dir "$OUT/ours" --ms2-root "$IRIS_MS2_ROOT" \
     --train-manifest "$TRAIN" --val-manifest "$VAL" --eval-checkpoint "$CKPT" \
