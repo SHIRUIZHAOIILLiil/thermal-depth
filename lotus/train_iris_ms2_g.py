@@ -44,6 +44,7 @@ prompt stays empty, as in the original.
 import argparse
 import copy
 import json
+import hashlib
 import logging
 import math
 import os
@@ -684,6 +685,15 @@ def probe_gradient_terms(unet_module, terms, scale):
                 den = (sq[a] * sq[b]) ** 0.5
                 out["dot"][f"{a}|{b}"] = dot
                 out["cos"][f"{a}|{b}"] = dot / den if den > 0 else float("nan")
+        if 'latent_depth' in keys and 'recon' in keys and 'image_l1' in keys:
+            # Sum the actual weighted base gradients, not their cosines.
+            base_sq = max(0.0, sq['latent_depth'] + sq['recon']
+                          + 2 * out['dot']['latent_depth|recon'])
+            dot = out['dot']['latent_depth|image_l1'] + out['dot']['recon|image_l1']
+            den = (base_sq * sq['image_l1']) ** 0.5
+            out['norm']['base'] = base_sq ** 0.5
+            out['dot']['base|image_l1'] = dot
+            out['cos']['base|image_l1'] = dot / den if den > 0 else float('nan')
         return out
 
     return {
@@ -712,9 +722,24 @@ def write_grad_probe_summary(records, args):
                 "min": float(np.nanmin(array)), "max": float(np.nanmax(array)),
                 "negative_batches": int(np.sum(array < 0)), "batches": int(array.size)}
 
+    with open(args.ms2_manifest, 'rb') as handle:
+        manifest_sha256 = hashlib.sha256(handle.read()).hexdigest()
+    checkpoint_hashes = {}
+    for directory, _, filenames in os.walk(os.path.join(args.resume_from_checkpoint, 'unet')):
+        for filename in sorted(filenames):
+            path = os.path.join(directory, filename)
+            digest = hashlib.sha256()
+            with open(path, 'rb') as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            checkpoint_hashes[os.path.relpath(path, args.resume_from_checkpoint)] = digest.hexdigest()
     summary = {
         "diagnostic_only": True,
         "checkpoint": args.resume_from_checkpoint,
+        "checkpoint_unet_sha256": checkpoint_hashes,
+        "probe_seed": args.grad_probe_seed,
+        "manifest_sha256": manifest_sha256,
+        "config": vars(args),
         "batches": len(records),
         "all_finite": all(r["finite"] for r in records),
         "weights": {"lambda_dense": args.lambda_dense, "lambda_recon": args.lambda_recon,
@@ -727,6 +752,10 @@ def write_grad_probe_summary(records, args):
             group: {k: describe(v) for k, v in collect(["groups", group, "cos"]).items()}
             for group in records[0]["groups"]
         },
+        "group_norm": {
+            group: {k: describe(v) for k, v in collect(["groups", group, "norm"]).items()}
+            for group in records[0]["groups"]
+        },
     }
     path = os.path.join(args.output_dir, "grad_probe_summary.json")
     with open(path, "w") as handle:
@@ -737,7 +766,7 @@ def write_grad_probe_summary(records, args):
               f"range [{stats['min']:+.3f}, {stats['max']:+.3f}]  negative in "
               f"{stats['negative_batches']}/{stats['batches']} batches")
     for term, stats in summary["global_norm"].items():
-        print(f"[grad_probe] |g_{term}| (weighted): median {stats['median']:.3e}")
+        print(f"[grad_probe] |g_{term}| ({'raw' if term.endswith('_raw') else 'weighted'}): median {stats['median']:.3e}")
     return summary
 
 
@@ -1276,6 +1305,7 @@ def parse_args():
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
         ),
     )
+    parser.add_argument('--grad_probe_seed', type=int, default=20261014)
     parser.add_argument(
         "--grad_probe_batches",
         type=int,
@@ -1740,9 +1770,19 @@ def main():
         sky_mask_dir=args.sky_mask_dir,
         pure_pseudo_target=args.pure_pseudo_target,
     )
+    probe_indices = None
+    loader_dataset = train_dataset_ms2
+    if args.grad_probe_batches > 0:
+        if accelerator.num_processes != 1 or args.dataloader_num_workers != 0:
+            raise ValueError('Gradient probe requires one process and num_workers=0')
+        count = args.grad_probe_batches * args.train_batch_size
+        if count > len(train_dataset_ms2):
+            raise ValueError('Probe requests more samples than the training manifest')
+        probe_indices = np.random.default_rng(args.grad_probe_seed).permutation(len(train_dataset_ms2))[:count].tolist()
+        loader_dataset = torch.utils.data.Subset(train_dataset_ms2, probe_indices)
     train_dataloader_ms2 = torch.utils.data.DataLoader(
-        train_dataset_ms2,
-        shuffle=True,
+        loader_dataset,
+        shuffle=args.grad_probe_batches == 0,
         collate_fn=collate_fn_ms2,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
@@ -1945,6 +1985,15 @@ def main():
     else:
         initial_global_step = 0
 
+    if args.grad_probe_batches > 0:
+        # Checkpoint RNG/epoch/scaler states must not change the diagnostic inputs.
+        set_seed(args.grad_probe_seed)
+        first_epoch = 0
+        args.num_train_epochs = 1
+        for filename in ('grad_probe.jsonl', 'grad_probe_summary.json'):
+            if os.path.exists(os.path.join(args.output_dir, filename)):
+                raise ValueError(f'Probe output already exists: {filename}; choose a new output directory')
+
     progress_bar = tqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
@@ -1978,6 +2027,8 @@ def main():
         log_metric_loss = 0.0
 
         for _ in range(len(train_dataloader_ms2)):
+            if args.grad_probe_batches > 0:
+                set_seed(args.grad_probe_seed + len(probe_records))
             batch = next(iter_ms2)
 
             with accelerator.accumulate(unet):
@@ -2242,7 +2293,6 @@ def main():
                     loss = loss + args.lambda_metric * metric_loss
 
                 if args.grad_probe_batches > 0:
-                    scaler = getattr(accelerator, "scaler", None)
                     probe = probe_gradient_terms(
                         accelerator.unwrap_model(unet),
                         {
@@ -2252,10 +2302,26 @@ def main():
                             "tail": args.lambda_tail * tail_loss,
                             "metric": args.lambda_metric * metric_loss,
                         },
-                        float(scaler.get_scale()) if scaler is not None else 1.0,
+                        # Fixed across checkpoints, independent of restored GradScaler.
+                        1024.0,
                     )
                     optimizer.zero_grad(set_to_none=True)
+                    if not probe['finite']:
+                        raise RuntimeError('Non-finite probe gradients; do not interpret this batch')
                     probe["batch"] = len(probe_records)
+                    probe['seed'] = args.grad_probe_seed + len(probe_records)
+                    start = len(probe_records) * args.train_batch_size
+                    probe['sample_ids'] = [train_dataset_ms2.rows[i]['id']
+                                           for i in probe_indices[start:start + args.train_batch_size]]
+                    probe['image_paths'] = [str(p) for p in batch['image_pathes']]
+                    probe['input_sha256'] = {
+                        key: hashlib.sha256(batch[key].detach().cpu().contiguous().numpy().tobytes()).hexdigest()
+                        for key in ('pixel_values', 'depth_values', 'gt_depth_values', 'gt_valid_values')
+                    }
+                    # Norms above are weighted; expose the raw image gradient too.
+                    if args.lambda_image > 0 and 'image_l1' in probe['global']['norm']:
+                        for stats in [probe['global'], *probe['groups'].values()]:
+                            stats['norm']['image_l1_raw'] = stats['norm']['image_l1'] / args.lambda_image
                     probe_records.append(probe)
                     with open(os.path.join(args.output_dir, "grad_probe.jsonl"), "a") as handle:
                         handle.write(json.dumps(probe) + "\n")
@@ -2439,6 +2505,9 @@ def main():
 
             if global_step >= args.max_train_steps:
                 break
+
+    if args.grad_probe_batches > 0:
+        raise RuntimeError('Probe ended before all requested batches; no training outputs saved')
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()

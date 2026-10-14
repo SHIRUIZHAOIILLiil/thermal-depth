@@ -21,10 +21,9 @@ Three questions, all on the same aligned pixels:
    into per-bin parts that add up to the headline number; the same holds for the mean
    per-frame MSE (not for RMSE itself, which takes a square root per frame). The
    "gap share" columns say which bins the first model's deficit comes from.
-2. Boundaries. A valid GT pixel is an *edge* when the valid GT inside its window spans
-   more than --edge-ratio in depth, *interior* when it spans less than --flat-ratio,
-   and *sparse* when it has fewer than --min-neighbors valid neighbours (LiDAR cannot
-   tell us there whether it is an edge). Same exact decomposition.
+2. Boundaries. Detect discontinuities only between adjacent valid GT pixels.
+   The window defines the neighbourhood of these edges, not a max/min depth span.
+   Interior means supported non-boundary, not a semantic object interior.
 3. Bad frames. Paired per-frame differences, how much of the total gap the worst
    frames carry, and the gap per sequence.
 
@@ -47,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ms2_eval.io import load_manifest, load_ms2_gt  # noqa: E402
+from ms2_eval.io import load_manifest, load_ms2_gt, sha256_file  # noqa: E402
 from ms2_eval.official_protocol import (  # noqa: E402
     collapse_channels,
     evaluate_sample,
@@ -87,23 +86,69 @@ def boundary_regions(gt: np.ndarray, valid: np.ndarray, window: int, edge_ratio:
                      flat_ratio: float, min_neighbors: int) -> dict[str, np.ndarray]:
     """Edge / interior / mid / sparse labels for valid pixels, from valid GT only."""
     half = window // 2
-    log_gt = np.where(valid, np.log(np.maximum(gt, 1e-6)), np.nan)
-    padded = np.pad(log_gt, half, constant_values=np.nan)
-    view = np.lib.stride_tricks.sliding_window_view(padded, (window, window))
-    present = np.isfinite(view)
-    neighbours = present.sum(axis=(2, 3)) - 1
-    hi = np.where(present, view, -np.inf).max(axis=(2, 3))
-    lo = np.where(present, view, np.inf).min(axis=(2, 3))
-    span = hi - lo
-    supported = valid & (neighbours >= min_neighbors)
-    edge = supported & (span > math.log(edge_ratio))
-    interior = supported & (span < math.log(flat_ratio))
+    if window < 1 or window % 2 != 1 or not 1 < flat_ratio < edge_ratio:
+        raise ValueError("need odd positive window and 1 < flat_ratio < edge_ratio")
+    if not 0 <= min_neighbors < window * window:
+        raise ValueError("min_neighbors must fit inside window")
+    log_gt = np.log(np.maximum(gt, 1e-6))
+    strength = np.zeros(gt.shape, dtype=np.float64)
+    connected = np.zeros(gt.shape, dtype=bool)
+    for a, b in ((np.s_[:-1, :], np.s_[1:, :]), (np.s_[:, :-1], np.s_[:, 1:])):
+        pair = valid[a] & valid[b]
+        jump = np.where(pair, np.abs(log_gt[a] - log_gt[b]), 0)
+        strength[a] = np.maximum(strength[a], jump)
+        strength[b] = np.maximum(strength[b], jump)
+        connected[a] |= pair
+        connected[b] |= pair
+    def windows(array):
+        return np.lib.stride_tricks.sliding_window_view(
+            np.pad(array, half, constant_values=0), (window, window))
+    neighbours = windows(valid).sum(axis=(2, 3)) - 1
+    supported = valid & connected & (neighbours >= min_neighbors)
+    local_jump = windows(strength).max(axis=(2, 3))
+    edge = supported & (local_jump > math.log(edge_ratio))
+    interior = supported & (local_jump < math.log(flat_ratio))
     return {
         "edge": edge,
         "interior": interior,
         "between": supported & ~edge & ~interior,
         "sparse": valid & ~supported,
     }
+
+
+def require_predictions(samples, models):
+    """Never silently change the frozen evaluation population to an intersection."""
+    ids = [s.sample_id for s in samples]
+    if len(set(ids)) != len(ids):
+        raise ValueError("duplicate manifest sample IDs")
+    for name, directory, _ in models:
+        missing = [sid for sid in ids if not (directory / f"{sid}.npy").is_file()]
+        if missing:
+            raise ValueError(f"{name}: missing {len(missing)}/{len(ids)} predictions: {missing[:10]}")
+
+
+def tail_sequences(rows, names):
+    """Own-error and paired-excess tails; deterministic ID tie-breaks."""
+    totals = defaultdict(int)
+    for row in rows:
+        totals[(row['sequence'], row['condition'])] += 1
+    result = []
+    for metric in ('abs_rel', 'rmse', 'a1'):
+        sign = -1 if metric == 'a1' else 1
+        scores = {f'{n}_own': [sign * r[f'{n}_{metric}'] for r in rows] for n in names}
+        scores['paired_excess'] = [sign * (r[f'{names[0]}_{metric}'] - r[f'{names[1]}_{metric}']) for r in rows]
+        for kind, values in scores.items():
+            order = sorted(range(len(rows)), key=lambda i: (-values[i], rows[i]['id']))
+            for pct in (1, 5, 10, 25):
+                selected = order[:max(1, math.ceil(len(rows) * pct / 100))]
+                for (seq, condition), count in sorted(totals.items()):
+                    ids = [rows[i]['id'] for i in selected
+                           if (rows[i]['sequence'], rows[i]['condition']) == (seq, condition)]
+                    result.append(dict(metric=metric, tail=kind, top_pct=pct,
+                                       sequence=seq, condition=condition, frames=count,
+                                       tail_frames=len(ids), sequence_rate=len(ids)/count,
+                                       tail_share=len(ids)/len(selected), ids=ids))
+    return result
 
 
 def add(acc: dict, key: str, weight: float, absrel: np.ndarray, sq: np.ndarray, d1: np.ndarray) -> None:
@@ -165,6 +210,7 @@ def main() -> int:
     ap.add_argument("--model", action="append", required=True,
                     help="name=<raw prediction dir>:<align>; exactly two, the one being diagnosed first")
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument('--checkpoint', action='append', default=[], help='model=checkpoint file for SHA256 provenance')
     ap.add_argument("--depth-scale", type=float, default=256.0)
     ap.add_argument("--min-depth", type=float, default=1e-3)
     ap.add_argument("--max-depth", type=float, default=80.0)
@@ -186,13 +232,27 @@ def main() -> int:
     if len(models) != 2:
         raise SystemExit("give exactly two --model entries")
     names = [m[0] for m in models]
+    if len(set(names)) != 2:
+        raise ValueError('Model names must be distinct')
+    checkpoints = {}
+    for item in args.checkpoint:
+        name, path = item.split('=', 1)
+        if name not in names:
+            raise ValueError(f'Unknown checkpoint model {name}')
+        checkpoints[name] = dict(path=path, sha256=sha256_file(path))
     edges = [float(x) for x in args.bins.split(",")]
+    if (len(edges) < 2 or not np.isfinite(edges).all() or np.any(np.diff(edges) <= 0)
+            or edges[0] > args.min_depth or edges[-1] < args.max_depth):
+        raise ValueError('Bins must be increasing and cover the evaluation depth range')
+    if args.limit < 0:
+        raise ValueError('limit must be nonnegative')
     bin_keys = [f"{edges[i]:g}-{edges[i + 1]:g}m" for i in range(len(edges) - 1)]
     region_keys = ["edge", "between", "interior", "sparse"]
 
     samples, info = load_manifest(args.manifest, args.data_root, allow_legacy_depth_path=True)
     if args.limit:
         samples = samples[: args.limit]
+    require_predictions(samples, models)
     zero = lambda: {s: 0.0 for s in STATS}  # noqa: E731
     by_bin = {n: defaultdict(zero) for n in names}
     by_region = {n: defaultdict(zero) for n in names}
@@ -202,9 +262,6 @@ def main() -> int:
 
     for index, sample in enumerate(samples):
         paths = [d / f"{sample.sample_id}.npy" for _, d, _ in models]
-        if not all(p.is_file() for p in paths):
-            missing += 1
-            continue
         _, gt = load_ms2_gt(sample.thermal_gt_path, args.depth_scale)
         valid = official_valid_mask(gt, args.min_depth, args.max_depth)
         if not valid.any():
@@ -224,8 +281,11 @@ def main() -> int:
             absrel = np.abs(diff) / g
             sq = diff * diff
             d1 = (np.maximum(g / p, p / g) < 1.25).astype(np.float64)
-            official = evaluate_sample(pred, gt, align=align, min_depth=args.min_depth,
-                                       max_depth=args.max_depth)["abs_rel"]
+            official_row = evaluate_sample(pred, gt, align=align, min_depth=args.min_depth,
+                                           max_depth=args.max_depth)
+            for key in ('alignment_scale', 'alignment_shift', 'clamped_below', 'clamped_above'):
+                row[f'{name}_{key}'] = official_row[key]
+            official = official_row['abs_rel']
             mismatch = abs(float(absrel.mean()) - official)
             worst_check = max(worst_check, mismatch)
             if mismatch > 1e-9:
@@ -267,7 +327,7 @@ def main() -> int:
         order = np.sort(diff)[::-1]
         tail = {}
         for pct in (1, 5, 10, 25):
-            k = max(1, int(round(frames * pct / 100)))
+            k = max(1, math.ceil(frames * pct / 100))
             tail[f"top{pct}pct_share_of_gap"] = float(order[:k].sum() / total) if total else float("nan")
         frame_summary[metric] = {"mean_diff": float(diff.mean()), "median_diff": float(np.median(diff)),
                                  "frames_worse": int((diff > 0).sum()), "frames": frames, **tail}
@@ -291,6 +351,11 @@ def main() -> int:
               f"{s[f'{a}_rmse']:10.3f} {s[f'{b}_rmse']:10.3f}")
 
     args.out.mkdir(parents=True, exist_ok=True)
+    tail_rows = tail_sequences(per_frame, names)
+    with (args.out / 'tail_by_sequence.csv').open('w', encoding='utf-8', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(tail_rows[0]))
+        writer.writeheader()
+        writer.writerows({**r, 'ids': json.dumps(r['ids'])} for r in tail_rows)
     with (args.out / "per_frame.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(per_frame[0]))
         writer.writeheader()
@@ -298,16 +363,22 @@ def main() -> int:
     summary = {
         "diagnostic_only": True,
         "manifest": info,
+        "checkpoints": checkpoints,
+        "analysis_code_sha256": sha256_file(__file__),
+        "command": sys.argv,
         "models": [{"name": n, "prediction_dir": str(d), "align": al} for n, d, al in models],
         "frames": frames, "skipped_missing_prediction": missing,
         "largest_absrel_mismatch_vs_official": worst_check,
         "settings": {k: getattr(args, k) for k in ("bins", "window", "edge_ratio", "flat_ratio",
-                                                   "min_neighbors", "min_depth", "max_depth")},
+                                                   "min_neighbors", "min_depth", "max_depth", "depth_scale", "limit")},
         "headline": {n: {"abs_rel": float(np.mean([r[f"{n}_abs_rel"] for r in per_frame])),
                          "rmse": float(np.mean([r[f"{n}_rmse"] for r in per_frame])),
                          "a1": float(np.mean([r[f"{n}_a1"] for r in per_frame]))} for n in names},
         "by_depth": bin_rows, "by_region": region_rows, "paired_frames": frame_summary,
         "by_sequence": seq_rows,
+        "tail_by_sequence": tail_rows,
+        "boundary_definition": "adjacent-valid 4-connected log-depth jump; window neighbourhood; interior is not semantic",
+        "bin_rmse_definition": "sqrt(frame-weighted pixel MSE within bin), not mean per-frame RMSE",
     }
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"\nheadline (mean over frames): " + "; ".join(

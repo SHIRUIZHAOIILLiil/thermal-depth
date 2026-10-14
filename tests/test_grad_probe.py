@@ -6,6 +6,7 @@ Run:
 from __future__ import annotations
 
 import sys
+import ast
 import unittest
 from pathlib import Path
 
@@ -15,7 +16,13 @@ import torch.utils.checkpoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lotus"))
 
-from train_iris_ms2_g import _grad_probe_group, probe_gradient_terms  # noqa: E402
+# Exercise the actual pure functions without importing the heavyweight trainer
+# (diffusers/accelerate/bitsandbytes are not needed for these CPU unit tests).
+source = Path(__file__).resolve().parents[1] / 'lotus/train_iris_ms2_g.py'
+tree = ast.parse(source.read_text(encoding='utf-8'))
+functions = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+             and n.name in ('_grad_probe_group', 'probe_gradient_terms')]
+exec(compile(ast.Module(body=functions, type_ignores=[]), str(source), 'exec'))
 
 
 class Net(nn.Module):
@@ -76,6 +83,16 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual(_grad_probe_group("module.up_blocks.3.resnets.0.conv1.weight"), "up_blocks.3")
         self.assertEqual(_grad_probe_group("mid_block.attentions.0.proj_in.weight"), "mid_block")
         self.assertEqual(_grad_probe_group("conv_in.weight"), "conv_in")
+
+    def test_base_gradient_is_sum_not_mean_of_cosines(self):
+        net = Net(None)
+        x = torch.randn(8, 4)
+        y = net(x)
+        depth, recon, image = y[:, 0].square().mean(), y[:, 1].square().mean(), y.abs().mean()
+        expected = reference(net, x, lambda z: z.square().sum(dim=1).mean(), lambda z: z.abs().mean())
+        result = probe_gradient_terms(net, {'latent_depth': depth, 'recon': recon, 'image_l1': image}, 1024.)
+        self.assertAlmostEqual(result['global']['cos']['base|image_l1'], expected[0], places=5)
+        self.assertAlmostEqual(result['global']['norm']['base'], expected[1], places=5)
 
 
 if __name__ == "__main__":
