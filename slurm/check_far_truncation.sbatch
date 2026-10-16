@@ -24,7 +24,17 @@ export IRIS_MANIFEST_DIR="${IRIS_MANIFEST_DIR:-$F/manifests/sequence_level_inter
 source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 set -euo pipefail
 
-: "${ATTEMPT:?必须指定 ATTEMPT}"
+# ATTEMPT can be resolved at run time instead: DIAG_DIR (diag_val/<tag>) plus the
+# diagnose_val job id DIAG_JOB, whose attempt directory is attempt_<DIAG_JOB>_*.
+# That is what lets this job be submitted with --dependency=afterok:<DIAG_JOB>.
+if [[ -z "${ATTEMPT:-}" && -n "${DIAG_DIR:-}" && -n "${DIAG_JOB:-}" ]]; then
+  matches=( "$DIAG_DIR"/attempt_"${DIAG_JOB}"_* )
+  [[ ${#matches[@]} -eq 1 && -d "${matches[0]}" ]] \
+    || { echo "!! $DIAG_DIR 下找不到唯一的 attempt_${DIAG_JOB}_*：${matches[*]}"; exit 1; }
+  ATTEMPT="${matches[0]}"
+  echo "ATTEMPT = $ATTEMPT（由 DIAG_JOB=$DIAG_JOB 解析）"
+fi
+: "${ATTEMPT:?必须指定 ATTEMPT，或同时给 DIAG_DIR 与 DIAG_JOB}"
 [[ -d "$ATTEMPT/ours/raw_predictions" && -d "$ATTEMPT/newcrf/raw_predictions/newcrf" ]] \
   || { echo "!! $ATTEMPT 里没有两份逐像素预测"; exit 1; }
 PSEUDO="${PSEUDO_DIR:-$F/pseudo_gt/official_train/calibrated_pseudo_depth}"
