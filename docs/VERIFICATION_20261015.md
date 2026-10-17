@@ -140,3 +140,9 @@ RMSE 下降 0.179 m，SqRel、δ2 改善；AbsRel、RMSE_log、δ1、δ3 变差�
 `sd2_cap_pct_logtn_img_l0100_tmax0995_s43` = l100 配方 + `--truncnorm_max 0.995`（下界 0.02 不变）。
 训练目标审计（第 6 节 B）：该上界下每帧上界中位 74.0 m，60–80 m 激光落在上界之外 14.2%。
 作业：冒烟 8292082 → 训练 8292083 → step 16000 全量 val 8292084。判定沿用同一选择器与门槛，对照 l100。
+
+## 12. 三档上界链路诊断（已投递，依赖 0.995 臂的 val 作业）
+
+`slurm/diagnose_depth_chain.sbatch` + `tools/diagnose_depth_chain.py`（说明 `docs/DEPTH_CHAIN_DIAGNOSTIC_20261017.md`，提交 4bdd4cad6）。
+本地 WSL：`tests/test_depth_chain.py` 6 项、`tests/test_ms2_unified_evaluator.py` 12 项通过。
+作业：冒烟 8292150（afterok:8292084）→ 全量 8292151（afterok:8292150）。
