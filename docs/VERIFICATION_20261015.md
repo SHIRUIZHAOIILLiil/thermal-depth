@@ -146,3 +146,11 @@ RMSE 下降 0.179 m，SqRel、δ2 改善；AbsRel、RMSE_log、δ1、δ3 变差�
 `slurm/diagnose_depth_chain.sbatch` + `tools/diagnose_depth_chain.py`（说明 `docs/DEPTH_CHAIN_DIAGNOSTIC_20261017.md`，提交 4bdd4cad6）。
 本地 WSL：`tests/test_depth_chain.py` 6 项、`tests/test_ms2_unified_evaluator.py` 12 项通过。
 作业：冒烟 8292150（afterok:8292084）→ 全量 8292151（afterok:8292150）。
+
+## 13. 0.995 臂训练中断与续训（2026-10-20）
+
+训练 8292083 于 2026-10-17 08:54 在第 7449 步（运行 08:01:27，节点 gpu007）以 FAILED、退出码 1 结束。
+`.err` 无 Python 报错；batch 步 MaxRSS 6.4 GB（申请 80 GB）；checkpoint-7000 于 08:26:34 完整写出（含随机数状态）。终止原因无法从日志确定。
+下游 8292084 / 8292150 / 8292151 因依赖不满足而取消。
+续训：`RESUME=1 bash slurm/submit_arm.sh ...`（提交 c5e2c9bca），训练 9030853（gpu013）从 checkpoint-7000 继续 → val 9030854 → 链路冒烟 9030855 → 全量 9030856。
+偏差：续训恢复权重、优化器、调度器、随机数状态，但数据加载从该轮开头重新开始，第 7000 步之后的样本顺序与不中断的训练不同；l100 与 tmax1 均为不中断训练。
