@@ -19,10 +19,14 @@ Two questions:
 
 Per frame, the `all` fit's AbsRel is checked against the official evaluator and a
 mismatch aborts. Frames with fewer than --min-fit-pixels pixels on a side are left out
-of that side's fit and counted.
+of that side's fit and recorded with IDs and reasons. The fit-comparison table uses
+only the shared successful cohort across ALL models and fits. Full all-fit results
+are retained separately as cohort=available. A failed all fit aborts.
 
 Medians are taken over at most --cap pixels per frame and bin (evenly spaced), so every
 frame contributes; counts, too-near shares and AbsRel use every pixel.
+Both pixel-pooled and equal-frame AbsRel are exported. Far-error tails rank frames
+by far MSE and report pixel-SSE and frame-MSE contribution separately.
 
     python tools/far_bias_breakdown.py --manifest $VAL --data-root $IRIS_MS2_ROOT \
         --model l100=$A1/ours/raw_predictions:ssi_log --model tmax1=$A2/ours/raw_predictions:ssi_log \
@@ -59,13 +63,16 @@ FITS = ("all", "near", "far")
 
 
 def new_cell():
-    return {"pixels": 0, "too_near": 0, "abs_rel_sum": 0.0, "log_err": []}
+    return {"pixels": 0, "too_near": 0, "abs_rel_sum": 0.0, "log_err": [],
+            "frames": 0, "frame_abs_rel_sum": 0.0}
 
 
 def add(cell, log_err, abs_rel, cap):
     cell["pixels"] += int(log_err.size)
     cell["too_near"] += int((log_err < 0).sum())
     cell["abs_rel_sum"] += float(abs_rel.sum())
+    cell["frames"] += 1
+    cell["frame_abs_rel_sum"] += float(abs_rel.mean())
     sample = log_err if log_err.size <= cap else log_err[np.linspace(0, log_err.size - 1, cap).astype(int)]
     cell["log_err"].append(sample)
 
@@ -76,7 +83,23 @@ def finish(cell):
     e = np.concatenate(cell["log_err"])
     return {"pixels": cell["pixels"], "median_ratio": float(math.exp(np.median(e))),
             "median_log_err": float(np.median(e)), "too_near_share": cell["too_near"] / cell["pixels"],
-            "abs_rel": cell["abs_rel_sum"] / cell["pixels"]}
+            "frames": cell["frames"],
+            "pixel_abs_rel": cell["abs_rel_sum"] / cell["pixels"],
+            "frame_mean_abs_rel": cell["frame_abs_rel_sum"] / cell["frames"]}
+
+
+def error_tail(records):
+    """Rank by far per-frame MSE; report both pixel SSE and frame-MSE shares."""
+    ranked = sorted(records, key=lambda r: (-r[6], r[1]))
+    k = max(1, math.ceil(0.1 * len(ranked)))
+    selected = ranked[:k]
+    def share(column):
+        total = sum(r[column] for r in ranked)
+        return sum(r[column] for r in selected) / total if total > 0 else None
+    return {"ranking": "far per-frame MSE descending; ID ascending for ties",
+            "frames": len(ranked), "tail_frames": len(selected),
+            "pixel_sse_share": share(5), "frame_mse_share": share(6),
+            "ids": [r[1] for r in selected]}
 
 
 def main() -> int:
@@ -96,19 +119,31 @@ def main() -> int:
     ap.add_argument("--max-depth", type=float, default=80.0)
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
+    if min(args.cap, args.min_fit_pixels, args.frame_min_far) < 1 or args.limit < 0:
+        ap.error("cap and pixel thresholds must be positive; limit must be nonnegative")
 
     models = []
     for spec in args.model:
         name, rest = spec.split("=", 1)
         directory, align = rest.rsplit(":", 1)
+        if align not in ("ssi", "ssi_log"):
+            ap.error("this diagnostic supports only ssi / ssi_log")
         models.append((name, Path(directory), align))
+    if len({n for n, _, _ in models}) != len(models):
+        ap.error("model names must be unique")
     edges = [float(x) for x in args.bins.split(",")]
+    if (len(edges) < 2 or not np.isfinite(edges).all() or np.any(np.diff(edges) <= 0)
+            or edges[0] > args.min_depth or edges[-1] < args.max_depth
+            or not args.min_depth < args.split_depth < args.max_depth):
+        ap.error("bins must increase and cover the evaluation range; split-depth must be inside it")
     bin_keys = [f"{edges[i]:g}-{edges[i + 1]:g}m" for i in range(len(edges) - 1)]
     far_key = f">={args.split_depth:g}m"
 
     samples, info = load_manifest(args.manifest, args.data_root, allow_legacy_depth_path=True)
     if args.limit:
         samples = samples[: args.limit]
+    if not samples or len({s.sample_id for s in samples}) != len(samples):
+        ap.error("manifest must contain nonempty, unique sample IDs")
     for name, directory, _ in models:
         missing = [s.sample_id for s in samples if not (directory / f"{s.sample_id}.npy").is_file()]
         if missing:
@@ -116,6 +151,9 @@ def main() -> int:
 
     # cells[model][fit][sequence][bin]; sequence "ALL" pools every sequence
     cells = {n: {f: defaultdict(lambda: defaultdict(new_cell)) for f in FITS} for n, _, _ in models}
+    paired_cells = {n: {f: defaultdict(lambda: defaultdict(new_cell)) for f in FITS} for n, _, _ in models}
+    exclusions = []
+    paired_ids = []
     skipped = {n: {f: 0 for f in FITS} for n, _, _ in models}
     frame_far = {n: [] for n, _, _ in models}   # (sequence, id, far pixels, median log err, too-near pixels)
     worst = 0.0
@@ -124,27 +162,38 @@ def main() -> int:
         _, gt = load_ms2_gt(sample.thermal_gt_path, args.depth_scale)
         valid = official_valid_mask(gt, args.min_depth, args.max_depth)
         if not valid.any():
-            continue
+            raise SystemExit(f"{sample.sample_id}: no valid GT pixels")
         g = gt[valid].astype(np.float64)
         bins = np.clip(np.digitize(g, edges) - 1, 0, len(bin_keys) - 1)
         near_mask = valid & (gt < args.split_depth)
         far_mask = valid & (gt >= args.split_depth)
         far_sel = g >= args.split_depth
+        pending = []
         for name, directory, align in models:
             raw = resize_dense_prediction(collapse_channels(np.load(directory / f"{sample.sample_id}.npy")), gt.shape)
+            if not np.isfinite(raw[valid]).all():
+                raise SystemExit(f"{name} {sample.sample_id}: non-finite raw prediction")
             for fit in FITS:
                 mask = {"all": valid, "near": near_mask, "far": far_mask}[fit]
                 if fit != "all" and int(mask.sum()) < args.min_fit_pixels:
                     skipped[name][fit] += 1
+                    exclusions.append(dict(model=name, fit=fit, sequence=sample.sequence,
+                                           id=sample.sample_id, reason="insufficient_fit_pixels",
+                                           fit_pixels=int(mask.sum())))
                     continue
                 try:
                     dense = aligned_depth(raw, gt, mask, align)
-                except OfficialProtocolError:
+                except OfficialProtocolError as exc:
+                    if fit == "all":
+                        raise SystemExit(f"{name} {sample.sample_id}: all fit failed: {exc}") from exc
                     skipped[name][fit] += 1
+                    exclusions.append(dict(model=name, fit=fit, sequence=sample.sequence,
+                                           id=sample.sample_id, reason=str(exc), fit_pixels=int(mask.sum())))
                     continue
                 p = np.clip(dense[valid], args.min_depth, args.max_depth)
                 log_err = np.log(p) - np.log(g)
                 abs_rel = np.abs(p - g) / g
+                pending.append((name, fit, log_err, abs_rel))
                 if fit == "all":
                     official = evaluate_sample(raw, gt, align=align, min_depth=args.min_depth,
                                                max_depth=args.max_depth)["abs_rel"]
@@ -153,15 +202,22 @@ def main() -> int:
                         raise SystemExit(f"{name} {sample.sample_id}: AbsRel differs from the official evaluator")
                     if int(far_sel.sum()) >= args.frame_min_far:
                         e = log_err[far_sel]
+                        sq = np.square(p[far_sel] - g[far_sel])
                         frame_far[name].append((sample.sequence, sample.sample_id, int(e.size),
-                                                float(np.median(e)), int((e < 0).sum())))
+                                                float(np.median(e)), int((e < 0).sum()),
+                                                float(sq.sum()), float(sq.mean())))
+        common = len(pending) == len(models) * len(FITS)
+        if common:
+            paired_ids.append(sample.sample_id)
+        for name, fit, log_err, abs_rel in pending:
+            for destination in ([cells, paired_cells] if common else [cells]):
                 for seq in (sample.sequence, "ALL"):
                     for b, key in enumerate(bin_keys):
                         sel = bins == b
                         if sel.any():
-                            add(cells[name][fit][seq][key], log_err[sel], abs_rel[sel], args.cap)
+                            add(destination[name][fit][seq][key], log_err[sel], abs_rel[sel], args.cap)
                     if far_sel.any():
-                        add(cells[name][fit][seq][far_key], log_err[far_sel], abs_rel[far_sel], args.cap)
+                        add(destination[name][fit][seq][far_key], log_err[far_sel], abs_rel[far_sel], args.cap)
         if (index + 1) % 2000 == 0:
             print(f"[far-bias] {index + 1}/{len(samples)}", flush=True)
 
@@ -171,21 +227,25 @@ def main() -> int:
               f"{skipped[name]['near']} / {skipped[name]['far']}")
 
     rows = []
-    for name, _, align in models:
-        for fit in FITS:
-            for seq, by_bin in cells[name][fit].items():
-                for key in bin_keys + [far_key]:
-                    stats = finish(by_bin[key]) if key in by_bin else None
-                    if stats:
-                        rows.append({"model": name, "align": align, "fit": fit, "sequence": seq, "bin": key, **stats})
+    for cohort, source in (("available", cells), ("paired", paired_cells)):
+        for name, _, align in models:
+            for fit in FITS:
+                for seq, by_bin in source[name][fit].items():
+                    for key in bin_keys + [far_key]:
+                        stats = finish(by_bin[key]) if key in by_bin else None
+                        if stats:
+                            rows.append({"cohort": cohort, "model": name, "align": align,
+                                         "fit": fit, "sequence": seq, "bin": key, **stats})
 
-    def lookup(name, fit, seq, key):
+    def lookup(name, fit, seq, key, cohort="paired"):
         for r in rows:
-            if (r["model"], r["fit"], r["sequence"], r["bin"]) == (name, fit, seq, key):
+            if (r["model"], r["fit"], r["sequence"], r["bin"], r["cohort"]) == (name, fit, seq, key, cohort):
                 return r
         return None
 
-    print("\n=== 1. all sequences: median pred/gt | too-near % | AbsRel %, per fit ===")
+    print(f"\n=== 1. PAIRED {len(paired_ids)}/{len(samples)} frames: median pred/gt | too-near % | frame-mean AbsRel %, per fit ===")
+    if not paired_ids:
+        print("WARNING: no shared successful frames; no fit-to-fit comparison is available.")
     for name, _, align in models:
         print(f"\n[{name}] ({align})  " + "  ".join(f"{fit:>26}" for fit in FITS))
         for key in bin_keys + [far_key]:
@@ -193,7 +253,7 @@ def main() -> int:
             for fit in FITS:
                 r = lookup(name, fit, "ALL", key)
                 cells_txt.append(f"{r['median_ratio']:6.3f} | {100 * r['too_near_share']:5.1f} | "
-                                 f"{100 * r['abs_rel']:6.2f}" if r else f"{'-':>26}")
+                                 f"{100 * r['frame_mean_abs_rel']:6.2f}" if r else f"{'-':>26}")
             print(f"[{name}] {key:>8}  " + "  ".join(f"{c:>26}" for c in cells_txt))
 
     sequences = sorted({r["sequence"] for r in rows if r["sequence"] != "ALL"})
@@ -203,7 +263,7 @@ def main() -> int:
         parts = []
         for name, _, _ in models:
             for key, width in ((far_key, 22), ("60-80m", 20)):
-                r = lookup(name, "all", seq, key)
+                r = lookup(name, "all", seq, key, "available")
                 parts.append(f"{r['median_ratio']:.3f} | {100 * r['too_near_share']:4.1f}".rjust(width) if r else "-".rjust(width))
         print(f"{seq:>22} " + " ".join(parts))
 
@@ -230,6 +290,7 @@ def main() -> int:
                 per_seq[seq] = {"frames": int(m.size), "median": float(math.exp(np.median(m))),
                                 "frames_below_0.9": int((m < math.log(0.9)).sum())}
         d["per_sequence"] = per_seq
+        d["squared_error_tail"] = error_tail(recs)
         distribution[name] = d
         print(f"[{name}] {len(recs)} frames; frame-median pred/gt p10/p25/p50/p75/p90 = "
               + " / ".join(f"{quant[f'p{q}']:.3f}" for q in (10, 25, 50, 75, 90))
@@ -238,6 +299,8 @@ def main() -> int:
               f"of too-near far pixels")
         for seq, s in per_seq.items():
             print(f"[{name}]   {seq}: {s['frames']} frames, median {s['median']:.3f}, below 0.9: {s['frames_below_0.9']}")
+        tail_display = {k: v for k, v in d['squared_error_tail'].items() if k != 'ids'}
+        print(f"[{name}] far MSE-ranked top 10%: {json.dumps(tail_display)} (IDs in JSON)")
 
     args.out.mkdir(parents=True, exist_ok=True)
     with (args.out / "far_bias_by_bin.csv").open("w", encoding="utf-8", newline="") as handle:
@@ -246,15 +309,25 @@ def main() -> int:
         writer.writerows(rows)
     with (args.out / "far_bias_per_frame.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["model", "sequence", "id", "far_pixels", "far_median_log_err", "far_too_near_pixels"])
+        writer.writerow(["model", "sequence", "id", "far_pixels", "far_median_log_err", "far_too_near_pixels", "far_sse", "far_mse"])
         for name, recs in frame_far.items():
             for r in recs:
                 writer.writerow([name, *r])
+    with (args.out / "excluded_fits.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["model", "fit", "sequence", "id", "reason", "fit_pixels"])
+        writer.writeheader()
+        writer.writerows(exclusions)
     (args.out / "far_bias_summary.json").write_text(json.dumps({
         "diagnostic_only": True, "manifest": info,
         "models": [{"name": n, "prediction_dir": str(d), "align": a} for n, d, a in models],
-        "settings": {k: getattr(args, k) for k in ("bins", "split_depth", "min_fit_pixels", "frame_min_far", "cap")},
+        "settings": {k: getattr(args, k) for k in ("bins", "split_depth", "min_fit_pixels", "frame_min_far", "cap",
+                                                   "limit", "depth_scale", "min_depth", "max_depth")},
         "largest_absrel_mismatch_vs_official": worst, "skipped_fits": skipped,
+        "paired_ids": paired_ids, "selected_ids": [s.sample_id for s in samples],
+        "aggregation": {"pixel_abs_rel": "pooled pixels", "frame_mean_abs_rel": "equal weight per nonempty frame/bin",
+                        "median_ratio": "exp(median of capped per-frame log-error samples)); approximate, not equal-frame median",
+                        "paired": "intersection of successful all/near/far fits across every model",
+                        "available": "each fit uses its own successful frames; not for fit-to-fit comparisons"},
         "per_frame_far": distribution,
     }, indent=2), encoding="utf-8")
     print(f"\n[far-bias] wrote {args.out}")

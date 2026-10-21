@@ -13,6 +13,8 @@
 #
 #   sbatch ~/Iris/slurm/far_bias.sbatch
 #   覆盖：A_L100=<attempt 目录> A_TMAX1=<attempt 目录> OUT=<输出目录>
+#   CPU 冒烟：sbatch --export=ALL,LIMIT=32 slurm/far_bias.sbatch
+#   LIMIT=0（默认）为完整验证集；不训练、不推理。
 
 F=/mnt/scratch/dwdh0363/from_sc23sz
 export IRIS_MS2_ROOT="${IRIS_MS2_ROOT:-$F/data/ms2}"
@@ -41,4 +43,5 @@ python tools/far_bias_breakdown.py \
   --model "l100=$A_L100/ours/raw_predictions:ssi_log" \
   --model "tmax1=$A_TMAX1/ours/raw_predictions:ssi_log" \
   --model "newcrf=$A_L100/newcrf/raw_predictions/newcrf:ssi" \
+  --limit "${LIMIT:-0}" \
   --out "$OUT"
