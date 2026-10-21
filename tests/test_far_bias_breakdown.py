@@ -39,7 +39,8 @@ class FarBiasTest(unittest.TestCase):
         gts = {s: gt.copy() for s in ('good', 'degenerate')}
         gts['sparse'] = np.tile(np.array([[10, 20, 30, 60]], dtype=np.float32), (2, 1))
         argv = ['far_bias', '--manifest', str(root / 'manifest'), '--data-root', str(root),
-                '--out', str(root / 'out'), '--min-fit-pixels', '3', '--frame-min-far', '1']
+                '--out', str(root / 'out'), '--min-fit-pixels', '3', '--frame-min-far', '1',
+                '--structure-reference', 'b']
         for model, align in (('a', 'ssi_log'), ('b', 'ssi')):
             directory = root / model
             directory.mkdir()
@@ -74,6 +75,13 @@ class FarBiasTest(unittest.TestCase):
             self.assertEqual(len(excluded), 3)
             self.assertTrue(any('Degenerate' in r['reason'] for r in excluded))
             self.assertTrue(any(r['reason'] == 'insufficient_fit_pixels' for r in excluded))
+            report = json.loads((root / 'out/far_structure_summary.json').read_text())
+            self.assertEqual(report['reference'], 'b')
+            self.assertTrue(report['paired_gaps'])
+            self.assertTrue(report['structure'])
+            with (root / 'out/far_structure_per_frame.csv').open() as f:
+                structures = list(csv.DictReader(f))
+            self.assertTrue(all('mse_gap_vs_reference' in r for r in structures))
 
     def test_all_fit_failure_aborts(self):
         with tempfile.TemporaryDirectory() as tmp:

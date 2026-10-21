@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import sys
@@ -58,6 +59,7 @@ from ms2_eval.official_protocol import (  # noqa: E402
 )
 from ms2_eval.resize import resize_dense_prediction  # noqa: E402
 from tools.diagnose_error_sources import aligned_depth  # noqa: E402
+from tools.far_structure import structure, paired_summary, structure_summary  # noqa: E402
 
 FITS = ("all", "near", "far")
 
@@ -118,6 +120,7 @@ def main() -> int:
     ap.add_argument("--min-depth", type=float, default=1e-3)
     ap.add_argument("--max-depth", type=float, default=80.0)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--structure-reference", help="enable structure and paired MSE-gap diagnostics against this model")
     args = ap.parse_args()
     if min(args.cap, args.min_fit_pixels, args.frame_min_far) < 1 or args.limit < 0:
         ap.error("cap and pixel thresholds must be positive; limit must be nonnegative")
@@ -131,6 +134,8 @@ def main() -> int:
         models.append((name, Path(directory), align))
     if len({n for n, _, _ in models}) != len(models):
         ap.error("model names must be unique")
+    if args.structure_reference and args.structure_reference not in {n for n, _, _ in models}:
+        ap.error("structure-reference must name one of the supplied models")
     edges = [float(x) for x in args.bins.split(",")]
     if (len(edges) < 2 or not np.isfinite(edges).all() or np.any(np.diff(edges) <= 0)
             or edges[0] > args.min_depth or edges[-1] < args.max_depth
@@ -154,6 +159,7 @@ def main() -> int:
     paired_cells = {n: {f: defaultdict(lambda: defaultdict(new_cell)) for f in FITS} for n, _, _ in models}
     exclusions = []
     paired_ids = []
+    structure_rows = []
     skipped = {n: {f: 0 for f in FITS} for n, _, _ in models}
     frame_far = {n: [] for n, _, _ in models}   # (sequence, id, far pixels, median log err, too-near pixels)
     worst = 0.0
@@ -200,6 +206,21 @@ def main() -> int:
                     worst = max(worst, abs(float(abs_rel.mean()) - official))
                     if worst > 1e-9:
                         raise SystemExit(f"{name} {sample.sample_id}: AbsRel differs from the official evaluator")
+                    if args.structure_reference:
+                        seed = int.from_bytes(hashlib.sha256(sample.sample_id.encode()).digest()[:8], 'little')
+                        for lower in sorted({args.split_depth, 60.0}):
+                            sel = g >= lower
+                            if int(sel.sum()) < args.frame_min_far:
+                                continue
+                            stats = structure(g[sel], dense[valid][sel], raw[valid][sel], seed=seed)
+                            sq = np.square(p[sel] - g[sel])
+                            structure_rows.append(dict(model=name, id=sample.sample_id, sequence=sample.sequence,
+                                                       band=f'>={lower:g}m', pixels=int(sel.sum()),
+                                                       mse=float(sq.mean()),
+                                                       full_frame_mse_contribution=float(sq.sum() / g.size),
+                                                       clipped_share=float(np.mean((dense[valid][sel] < args.min_depth)
+                                                                                    | (dense[valid][sel] > args.max_depth))),
+                                                       **stats))
                     if int(far_sel.sum()) >= args.frame_min_far:
                         e = log_err[far_sel]
                         sq = np.square(p[far_sel] - g[far_sel])
@@ -303,6 +324,40 @@ def main() -> int:
         print(f"[{name}] far MSE-ranked top 10%: {json.dumps(tail_display)} (IDs in JSON)")
 
     args.out.mkdir(parents=True, exist_ok=True)
+    if args.structure_reference:
+        gaps = paired_summary(structure_rows, args.structure_reference)
+        contributions = paired_summary(structure_rows, args.structure_reference, 'full_frame_mse_contribution')
+        structural = structure_summary(structure_rows)
+        refs = {(r['id'], r['band']): r for r in structure_rows if r['model'] == args.structure_reference}
+        for row in structure_rows:
+            ref = refs[(row['id'], row['band'])]
+            row['mse_gap_vs_reference'] = row['mse'] - ref['mse']
+            row['full_frame_mse_contribution_gap'] = row['full_frame_mse_contribution'] - ref['full_frame_mse_contribution']
+        if structure_rows:
+            with (args.out / 'far_structure_per_frame.csv').open('w', encoding='utf-8', newline='') as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(structure_rows[0]))
+                writer.writeheader()
+                writer.writerows(structure_rows)
+        report = dict(diagnostic_only=True, reference=args.structure_reference,
+                      settings=dict(seed='SHA256(frame ID), first 8 bytes little-endian', cap=4096,
+                                    pair_min_gt_gap_m=5., min_pixels=args.frame_min_far,
+                                    alignment='whole-frame all fit; no local refit',
+                                    structure='unclipped aligned metres; ties averaged in Spearman; undefined=null',
+                                    error='official clipped metres; per-frame MSE, not RMSE or whole-frame gap',
+                                    gap_shares='signed shares may be negative or >1; positive-excess shares avoid cancellation'),
+                      paired_gaps=gaps, full_frame_contribution_gaps=contributions, structure=structural)
+        (args.out / 'far_structure_summary.json').write_text(json.dumps(report, indent=2, allow_nan=False), encoding='utf-8')
+        print('\n=== 4. paired far MSE gaps vs reference (m^2, equal-frame) ===')
+        for item in gaps:
+            display = {**item, 'top10pct': {k: v for k, v in item['top10pct'].items() if k != 'ids'}}
+            print(json.dumps(display))
+        print('\n=== 4b. far contribution to whole-frame MSE gap (same eligible frames) ===')
+        for item in contributions:
+            display = {**item, 'top10pct': {k: v for k, v in item['top10pct'].items() if k != 'ids'}}
+            print(json.dumps(display))
+        print('\n=== 5. far ordering / range, per-frame medians ===')
+        for item in structural:
+            print(json.dumps(item))
     with (args.out / "far_bias_by_bin.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()

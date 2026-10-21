@@ -43,5 +43,6 @@ python tools/far_bias_breakdown.py \
   --model "l100=$A_L100/ours/raw_predictions:ssi_log" \
   --model "tmax1=$A_TMAX1/ours/raw_predictions:ssi_log" \
   --model "newcrf=$A_L100/newcrf/raw_predictions/newcrf:ssi" \
+  --structure-reference newcrf \
   --limit "${LIMIT:-0}" \
   --out "$OUT"
