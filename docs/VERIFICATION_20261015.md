@@ -265,4 +265,4 @@ ssi = 逐帧深度空间 2 参数（与第 5 节 NeWCRF 同一对齐方式）；
 | caption | 8000 | none | 9.94 | 2.900 | 92.19 |
 
 同一 val 集同口径参照：NeWCRF（ssi）8.45 / 2.471 / 94.22（第 5 节）；l100（ssi_log，step 16000）7.97 / 2.936 / 94.14。
-pilot 判定作业（`tools/check_da2_caption_pair.py` 非冒烟模式）尚未运行。单种子，pilot 步数，未碰 test。
+pilot 判定（`tools/check_da2_caption_pair.py` 非冒烟模式，登录节点运行）：absrel_better_both=true，absrel_gain_0005=false，rmse_guard=true，a1_guard=true，sequences=false → eligible_to_consider_continuation=false。按计划，caption 配置不续训。单种子，pilot 步数，未碰 test。
