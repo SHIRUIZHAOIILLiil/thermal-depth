@@ -266,3 +266,21 @@ ssi = 逐帧深度空间 2 参数（与第 5 节 NeWCRF 同一对齐方式）；
 
 同一 val 集同口径参照：NeWCRF（ssi）8.45 / 2.471 / 94.22（第 5 节）；l100（ssi_log，step 16000）7.97 / 2.936 / 94.14。
 pilot 判定（`tools/check_da2_caption_pair.py` 非冒烟模式，登录节点运行）：absrel_better_both=true，absrel_gain_0005=false，rmse_guard=true，a1_guard=true，sequences=false → eligible_to_consider_continuation=false。按计划，caption 配置不续训。单种子，pilot 步数，未碰 test。
+
+## 18. DA V2 caption 臂 step 8000 推理时干预（2026-10-22）
+
+作业 9053315（`tools/eval_da2_caption_ablation.py`，00:32:08），输出 `runs/da2_caption_v1/ablation_s8000_9053315`。
+同一 checkpoint（caption_s43/step008000.pt）、完整 val 14249 帧、pilot 同一评估函数。
+复现：correct 与 pilot `val_step008000.json` 全部指标差 ≤ 1e-6，PASS（首遍 14.5 min）。
+打乱：seed 43 全局去自配对，相同文本 0 帧、相同 token 0 帧。
+
+| 条件 | 对齐 | AbsRel | RMSE | δ1 |
+|---|---|---|---|---|
+| correct | ssi | 0.07239164 | 2.235613 | 0.96067802 |
+| shuffled | ssi | 0.07239143 | 2.235605 | 0.96067639 |
+| adapter_off | ssi | 0.07239183 | 2.235612 | 0.96067841 |
+| correct | none | 0.09935184 | 2.899794 | 0.92186715 |
+| shuffled | none | 0.09935139 | 2.899790 | 0.92186846 |
+| adapter_off | none | 0.09935154 | 2.899795 | 0.92186816 |
+
+三种条件之间各指标差：AbsRel ≤ 4.5e-7，RMSE ≤ 8e-6，δ1 ≤ 2.1e-6。
