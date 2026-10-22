@@ -9,10 +9,13 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+# Import our sibling directly: site-packages may own a regular `tests` package,
+# which takes precedence over this repository's namespace-only tests directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 import torch
 from models.da2_caption import CaptionDepth
-from tests.test_da2_caption import TinyCore, TinyText
+from test_da2_caption import TinyCore, TinyText
 from tools.train_da2_caption import evaluate
 from tools.eval_da2_caption_ablation import (AdapterOff, CaptionIntervention, derangement,
                                             validate_checkpoint, check_reproduction, paired_summary)
