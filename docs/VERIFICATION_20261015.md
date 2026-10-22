@@ -246,3 +246,23 @@ train 伪深度 pseudo（校准后、融合前，无拟合）：全帧 AbsRel 6.
 | ≥60 m | Spearman | 0.339 | 0.530 | 0.556 |
 
 按序列 ≥40 m span_ratio（l100 / tmax1 / NeWCRF）：16-08-46 0.731 / 0.983 / 1.012；16-14-48 0.493 / 0.702 / 0.909；21-58-13 0.806 / 0.994 / 1.003。
+
+## 17. DA V2 + caption 线 pilot（2026-10-22，`docs/DA2_CAPTION_PLAN_20261022.md`）
+
+冒烟 9042340（首次 9042333 因提交命令带入错误的 IRIS_MS2_ROOT 失败）；pilot no-caption 9042341（00:58:50）、caption 9042342（01:02:20），各 8000 步。
+评估：训练脚本内 `ms2_eval.official_protocol.evaluate_sample`，完整 val 14249 帧，GT 为原分辨率热像视角 depth_filtered（`load_ms2_gt`），[0.001, 80] m。
+ssi = 逐帧深度空间 2 参数（与第 5 节 NeWCRF 同一对齐方式）；none = 不对齐。
+
+| 臂 | step | 对齐 | AbsRel% | RMSE | δ1% |
+|---|---|---|---|---|---|
+| no-caption | 6000 | ssi | 7.76 | 2.259 | 95.46 |
+| no-caption | 6000 | none | 9.87 | 2.864 | 91.91 |
+| no-caption | 8000 | ssi | 7.25 | 2.249 | 96.08 |
+| no-caption | 8000 | none | 9.94 | 2.932 | 92.16 |
+| caption | 6000 | ssi | 7.76 | 2.255 | 95.34 |
+| caption | 6000 | none | 9.70 | 2.799 | 92.30 |
+| caption | 8000 | ssi | 7.24 | 2.236 | 96.07 |
+| caption | 8000 | none | 9.94 | 2.900 | 92.19 |
+
+同一 val 集同口径参照：NeWCRF（ssi）8.45 / 2.471 / 94.22（第 5 节）；l100（ssi_log，step 16000）7.97 / 2.936 / 94.14。
+pilot 判定作业（`tools/check_da2_caption_pair.py` 非冒烟模式）尚未运行。单种子，pilot 步数，未碰 test。
