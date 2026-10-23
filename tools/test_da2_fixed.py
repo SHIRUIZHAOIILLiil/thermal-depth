@@ -28,7 +28,10 @@ def validate_samples(samples, allowed):
         seq, frame = s.sample_id.rsplit('_', 1)
         sequences.add(seq)
         if seq not in allowed or s.sequence not in (seq, 'unknown'): raise ValueError('Wrong sequence')
-        if s.split not in ('unknown', 'test'): raise ValueError('Non-test split')
+        # The manifests' `split` field is stale metadata (the frozen test manifests say
+        # 'train' on every row), so it is recorded, not enforced. Test membership is
+        # decided by the pinned manifest hash, the sequence allowlist and the
+        # train/val exclusion above.
         for value in (s.thermal_path, s.thermal_gt_path):
             if re.findall(r'\d{4}(?:-\d{2}){5}', value) != [seq] or Path(value).stem != frame:
                 raise ValueError('ID/path disagreement')
@@ -66,7 +69,11 @@ def run(args):
         if ids & seen: raise ValueError('Test conditions overlap')
         seen |= ids
         bundles[condition] = samples
-        manifests[condition] = dict(**info, caption_sha256=caption_hash(samples))
+        split_counts = {}
+        for s in samples:
+            split_counts[s.split] = split_counts.get(s.split, 0) + 1
+        manifests[condition] = dict(**info, caption_sha256=caption_hash(samples),
+                                    split_field_counts=dict(sorted(split_counts.items())))
     out = args.base / 'test_fixed_20261023' / arm
     provenance = dict(arm=arm, step=step, checkpoint_sha256=sha256_file(checkpoint),
         selection_sha256=sha256_file(selection), contract=contract, manifests=manifests,

@@ -44,10 +44,19 @@ class FixedTests(unittest.TestCase):
         with self.assertRaises(ValueError): validate_samples([sample, sample], allowed)
 
     @patch('pathlib.Path.is_file', return_value=True)
-    def test_reject_nonthermal_wrong_split_caption_and_path(self, mock):
+    def test_split_field_is_metadata_not_membership(self, mock):
+        # The frozen test manifests carry split='train' on every row.
+        allowed = {self.sample().sequence}
+        for split in ('train', 'val', 'test', 'unknown'):
+            with self.subTest(split=split):
+                self.assertEqual(validate_samples([self.sample(split=split)], allowed),
+                                 {self.sample().sample_id})
+
+    @patch('pathlib.Path.is_file', return_value=True)
+    def test_reject_nonthermal_wrong_caption_sequence_and_path(self, mock):
         allowed = {self.sample().sequence}
         for changes in [dict(thermal_gt_path='/data/2021-08-06-11-23-45/rgb/000001.png'),
-                        dict(split='val'), dict(caption=''), dict(sequence='other'),
+                        dict(caption=''), dict(sequence='other'),
                         dict(thermal_path='/data/2021-08-06-11-23-45/thermal/000002.png')]:
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 validate_samples([self.sample(**changes)], allowed)
