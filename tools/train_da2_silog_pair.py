@@ -1,0 +1,239 @@
+"""Matched-module SiLog: true frame captions vs tokenized empty strings."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+import time
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, Subset
+from models.da2_silog import SiLogDepth, masked_silog
+from tools.da2_caption_data import ThermalLidar, ImageStream, checked_manifest, caption_hash
+from tools.train_da2_caption import (build_model, verify_assets, token_cache, evaluate,
+    json_write, seed_all, rng_state, restore_rng)
+from tools.da2_continuation import read
+from ms2_eval.io import sha256_file
+
+MILESTONES = (10000, 20000)
+
+
+def tensor_hash(module):
+    digest = hashlib.sha256()
+    for name, value in module.state_dict().items():
+        digest.update(name.encode()); digest.update(value.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def optimizer_for(model):
+    opt = torch.optim.AdamW([
+        dict(params=model.core.pretrained.parameters(), lr=5e-6),
+        dict(params=list(model.core.depth_head.parameters())+list(model.fusions.parameters()), lr=5e-5)], betas=(.9, .999), weight_decay=.01)
+    return opt, torch.optim.lr_scheduler.LambdaLR(opt, lambda s: max(0., 1-s/20000)**.9)
+
+
+def save(path, model, opt, sched, step, contract):
+    state = dict(core=model.core.state_dict(), fusions=model.fusions.state_dict(),
+                 optimizer=opt.state_dict(), scheduler=sched.state_dict(),
+                 step=step, image_cursor=step*12, rng=rng_state(), amp='bf16', contract=contract)
+    tmp = Path(str(path)+'.tmp'); torch.save(state, tmp); os.replace(tmp, path)
+
+
+def restore(path, model, opt, sched, contract, random_state=True):
+    state = torch.load(path, map_location='cpu', weights_only=False)
+    if state['contract'] != contract or state['image_cursor'] != state['step']*12 or state['amp'] != 'bf16':
+        raise ValueError('Checkpoint contract/cursor/precision mismatch')
+    if state['scheduler']['last_epoch'] != state['step']: raise ValueError('Scheduler cursor mismatch')
+    model.core.load_state_dict(state['core'], strict=True)
+    model.fusions.load_state_dict(state['fusions'], strict=True)
+    if opt is not None:
+        opt.load_state_dict(state['optimizer']); sched.load_state_dict(state['scheduler'])
+    if random_state: restore_rng(state['rng'])
+    return state['step']
+
+
+def make_tokens(samples, tokenizer, assets, info, arm, create):
+    if arm == 'frame':
+        return token_cache(samples,tokenizer,assets,info['sha256'],create)
+    if arm != 'empty': raise ValueError('Expected frame or empty')
+    encoded=tokenizer([''],padding='max_length',max_length=77,truncation=True,return_tensors='pt')
+    ids=encoded['input_ids']
+    mask=encoded['attention_mask'].bool()
+    if ids.shape != (1,77) or mask.shape != (1,77) or not mask.any():
+        raise ValueError('Invalid empty caption encoding/mask')
+    # Preserve tokenizer BOS/EOS and padding mask, never synthesize zero embeddings.
+    return dict(input_ids=ids.expand(len(samples),-1),attention_mask=mask.expand(len(samples),-1))
+
+
+def pair_smoke(directory):
+    a, b = (directory / arm for arm in ('frame', 'empty'))
+    ca, cb = read(a/'contract.json'), read(b/'contract.json')
+    if ca['arm'] != 'frame' or cb['arm'] != 'empty': raise ValueError('Wrong smoke arms')
+    if {k:v for k,v in ca.items() if k!='arm'} != {k:v for k,v in cb.items() if k!='arm'}:
+        raise ValueError('Paired smoke contracts differ')
+    logs = []
+    for d in (a, b):
+        done = read(d/'completed.json')
+        if done['step'] != 32 or done['mode'] != 'smoke' or not done['smoke_checks_passed']:
+            raise ValueError('Incomplete smoke')
+        logs.append([json.loads(line) for line in (d/'train.jsonl').read_text().splitlines()])
+    if [r['step'] for r in logs[0]] != list(range(1,33)) or [r['step'] for r in logs[1]] != list(range(1,33)):
+        raise ValueError('Smoke step log incomplete')
+    if any(x['data_ids_sha256'] != y['data_ids_sha256'] for x,y in zip(*logs)):
+        raise ValueError('Smoke image order differs')
+    print('[paired-smoke] PASS: same initialization/config/data; both GPU checks passed', flush=True)
+
+
+class BaseOnly(torch.nn.Module):
+    def __init__(self, core): super().__init__(); self.core = core
+    def forward(self, image, token_ids=None, attention_mask=None):
+        h,w = image.shape[-2:]; pad=(0,(-w)%14,0,(-h)%14)
+        x = torch.nn.functional.pad(image, pad, mode='reflect') if any(pad) else image
+        return self.core(x)[...,:h,:w].float()
+
+
+def repair_log(path, step):
+    """Keep exactly checkpoint-committed log rows; remove stale crash-tail rows."""
+    rows=[]
+    for line in path.read_text(encoding='utf-8').splitlines():
+        if len(rows)==step: break
+        row=json.loads(line)
+        if row['step']!=len(rows)+1: raise ValueError('Training log has gaps/duplicates')
+        rows.append(row)
+    if len(rows)!=step: raise ValueError('Training log shorter than checkpoint')
+    tmp=Path(str(path)+'.tmp')
+    tmp.write_text(''.join(json.dumps(r)+'\n' for r in rows),encoding='utf-8')
+    os.replace(tmp,path)
+
+
+def run(args):
+    if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported(): raise RuntimeError('Requires BF16 GPU')
+    assets = verify_assets(args.assets)
+    train, ti = checked_manifest(args.train_manifest, args.data_root, 'train', 75688)
+    val, vi = checked_manifest(args.val_manifest, args.data_root, 'val', 14249)
+    seed_all(43)
+    if Path(assets['weights']).name != 'depth_anything_v2_metric_vkitti_vitb.pth':
+        raise ValueError('Expected official metric VKITTI ViT-B checkpoint')
+    baseline = build_model(assets, 'no-caption', 43)
+    from transformers import CLIPTextModel
+    text = CLIPTextModel.from_pretrained(assets['text_path'], subfolder='text_encoder', local_files_only=True)
+    if text.config.hidden_size != 1024: raise ValueError('Wrong text encoder width')
+    model = SiLogDepth(baseline.core, text)
+    files = ('models/da2_silog.py','models/da2_decoder.py','tools/train_da2_silog_pair.py','models/da2_caption.py','tools/train_da2_caption.py',
+             'tools/da2_caption_data.py','tools/da2_continuation.py','models/anythermal_encoder.py',
+             'ms2_eval/official_protocol.py','ms2_eval/io.py')
+    contract = dict(arm=args.arm, seed=43, base_path=str(Path(assets['weights']).resolve()),
+        base_sha256=sha256_file(assets['weights']), assets_sha256=sha256_file(args.assets),
+        train=ti, val=vi, train_caption_hash=caption_hash(train), val_caption_hash=caption_hash(val),
+        experiment='silog_frame_empty_v1', empty_text='', token_length=77,
+        text_mask='tokenizer mask in CLIP and inverse mask in cross-attention',
+        loss='official_silog_lambda_0.5_microbatch', valid_gt='finite and 0.001<gt<80',
+        total_steps=20000, batch=4, accumulation=3, encoder_lr=5e-6, decoder_lr=5e-5, fusion_lr=5e-5,
+        weight_decay=.01, clip_grad=1., fusion_width=256, amp='bf16',
+        initial_fusion_sha256=tensor_hash(model.fusions), initial_core_sha256=tensor_hash(model.core), code={f:sha256_file(ROOT/f) for f in files},
+        software=dict(torch=torch.__version__, numpy=np.__version__))
+    if args.mode == 'train':
+        if args.smoke_output is None: raise ValueError('Require successful paired smoke')
+        pair_smoke(args.smoke_output)
+        if read(args.smoke_output/args.arm/'contract.json') != contract: raise ValueError('Recipe changed since smoke')
+    out = args.output
+    if args.resume:
+        if args.mode != 'train' or not (out/'last.pt').is_file(): raise ValueError('Resume requires formal last.pt')
+    else: out.mkdir(parents=True, exist_ok=False)
+    json_write(out/'contract.json', contract)
+    cache = args.cache_dir; cache.mkdir(parents=True, exist_ok=True)
+    from transformers import CLIPTokenizer
+    tokenizer = CLIPTokenizer.from_pretrained(assets['text_path'], subfolder='tokenizer', local_files_only=True)
+    tok = [make_tokens(samples,tokenizer,{**assets,'root':str(cache)},info,args.arm,args.mode=='smoke')
+           for samples,info in ((train,ti),(val,vi))]
+    training, validation = ThermalLidar(train,tok[0]), ThermalLidar(val,tok[1])
+    model.to('cuda'); opt, sched = optimizer_for(model)
+    step = restore(out/'last.pt',model,opt,sched,contract) if args.resume else 0
+    stop = 32 if args.mode=='smoke' else 20000
+    if not 0 <= step <= stop: raise ValueError('Invalid resume step')
+    seed_all(100043)
+    first = training[0]
+    model.eval()
+    with torch.no_grad():
+        x=first['image'][None].cuda()
+        ids=first['token_ids'][None].cuda() if 'token_ids' in first else None
+        mask=first['attention_mask'][None].cuda() if 'attention_mask' in first else None
+        p=model(x,ids,mask)
+        if step==0: torch.testing.assert_close(p,BaseOnly(model.core)(x),rtol=0,atol=0)
+        if p.shape != first['gt'][None].shape or not torch.isfinite(p).all(): raise ValueError('Shape/finite smoke failed')
+    frozen_before = tensor_hash(model.text_encoder) if args.mode=='smoke' and text is not None else None
+    initial_encoder = tensor_hash(model.core.pretrained)
+    initial_head = tensor_hash(model.fusions)
+    initial_decoder = tensor_hash(model.core.depth_head)
+    print('[config] '+json.dumps(contract),flush=True)
+    if args.mode=='train':
+        if args.resume:
+            for milestone in MILESTONES:
+                if milestone <= step and not (out/f'val_step{milestone:06d}.json').exists():
+                    restore(out/f'step{milestone:06d}.pt',model,None,None,contract,False)
+                    evaluate(model,validation,torch.device('cuda'),True,out,milestone)
+    loader=DataLoader(training,batch_size=4,sampler=ImageStream(len(training),43,step*12,(stop-step)*12),
+        num_workers=args.workers,pin_memory=True,generator=torch.Generator().manual_seed(44))
+    iterator=iter(loader)
+    if args.resume: restore(out/'last.pt',model,opt,sched,contract)
+    else: seed_all(100043)
+    model.train(); started=time.monotonic(); start_step=step; attention_grad_seen=False
+    if args.resume:
+        repair_log(out/'train.jsonl',step)
+    with (out/'train.jsonl').open('a',encoding='utf-8') as log:
+        while step < stop:
+            opt.zero_grad(set_to_none=True); loss_sum=0.; empty=0; ids=[]
+            for _ in range(3):
+                batch=next(iterator); ids.extend(batch['id'])
+                with torch.autocast('cuda',dtype=torch.bfloat16):
+                    pred=model(batch['image'].cuda(),
+                        batch['token_ids'].cuda() if 'token_ids' in batch else None,
+                        batch['attention_mask'].cuda() if 'attention_mask' in batch else None)
+                    loss,nempty=masked_silog(pred,batch['gt'].cuda())
+                if not torch.isfinite(loss): raise ValueError('Nonfinite loss')
+                (loss/3).backward(); loss_sum+=float(loss.detach())/3; empty+=nempty
+            if text is not None and any(p.grad is not None for p in model.text_encoder.parameters()):
+                raise ValueError('Frozen module has gradients')
+            grads=[p.grad for p in model.parameters() if p.requires_grad and p.grad is not None]
+            if not grads or not all(torch.isfinite(g).all() for g in grads): raise ValueError('Invalid gradients')
+            attention_grad_seen |= any(f.attention.in_proj_weight.grad is not None and
+                bool(f.attention.in_proj_weight.grad.abs().sum()>0) for f in model.fusions)
+            norm=torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad],1.,error_if_nonfinite=True)
+            opt.step(); sched.step(); step+=1
+            record=dict(step=step,loss=loss_sum,image_cursor=step*12,empty_gt_frames=empty,
+                lr=[g['lr'] for g in opt.param_groups],grad_norm=float(norm),
+                data_ids_sha256=hashlib.sha256('\n'.join(ids).encode()).hexdigest())
+            log.write(json.dumps(record)+'\n'); log.flush()
+            if step%20==0 or step==stop: print('[train] '+json.dumps(record),flush=True)
+            if step in MILESTONES: save(out/f'step{step:06d}.pt',model,opt,sched,step,contract)
+            if step%1000==0 or step==stop: save(out/'last.pt',model,opt,sched,step,contract)
+            if args.mode=='train' and step in MILESTONES:
+                evaluate(model,validation,torch.device('cuda'),True,out,step)
+    smoke_passed=None
+    if args.mode=='smoke':
+        if initial_encoder==tensor_hash(model.core.pretrained) or initial_decoder==tensor_hash(model.core.depth_head):
+            raise ValueError('Encoder or DPT did not update')
+        if text is not None and (frozen_before!=tensor_hash(model.text_encoder)
+                or not attention_grad_seen or initial_head==tensor_hash(model.fusions)):
+            raise ValueError('Text freeze/fusion/attention-gradient smoke gate failed')
+        smoke_passed=True
+        evaluate(model,Subset(validation,np.linspace(0,len(validation)-1,8,dtype=int).tolist()),
+                 torch.device('cuda'),True,out,32)
+    elapsed=time.monotonic()-started
+    json_write(out/'completed.json',dict(mode=args.mode,arm=args.arm,step=step,smoke_checks_passed=smoke_passed,
+        seconds=elapsed,seconds_per_update=elapsed/max(1,step-start_step),max_gpu_gb=torch.cuda.max_memory_allocated()/2**30))
+    print(f'[completed] {args.arm} {step} updates; {elapsed/60:.1f} min',flush=True)
+
+
+if __name__=='__main__':
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--mode',choices=['smoke','train'],required=True)
+    p.add_argument('--arm',choices=['frame','empty'],required=True)
+    for name in ('assets','train-manifest','val-manifest','data-root','output','cache-dir'):
+        p.add_argument('--'+name,type=Path,required=True)
+    p.add_argument('--smoke-output',type=Path); p.add_argument('--resume',action='store_true')
+    p.add_argument('--workers',type=int,default=4)
+    run(p.parse_args())
