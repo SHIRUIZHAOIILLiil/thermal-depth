@@ -16,8 +16,10 @@ cd "$IRIS_REPO"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 : "${ARM:?frame or empty}"
 [[ "$ARM" == frame || "$ARM" == empty ]] || exit 1
-BASE="$IRIS_RUNS/outputs/lotus_line_v2/sd21_tadp_pair_v1"
+EXPERIMENT="${EXPERIMENT:-sd21_tadp_pair_v1}"
+[[ "$EXPERIMENT" == sd21_tadp_pair_v1 || "$EXPERIMENT" == sd21_tadp_pseudo_pair_v1 ]] || exit 1
+BASE="$IRIS_RUNS/outputs/lotus_line_v2/$EXPERIMENT"
 exec 9>"$BASE/test_$ARM.lock"
 flock -n 9 || { echo 'This arm already has a test writer'; exit 1; }
-python tools/test_sd21_tadp.py --arm "$ARM" --base "$BASE" --assets "$BASE/assets.json" \
+python tools/test_sd21_tadp.py --arm "$ARM" --experiment "$EXPERIMENT" --base "$BASE" --assets "$BASE/assets.json" \
   --manifest-dir "$IRIS_MANIFEST_DIR" --data-root "$IRIS_MS2_ROOT"

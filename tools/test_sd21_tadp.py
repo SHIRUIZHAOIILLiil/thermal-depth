@@ -23,11 +23,13 @@ from tools.train_da2_caption import evaluate, json_write
 from tools.train_sd21_tadp_pair import ThermalDirect, make_tokens, read, verify_assets
 
 ENVIRONMENTS = {'day': 'test_day', 'night': 'test_night', 'rain': 'test_rain'}
+# Same SD21Depth model and checkpoint layout; only the training loss differs.
+EXPERIMENTS = ('sd21_tadp_pair_v1', 'sd21_tadp_pseudo_pair_v1')
 METRICS = ('abs_rel', 'sq_rel', 'rmse', 'rmse_log', 'a1', 'a2', 'a3')
 
 
-def check_selection(arm, contract, summary):
-    if contract['arm'] != arm or contract['experiment'] != 'sd21_tadp_pair_v1':
+def check_selection(arm, contract, summary, experiment='sd21_tadp_pair_v1'):
+    if contract['arm'] != arm or contract['experiment'] != experiment:
         raise ValueError('Wrong arm/experiment')
     step = summary['selected_step']
     full = summary['selected_full']
@@ -48,7 +50,7 @@ def run(args):
     run_dir = args.base / f'{args.arm}_s43'
     contract = read(run_dir / 'contract.json')
     selection = run_dir / 'summary.json'
-    step = check_selection(args.arm, contract, read(selection))
+    step = check_selection(args.arm, contract, read(selection), args.experiment)
     assets = verify_assets(args.assets)
     if assets != contract['assets']: raise ValueError('Assets changed since training')
     checkpoint = run_dir / f'step{step:06d}.pt'
@@ -112,5 +114,6 @@ def run(args):
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--arm', choices=['frame', 'empty'], required=True)
+    p.add_argument('--experiment', choices=EXPERIMENTS, default=EXPERIMENTS[0])
     for name in ('base', 'assets', 'manifest-dir', 'data-root'): p.add_argument('--'+name, type=Path, required=True)
     run(p.parse_args())
