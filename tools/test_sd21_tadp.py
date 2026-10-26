@@ -24,7 +24,7 @@ from tools.train_sd21_tadp_pair import ThermalDirect, make_tokens, read, verify_
 
 ENVIRONMENTS = {'day': 'test_day', 'night': 'test_night', 'rain': 'test_rain'}
 # Same SD21Depth model and checkpoint layout; only the training loss differs.
-EXPERIMENTS = ('sd21_tadp_pair_v1', 'sd21_tadp_pseudo_pair_v1')
+EXPERIMENTS = ('sd21_tadp_pair_v1', 'sd21_tadp_pseudo_pair_v1', 'sd21_tadp_pseudo_b1_pair_v1')
 METRICS = ('abs_rel', 'sq_rel', 'rmse', 'rmse_log', 'a1', 'a2', 'a3')
 
 
