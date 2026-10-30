@@ -25,6 +25,13 @@ v1 两臂共享 caption 训练过的冻结 Iris，但 empty 给空文本。这�
 两份权重文件与参数状态必须不同；两份完整来源路径/hash都写进每臂 contract。
 配对检查只允许 arm 和初始 Iris 参数hash不同，其余配方、DA2与融合初始状态一致。
 
+文本 padding 是有意保留的偏离：两份旧权重按 legacy 训练（训练补到 batch 内最长、
+推理不补），这里两臂统一补到 77 且不传 mask。nocap 权重训练时恒为 2 个 token，
+偏离大于 cap 权重。融合模块在各自的 77-token 特征上训练，能适应分布偏移，
+但冻结 U-Net 内 pad token 造成的信息损失无法恢复。因此 frame−empty 只报告为
+“匹配权重+文本”的整体差，不归因为 caption 内容；内容效应只看 frame 臂内
+正确 vs 置换（同模型、同 padding）。
+
 完整结构/训练设置沿用 `DA2_IRIS_FUSION_RUN_20261030.md`：冻结DA2和Iris，
 只训练两个空间融合模块；真实激光masked log-L1；20k updates，batch4×3，
 lr5e-5 polynomial衰减；77 token和原mask规则；固定按图像ID生成噪声；
