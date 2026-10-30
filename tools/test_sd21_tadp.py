@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 import torch
 from ms2_eval.io import load_manifest, sha256_file
 from models.sd21_tadp import load_sd21
+from models.sd21_dual import load_dual
 from tools.da2_caption_data import caption_hash
 from tools.run_ms2_supdepth_baselines import official_frames
 from tools.test_da2_fixed import TESTS, validate_samples
@@ -24,7 +25,9 @@ from tools.train_sd21_tadp_pair import ThermalDirect, make_tokens, read, verify_
 
 ENVIRONMENTS = {'day': 'test_day', 'night': 'test_night', 'rain': 'test_rain'}
 # Same SD21Depth model and checkpoint layout; only the training loss differs.
-EXPERIMENTS = ('sd21_tadp_pair_v1', 'sd21_tadp_pseudo_pair_v1', 'sd21_tadp_pseudo_b1_pair_v1')
+EXPERIMENTS = ('sd21_tadp_pair_v1', 'sd21_tadp_pseudo_pair_v1', 'sd21_tadp_pseudo_b1_pair_v1', 'sd21_dual_pair_pad77_v2')
+# The dual model adds the 8-channel input and task projection; its forward still returns the direct head.
+LOADERS = {'sd21_dual_pair_pad77_v2': load_dual}
 METRICS = ('abs_rel', 'sq_rel', 'rmse', 'rmse_log', 'a1', 'a2', 'a3')
 
 
@@ -76,7 +79,7 @@ def run(args):
     else:
         out.mkdir(parents=True)
         json_write(out / 'provenance.json', provenance)
-    model = load_sd21(assets['path'])
+    model = LOADERS.get(args.experiment, load_sd21)(assets['path'])
     model.unet.load_state_dict(state['unet'], strict=True)
     model.head.load_state_dict(state['head'], strict=True)
     del state
