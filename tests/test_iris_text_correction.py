@@ -31,24 +31,34 @@ class CorrectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             corr.donors_for(val[::-1], {"pairs":pairs}, digest)
 
-    def test_only_one_frame_balanced_scalar_on_valid_lidar(self):
-        raw = np.arange(12, dtype=np.float32).reshape(3, 4)
-        delta = corr.unit_map(raw)
-        np.testing.assert_allclose(delta, corr.unit_map(2*raw+13))
-        base = np.full_like(raw, 4.)
+    def test_training_score_matches_dense_official_validation_with_sparse_gt(self):
+        base = np.linspace(2., 10., 24, dtype=np.float32).reshape(4, 6)
+        delta = corr.unit_map(np.sin(base))
+        frames, official = [], []
+        for n, target in [(21, .35), (6, .1)]:
+            gt = 80. - 6. * corr.corrected(base, delta, target)
+            gt.flat[n:] = np.nan
+            gt.flat[:3] = [0., .001, 80.]
+            frames.append(corr.fit_pixels(base, delta, gt))
+            official.append(corr.evaluate_sample(corr.corrected(base, delta, .25), gt, align="ssi",
+                                                 min_depth=.001, max_depth=80.)["abs_rel"])
+        self.assertNotAlmostEqual(*official)
+        self.assertAlmostEqual(corr.mean_train_ssi_absrel(frames, .25), np.mean(official), places=13)
+        self.assertIsNone(corr.fit_pixels(base, delta, np.zeros_like(gt)))
+
+    def test_scalar_recovers_shape_after_affine_offset_and_can_keep_zero(self):
+        base = np.linspace(2., 10., 36, dtype=np.float32).reshape(6, 6)
+        delta = .1 * np.sin(base) + .12
         self.assertIs(corr.corrected(base, delta, 0), base)
-        gt = corr.corrected(base, delta, .2)
-        gt[0] = [0., np.nan, 80., 100.]
-        terms = [corr.fit_terms(base, delta, gt)]
-        self.assertAlmostEqual(corr.fit_coefficient(terms), .2, places=6)
-        self.assertEqual(corr.fit_coefficient([(-1., 2.)]), 0.)
-        self.assertIsNone(corr.fit_terms(base, delta, np.zeros_like(gt)))
-        # Equal-frame objective even though one frame contains only one return.
-        sparse = np.zeros_like(gt)
-        sparse[0, 0] = 4*np.exp(.4)
-        ones = np.ones_like(delta)
-        mixed = [corr.fit_terms(base, ones, sparse), corr.fit_terms(base, ones, base)]
-        self.assertAlmostEqual(corr.fit_coefficient(mixed), .2, places=6)
+        # The old unaligned log fit chooses zero, although beta=1.7 recovers
+        # the correct spatial shape once the evaluation fits scale and shift.
+        gt = .35 * corr.corrected(base, delta, 1.7) + .3
+        self.assertLess(np.mean(delta * (np.log(gt)-np.log(base))), 0.)
+        fit = corr.fit_coefficient([corr.fit_pixels(base, delta, gt)])
+        self.assertAlmostEqual(fit["beta"], 1.7, places=4)
+        self.assertLess(fit["train_frame_absrel"], fit["train_zero_absrel"])
+        fit = corr.fit_coefficient([corr.fit_pixels(base, delta, base.copy())])
+        self.assertEqual(fit["beta"], 0.)
 
     def test_only_the_prompt_changes_in_the_decoded_difference(self):
         raw = torch.arange(16, dtype=torch.float32).reshape(4, 4)

@@ -16,7 +16,7 @@ cd "$IRIS_REPO"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 PARENT="$IRIS_RUNS/outputs/lotus_line_v2"
 BASE="$PARENT/da2_iris_fusion_matched_pair_v2"
-OUT="$PARENT/iris_text_correction_empty6k_v1"
+OUT="$PARENT/iris_text_correction_empty6k_ssi_v2"
 test -r "$BASE/empty_s43/step006000.pt"
 test -r "$BASE/empty_s43/summary.json"
 mkdir -p "$OUT"

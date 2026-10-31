@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 if str(ROOT / "tools") not in sys.path:
     sys.path.append(str(ROOT / "tools"))
 from ms2_eval.io import sha256_file
-from ms2_eval.official_protocol import evaluate_sample, official_valid_mask, OFFICIAL_METRICS
+from ms2_eval.official_protocol import evaluate_sample, official_valid_mask, OfficialProtocolError, OFFICIAL_METRICS
 from tools.da2_caption_data import checked_manifest, TRAIN
 from tools.da2_continuation import validate_state, check_source
 from tools.train_da2_caption import build_model, verify_assets, json_write
@@ -28,7 +28,7 @@ from tools.train_da2_iris_fusion_v2 import (
     matched_sources, read, restore, validate_iris_payload, verify_iris_assets,
 )
 
-NAME = "iris_text_correction_empty6k_v1"
+NAME = "iris_text_correction_empty6k_ssi_v2"
 STEP = 6000
 CONDITIONS = ("zero", "frame", "permuted")
 MODES = ("ssi", "none")
@@ -70,25 +70,66 @@ def unit_map(raw):
     return (raw - raw.mean(dtype=np.float64).item()) / max(raw.std(dtype=np.float64).item(), 1e-6)
 
 
-def fit_terms(base, delta, gt):
+def fit_pixels(base, delta, gt):
     valid = official_valid_mask(gt, .001, 80.)
     if base.shape != gt.shape or delta.shape != gt.shape:
         raise ValueError("Map shape mismatch")
     if not valid.any():
         return None
-    x = delta[valid].astype(np.float64)
-    residual = np.log(gt[valid].astype(np.float64)) - np.log(base[valid].astype(np.float64))
-    return float(np.mean(x * residual)), float(np.mean(x * x))
+    # SSI fits and scores only on this mask. Keep frame boundaries and the
+    # original order, so the official evaluator can run on compact 2D arrays.
+    return tuple(array[valid][None, :] for array in (base, delta, gt))
 
 
-def fit_coefficient(terms):
-    if not terms:
+def mean_train_ssi_absrel(frames, beta):
+    scores = []
+    for base, delta, gt in frames:
+        pred = corrected(base, delta, beta)
+        scores.append(evaluate_sample(pred, gt, align="ssi", min_depth=.001, max_depth=80.)["abs_rel"])
+    return float(np.mean(scores))
+
+
+def fit_coefficient(frames):
+    from scipy.optimize import minimize_scalar
+    if not frames:
         raise ValueError("No training LiDAR")
-    numerator, denominator = np.sum(terms, axis=0)
-    if not np.isfinite([numerator, denominator]).all():
-        raise ValueError("Nonfinite training statistics")
-    # Closed-form minimum of frame-balanced log MSE subject to beta >= 0.
-    return float(max(0., numerator / denominator)) if denominator > 0 else 0.
+    evaluations = {}
+
+    def objective(beta):
+        beta = float(beta)
+        if beta not in evaluations:
+            try:
+                with np.errstate(over="raise", under="ignore", invalid="raise"):
+                    score = mean_train_ssi_absrel(frames, beta)
+                if not np.isfinite(score):
+                    raise FloatingPointError("Nonfinite training SSI AbsRel")
+            except (OfficialProtocolError, FloatingPointError):
+                if beta == 0.:
+                    raise
+                score = float("inf")
+            evaluations[beta] = score
+        return evaluations[beta]
+
+    # The affine fit changes with beta. Bracket sampled local minima, including
+    # either boundary, then refine; retain the best actually scored candidate.
+    knots = np.linspace(0., 1., 9).tolist()
+    scores = [objective(beta) for beta in knots]
+    while scores[-1] < min(scores[:-1]):
+        knots.append(2. * knots[-1])
+        scores.append(objective(knots[-1]))
+    if min(scores) != max(scores):
+        for i, value in enumerate(scores):
+            lo, hi = max(0, i-1), min(len(knots)-1, i+1)
+            if np.isfinite(value) and value <= min(scores[lo], scores[hi]):
+                minimize_scalar(objective, bounds=(knots[lo], knots[hi]), method="bounded",
+                                options={"xatol": 1e-5})
+    else:
+        # Even equal knot scores can conceal a minimum between knots.
+        minimize_scalar(objective, bounds=(0., knots[-1]), method="bounded", options={"xatol": 1e-5})
+    beta = min(evaluations, key=lambda b: (evaluations[b], b))
+    return dict(beta=beta, train_zero_absrel=evaluations[0.], train_frame_absrel=evaluations[beta],
+                evaluated=[dict(beta=b, ssi_absrel=evaluations[b] if np.isfinite(evaluations[b]) else None)
+                           for b in sorted(evaluations)])
 
 
 def corrected(base, delta, beta):
@@ -96,7 +137,7 @@ def corrected(base, delta, beta):
         return base
     result = (base * np.exp(beta * delta.astype(np.float64))).astype(np.float32)
     if not np.isfinite(result).all() or np.any(result <= 0):
-        raise ValueError("Invalid corrected depth")
+        raise FloatingPointError("Invalid corrected depth")
     return result
 
 
@@ -254,7 +295,8 @@ def run(args):
     snapshot = snapshot_download("jingheya/lotus-depth-g-v2-1-disparity", local_files_only=True)
     files = ("tools/iris_text_correction.py", "tools/train_route_suite.py", "tools/train_ms2_joint_gt_v3.py",
              "lotus/pipeline.py", "models/anythermal_lotus_v2_4.py", "models/anythermal_lotus_v2.py")
-    recipe = dict(name=NAME, fit_ids=[train[i].sample_id for i in indices],
+    recipe = dict(name=NAME, objective="frame_mean_official_ssi_abs_rel", beta_search="nonnegative_adaptive_bracket",
+                  fit_ids=[train[i].sample_id for i in indices],
                   references=[dict(id=train[i].sample_id, caption=train[i].caption) for i in refs],
                   permutation_sha256=permutation, train=ti, val=vi, snapshot=snapshot, sources=sources,
                   checkpoint_sha256=sha256_file(run_dir / "step006000.pt"), selection_sha256=sha256_file(run_dir / "summary.json"),
@@ -273,20 +315,22 @@ def run(args):
     fit_path = out / "fit.json"
     if not fit_path.exists():
         training = dataset(train)
-        terms = []
+        frames = []
         for n, i in enumerate(indices, 1):
             base, delta, _, gt = predictor.maps(training, i)
-            term = fit_terms(base, delta, gt)
-            if term is not None:
-                terms.append(term)
+            pixels = fit_pixels(base, delta, gt)
+            if pixels is not None:
+                frames.append(pixels)
             if n % 128 == 0:
                 print(f"[fit] {n}/{len(indices)}", flush=True)
-        json_write(fit_path, dict(beta=fit_coefficient(terms), used=len(terms), total=len(indices),
-                                  recipe_sha256=sha256_file(path)))
+        print("[fit] minimizing training SSI AbsRel", flush=True)
+        json_write(fit_path, dict(**fit_coefficient(frames), used=len(frames), total=len(indices),
+                                  recipe_sha256=sha256_file(path), objective=recipe["objective"]))
+        del frames
     fit = read(fit_path)
     if fit["recipe_sha256"] != sha256_file(path) or not np.isfinite(fit["beta"]) or fit["beta"] < 0:
         raise ValueError("Invalid frozen fit")
-    print("[frozen-fit]", fit, flush=True)
+    print("[frozen-fit]", {k: v for k, v in fit.items() if k != "evaluated"}, flush=True)
     # A different coefficient can never consume this fit's cached frame rows.
     paired_dir = out / ("val_" + sha256_file(fit_path))
     paired_dir.mkdir(exist_ok=True)
