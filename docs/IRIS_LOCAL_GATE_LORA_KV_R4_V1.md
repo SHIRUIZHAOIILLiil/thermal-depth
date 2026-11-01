@@ -3,7 +3,8 @@
 Independent run: `outputs/lotus_line_v2/iris_local_gate_lora_kv_r4_v1`.
 No old trainer, source checkpoint, result or manifest is modified. This is the
 existing pilot `official_protocol` SSI/none experiment, not a final-paper unified
-evaluation. No test split is loaded or submitted by these scripts.
+evaluation. The training entry point and submission script do not load or submit
+the test split; the separately authorized attachment below adds test jobs.
 
 ## Frozen recipe
 
@@ -100,3 +101,47 @@ After both arms finish:
 python tools/train_iris_local_gate_lora.py report --out \
   /mnt/scratch/dwdh0363/runs/outputs/lotus_line_v2/iris_local_gate_lora_kv_r4_v1
 ```
+
+## Attach selected-checkpoint tests (subsequently authorized)
+
+`tools/test_iris_local_gate_lora.py` evaluates each arm's validation-selected
+checkpoint on full day/night/rain manifests, logging SSI, none and official
+stride10 SSI. It recomputes the frozen guarded selection from the saved curve;
+neither the fixed4000 score nor test scores can change checkpoint selection.
+
+Nonzero selection restores the COMPLETE selected LoRA + gate state, with the
+same frozen parent anchor and 5% trust bound used in training. Step0 instead
+verifies and re-folds the SAME ARM's previous local-gate test CSVs: frame2k or
+empty6k. It does not reuse the bare shared fusion base. Source checkpoint,
+selection, manifests, official IDs, counts, provenance and CSV hashes are checked.
+Outputs are stored separately under this new run's `test_selected_v1/{arm}`.
+Existing complete per-condition CSVs can be reused only under matching provenance.
+
+Four necessary runner tests cover both step0 arms, wrong-source rejection,
+nonzero checkpoint selection/restore wiring, resume without duplicate inference,
+selection guards and mocked Slurm attachment. Real model inference is exercised
+on Aire; these tests do not claim to evaluate real checkpoints locally.
+
+If training is already submitted, attach ONLY the two test jobs:
+
+```bash
+(
+  set -euo pipefail
+  cd ~/Iris
+  git pull --ff-only
+  unset IRIS_MS2_ROOT IRIS_MANIFEST_DIR IRIS_DATA
+  export IRIS_RUNS=/mnt/scratch/dwdh0363/runs
+  bash slurm/attach_iris_local_gate_lora_tests.sh
+)
+```
+
+This reads `submission.txt`, verifies owner/job names, and attaches
+`iris_ll_test_frame` / `iris_ll_test_empty` with `afterok` to their respective
+`iris_ll_frame` / `iris_ll_empty` jobs. It never submits training. Optional
+explicit arguments are `FRAME_TRAIN_ID EMPTY_TRAIN_ID`. Attachment receipts
+prevent duplicate test submissions. If a job ID is no longer eligible for a
+Slurm dependency, the submission fails instead of silently dropping the dependency.
+
+For a fresh run, execute the existing training submitter and then the attachment
+script in the same `set -euo pipefail` shell. No change to the already-submitted
+training code, contracts or source hashes is required.
