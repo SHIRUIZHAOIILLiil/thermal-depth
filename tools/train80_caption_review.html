@@ -1,0 +1,40 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>80 帧热像 · Caption 盲评</title>
+<style>
+body{font:16px/1.5 system-ui,sans-serif;margin:20px;color:#203036}h1{font-size:1.45rem}table{border-collapse:collapse;width:100%;table-layout:fixed}td,th{border:1px solid #b9c8c6;padding:10px;text-align:left;vertical-align:top}td:first-child{background:#edf2f2}img{width:100%;height:auto}th{background:#e1edeb}label{display:block;margin:10px 0}select,textarea,button{font:inherit;max-width:100%}textarea{width:95%}p.caption{min-height:3em}nav{position:sticky;top:0;background:white;padding:8px;border-bottom:1px solid #aab;z-index:1}button{padding:4px 12px}small{color:#485b60}
+</style>
+<h1>80 帧热像 · Caption 盲评</h1>
+<p>对照同一帧，分别给 A、B 打分。若某句明确描述了图中不存在的对象或关系，错述选「有」。图像不足以核实，选「无法确认」。若至少有一条能在画面定位、又与物体位置、前后关系或遮挡有关的可靠描述，深度信息选「有」。两句相同也照常记录，可选「相当」。</p>
+<nav><button id="save">导出评分 CSV</button>　<span id="progress"></span>　<small id="hint">可中途导出。点击热像可下载原尺寸预览。</small></nav>
+<table><colgroup><col style="width:32%"><col style="width:25%"><col style="width:25%"><col style="width:18%"></colgroup>
+<thead><tr><th>热像</th><th>描述 A</th><th>描述 B</th><th>整体判断</th></tr></thead><tbody>
+<!-- REVIEW_ROWS -->
+</tbody></table>
+<script>
+const rows = [...document.querySelectorAll('tr[data-id]')];
+const fields = ['A_error','A_useful','B_error','B_useful','preference','note'];
+const storageKey = 'thermal-caption-review-__REVIEW_ID__';
+function values(row) {return Object.fromEntries([...row.querySelectorAll('[data-field]')].map(el => [el.dataset.field,el.value]));}
+function progress() { document.getElementById('progress').textContent = rows.filter(r => fields.slice(0,5).every(k => values(r)[k])).length + ' / '+ rows.length +' 帧评完'; }
+let cached = {};
+try {cached = JSON.parse(localStorage.getItem(storageKey) || '{}');} catch (_) {}
+for (const row of rows) {
+  row.querySelector('a').href = row.querySelector('img').src;
+  for (const el of row.querySelectorAll('[data-field]')) {
+    el.value = cached[row.dataset.id]?.[el.dataset.field] || '';
+    el.addEventListener('input', () => {
+      cached[row.dataset.id] = values(row);
+      try {localStorage.setItem(storageKey, JSON.stringify(cached));} catch (_) {document.getElementById('hint').textContent='浏览器未保存进度，请及时导出 CSV。';}
+      progress();
+    });
+  }
+}
+progress();
+document.getElementById('save').onclick = () => {
+  const records = [['review_id','A_caption','B_caption',...fields], ...rows.map(row =>
+    [row.dataset.id,...[...row.querySelectorAll('.caption')].map(p => p.textContent),...fields.map(k => values(row)[k])])];
+  const csv = records.map(r => r.map(v => '"'+String(v).replaceAll('"','""')+'"').join(',')).join('\r\n');
+  const url = URL.createObjectURL(new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'}));
+  const a = document.createElement('a'); a.href=url; a.download='train80_ratings.csv'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+</script></html>
