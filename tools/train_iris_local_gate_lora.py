@@ -349,7 +349,7 @@ def run(args):
             if smoke:
                 trace.update(train.samples[i].sample_id.encode())
                 for tensor in (anchor[0], anchor[1], anchor[3]):
-                    trace.update(tensor.cpu().contiguous().numpy().tobytes())
+                    trace.update(tensor.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
                 if step == 1:
                     pred = model.predict(train, i, anchor)
                     torch.testing.assert_close(pred.detach(), anchor[0]*anchor[2].exp(), rtol=1e-6, atol=1e-6)
