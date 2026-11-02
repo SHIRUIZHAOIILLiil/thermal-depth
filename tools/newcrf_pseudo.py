@@ -74,6 +74,19 @@ def predict(net, x, size):
     return p
 
 
+def train_mode(net):
+    # NeWCRF's PSP head uses BN; microbatch 2 statistics would overwrite the
+    # official running stats. Freeze them, keep the affine parameters trainable.
+    net.train()
+    for m in net.modules():
+        if isinstance(m, torch.nn.modules.batchnorm._BatchNorm):
+            m.eval()
+
+
+def bn_stats(net):
+    return {n: b.detach().clone() for n, b in net.named_buffers() if n.endswith(('running_mean', 'running_var'))}
+
+
 def silog(p, target):
     if p.shape != target.shape or not torch.isfinite(p).all() or (p <= 0).any():
         raise ValueError('Invalid metric depth for SiLog')
@@ -161,6 +174,7 @@ def fit(a):
     contract = dict(**pipeline_contract(a), train=ti, val=vi, inventory_sha256=sha256_file(index_path),
                     seed=43, lr=LR, batch=BATCH, accumulation=ACCUM, schedule=list(STEPS),
                     augmentation='paired horizontal flip p=.5 (training only)',
+                    batchnorm='running statistics frozen (eval mode); affine parameters trained',
                     loss='dense metric SiLog (lambda .85, factor 10); LiDAR writeback, clipped [.001,80], mask [.001,80)',
                     selection='stride4 val SSI AbsRel, tie -> earliest, including step 0')
     proof = a.out/'smoke.json'
@@ -171,6 +185,9 @@ def fit(a):
     json_write(run/'contract.json', contract)
     seed_all(43)
     net = official_model(a)
+    official_bn = bn_stats(net)
+    if smoke and not official_bn:
+        raise ValueError('Smoke: expected BN running statistics in the NeWCRF head')
     opt = torch.optim.AdamW(net.parameters(), lr=LR, weight_decay=.01)
     steps = (0, 2) if smoke else STEPS
     val_curve = val[:8] if smoke else val[::4]
@@ -179,7 +196,7 @@ def fit(a):
                               sampler=ImageStream(len(train), 43, 0, steps[-1]*ACCUM*BATCH))
     best = None
     for j, (image, target, ids) in enumerate(train_loader, 1):
-        net.train()
+        train_mode(net)
         pred = predict(net, image.cuda(), target.shape[-2:])
         loss = silog(pred, target.cuda())
         if not torch.isfinite(loss):
@@ -205,6 +222,8 @@ def fit(a):
                 best = trained
             json_write(run/'curve.json', curve)
             print('[val]', step, curve[step]['metrics']['ssi'], flush=True)
+    if any(not torch.equal(v, official_bn[n]) for n, v in bn_stats(net).items()):
+        raise ValueError('BN running statistics changed during fine-tuning')
     selected, trained = selection(curve)
     state = torch.load(run/'best_trained.pt', map_location='cpu', weights_only=True)
     if state['step'] != trained:

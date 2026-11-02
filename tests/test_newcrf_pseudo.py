@@ -38,6 +38,16 @@ class NewCRFTests(unittest.TestCase):
         self.assertEqual(runner.selection(curve([(0,.07),(500,.08),(1000,.08)])), (0,500))
         self.assertEqual(runner.selection(curve([(0,.07),(500,.07),(1000,.06)])), (1000,1000))
 
+    def test_train_mode_freezes_bn_statistics_only(self):
+        net = torch.nn.Sequential(torch.nn.Conv2d(1, 2, 1), torch.nn.BatchNorm2d(2), torch.nn.Dropout(.5))
+        before = runner.bn_stats(net)
+        runner.train_mode(net)
+        self.assertTrue(net.training and net[0].training and net[2].training)
+        self.assertFalse(net[1].training)
+        net(torch.randn(2, 1, 3, 3)).sum().backward()
+        self.assertTrue(all(torch.equal(v, before[n]) for n, v in runner.bn_stats(net).items()))
+        self.assertIsNotNone(net[1].weight.grad)
+
     def test_official_fold_real_gt_and_no_pseudo_access(self):
         class Net(torch.nn.Module):
             def __init__(self):
