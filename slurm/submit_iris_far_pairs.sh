@@ -38,3 +38,4 @@ for arm in frame empty; do
 done
 id=$(job -J iris_fp_report --mem=6G --time=00:15:00 --dependency="afterok:${parents[0]}:${parents[1]}" --export=ALL,ACTION=report)
 echo "paired report -> $id (afterok:${parents[*]})" | tee -a "$PAIR_RUN/jobs.txt"
+bash slurm/attach_iris_far_pairs_tests.sh "$PAIR_RUN"
