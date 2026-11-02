@@ -30,8 +30,12 @@ ACCUMULATION = 3
 
 
 def json_write(path, value):
+    def numpy_bool(obj):
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        raise TypeError(f'Object of type {type(obj).__name__} is not JSON serializable')
     tmp = Path(str(path) + '.tmp')
-    tmp.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+    tmp.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False, default=numpy_bool), encoding='utf-8')
     os.replace(tmp, path)
 
 
