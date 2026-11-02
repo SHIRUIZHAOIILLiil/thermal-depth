@@ -61,6 +61,8 @@ class StretchTests(unittest.TestCase):
         self.assertTrue(all(s.gates(zero, improved).values()))
         self.assertFalse(all(s.gates(zero, bad).values()))
         self.assertFalse(s.gates(zero, zero)['rmse'])
+        numpy_zero = {k: np.float64(v) for k, v in zero.items()}
+        self.assertIs(type(s.gates(numpy_zero, numpy_zero)['rmse']), bool)
         self.assertEqual(s.choose_beta({0.:zero, .25:bad, .5:improved}), .5)
 
 

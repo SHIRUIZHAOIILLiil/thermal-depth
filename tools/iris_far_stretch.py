@@ -68,9 +68,10 @@ def choose_beta(scores):
 
 
 def gates(zero, corrected):
-    return dict(rmse=corrected['rmse'] <= zero['rmse'] - RMSE_GAIN,
-                abs_rel=corrected['abs_rel'] <= zero['abs_rel'] + ABS_TOL,
-                a1=corrected['a1'] >= zero['a1'] - A1_TOL)
+    # Metrics are numpy floats; JSON cannot serialize numpy.bool_.
+    return dict(rmse=bool(corrected['rmse'] <= zero['rmse'] - RMSE_GAIN),
+                abs_rel=bool(corrected['abs_rel'] <= zero['abs_rel'] + ABS_TOL),
+                a1=bool(corrected['a1'] >= zero['a1'] - A1_TOL))
 
 
 def checkpoint(roots, arm):
