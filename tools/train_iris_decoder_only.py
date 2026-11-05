@@ -16,7 +16,7 @@ from ms2_eval.official_protocol import OFFICIAL_METRICS, evaluate_sample
 from tools import train_iris_latent_release as parent
 from tools import train_iris_far_bias_square as bias
 from tools import train_iris_far_pairs as pair
-from tools.iris_decoder_only import InferenceInput, predict_frozen, make_decoder, decode_unit, select
+from tools.iris_decoder_only import InferenceInput, fingerprint, predict_frozen, make_decoder, decode_unit, select
 from tools.iris_decoder_only import STEPS, LR, BATCH, ACCUM, SEED
 from tools.iris_tmax1_selection import POLICY, read_reference
 
@@ -97,8 +97,8 @@ def validate(model, decoder, samples, recipe, verify_initial=False):
 def train(model, decoder, params, dataset, samples, recipe, folder, smoke):
     budget = 4 if smoke else STEPS[-1]
     optimizer = torch.optim.AdamW(params.values(),lr=LR,weight_decay=.01)
-    before = pair.fingerprint(frozen_parameters(model,decoder))
-    initial = pair.fingerprint(params.items())
+    before = fingerprint(frozen_parameters(model,decoder))
+    initial = fingerprint(params.items())
     # A fresh decoder training stage; retain the existing 4k continuation data cursor.
     stream = iter(pair.ImageStream(len(samples),SEED,4000*BATCH*ACCUM,budget*BATCH*ACCUM))
     trace = hashlib.sha256()
@@ -138,13 +138,13 @@ def train(model, decoder, params, dataset, samples, recipe, folder, smoke):
             torch.save({k:p.detach().cpu() for k,p in params.items()},folder/f'decoder_{update}.pt')
     decoder.disable_gradient_checkpointing()
     decoder.eval()
-    if before != pair.fingerprint(frozen_parameters(model,decoder)):
+    if before != fingerprint(frozen_parameters(model,decoder)):
         raise ValueError('Frozen module weights changed')
-    if initial == pair.fingerprint(params.items()) or max_grad <= 0 or not supported or not total_pairs:
+    if initial == fingerprint(params.items()) or max_grad <= 0 or not supported or not total_pairs:
         raise ValueError('Missing decoder update or real far/pair supervision')
     return dict(initial=initial, frozen_sha256=before, frozen_unchanged=True,
                 trace=trace.hexdigest(), max_grad=max_grad, far_frames=supported, pairs=total_pairs,
-                updates=budget, final=pair.fingerprint(params.items()))
+                updates=budget, final=fingerprint(params.items()))
 
 
 def run(a):
@@ -216,7 +216,7 @@ def run(a):
     passed = pair.read(a.run/'smoke_pass.json')
     if settings!=pair.read(a.run/'contract.json') or passed['contract_sha256']!=pair.sha256_file(a.run/'contract.json'):
         raise ValueError('Formal configuration differs from smoke')
-    if pair.fingerprint(params.items()) != passed['training']['initial']:
+    if fingerprint(params.items()) != passed['training']['initial']:
         raise ValueError('Formal decoder differs from smoke start')
     report = train(model,decoder,params,dataset,train_samples,recipe,folder,False)
     curve = {0:passed['baseline']}

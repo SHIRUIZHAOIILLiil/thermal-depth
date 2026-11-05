@@ -1,6 +1,7 @@
 """Decoder-only adaptation primitives with a GT-free inference boundary."""
 from dataclasses import dataclass
 import copy
+import hashlib
 
 import torch
 
@@ -20,6 +21,16 @@ class InferenceInput:
     @classmethod
     def from_sample(cls, sample):
         return cls(sample.sample_id, sample.thermal_path, sample.caption, sample.manifest_line-1)
+
+
+def fingerprint(items):
+    """Hash values in logical order. A 1x1 convolution can stay channels-last and
+    still report contiguous, so the shared byte-view fingerprint cannot read it."""
+    digest = hashlib.sha256()
+    for name, parameter in items:
+        digest.update(name.encode())
+        digest.update(parameter.detach().cpu().numpy().tobytes())
+    return digest.hexdigest()
 
 
 def predict_frozen(model, item, recipe):

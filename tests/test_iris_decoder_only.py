@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 import torch
 from torch import nn
 from tools import train_iris_decoder_only as runner
-from tools.iris_decoder_only import InferenceInput, predict_frozen, make_decoder, decode_unit, select
+from tools.iris_decoder_only import InferenceInput, fingerprint, predict_frozen, make_decoder, decode_unit, select
 from tools.train_ms2_joint_gt_v3 import _denormalise
 
 
@@ -48,16 +48,16 @@ class DecoderTests(unittest.TestCase):
             expected = _denormalise(model.gt_vae.decode(latent/.18215)[0])
         actual = decode_unit(decoder, latent)[0, 0]
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-        before = runner.pair.fingerprint(runner.frozen_parameters(model, decoder))
-        initial = runner.pair.fingerprint(params.items())
+        before = runner.fingerprint(runner.frozen_parameters(model, decoder))
+        initial = runner.fingerprint(params.items())
         self.assertEqual(set(params), {'decoder.weight', 'decoder.bias'})
         optimizer = torch.optim.AdamW(params.values(), lr=1e-5)
         (actual-.3).square().mean().backward()
         self.assertTrue(any(p.grad is not None and p.grad.abs().sum()>0 for p in params.values()))
         self.assertTrue(all(p.grad is None for _, p in runner.frozen_parameters(model, decoder)))
         optimizer.step()
-        self.assertEqual(before, runner.pair.fingerprint(runner.frozen_parameters(model, decoder)))
-        self.assertNotEqual(initial, runner.pair.fingerprint(params.items()))
+        self.assertEqual(before, runner.fingerprint(runner.frozen_parameters(model, decoder)))
+        self.assertNotEqual(initial, runner.fingerprint(params.items()))
 
     def test_gt_free_inference_boundary_and_backward(self):
         class Sample:
@@ -108,6 +108,14 @@ class DecoderTests(unittest.TestCase):
         self.assertIsNone(latent.grad)
         self.assertGreater(sum(float(p.grad.abs().sum()) for p in params.values()),0)
         self.assertTrue(all(p.grad is None for _,p in runner.frozen_parameters(model,decoder)))
+
+    def test_fingerprint_reads_channels_last_one_by_one_convolutions(self):
+        values = torch.arange(16, dtype=torch.float32).reshape(4, 4, 1, 1)
+        stored = values.clone(memory_format=torch.channels_last)
+        self.assertNotEqual(stored.stride(-1), 1)
+        with self.assertRaises(RuntimeError):
+            stored.contiguous().view(torch.uint8)
+        self.assertEqual(fingerprint([('conv', stored)]), fingerprint([('conv', values)]))
 
     def test_selection_keeps_start_or_accepts_bounded_tradeoff(self):
         ref = dict(abs_rel=.08, rmse=2.47, a1=.95)
