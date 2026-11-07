@@ -79,7 +79,7 @@ fi
 
 accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision="fp16" \
   --main_process_port="${MAIN_PORT:-13224}" \
-  train_iris_ms2_g.py \
+  "${TRAIN_ENTRY:-train_iris_ms2_g.py}" \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --ms2_manifest=$MS2_MANIFEST \
   --ms2_root=$MS2_ROOT \
