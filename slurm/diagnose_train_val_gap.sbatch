@@ -16,4 +16,5 @@ cd "$IRIS_REPO"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 OMP_NUM_THREADS=1
 python tests/test_train_val_gap.py
 python -u tools/diagnose_train_val_gap.py --runs "$IRIS_RUNS" --data-root "$IRIS_MS2_ROOT" \
+    --candidate "${CANDIDATE:-sd2_cap_pct_logtn_img_l0100_tmax1_strongaug_s43}" \
     --out "$IRIS_RUNS/outputs/lotus_line_v2/iris_train_val_gap_v1/job_${SLURM_JOB_ID:?}"

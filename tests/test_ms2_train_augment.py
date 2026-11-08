@@ -61,6 +61,15 @@ class StrongAugmentation(unittest.TestCase):
         self.assertTrue(torch.equal(depth, depth.round()))
         self.assertTrue(set(mask.unique().tolist()) <= {0., 1.})
 
+    def test_scale_one_turns_the_crop_off(self):
+        with mock.patch.dict(os.environ, dict(SETTINGS, IRIS_AUG_MAX_SCALE='1')):
+            transform = aug.StrongTransform(random_flip=False)
+        torch.manual_seed(4)
+        image, depth, gt, mask = transform(*maps())
+        original = maps()
+        self.assertTrue(torch.equal(depth, original[1]) and torch.equal(mask, original[3]))
+        self.assertFalse(torch.equal(image, original[0]))
+
     def test_invalid_settings_are_refused(self):
         with mock.patch.dict(os.environ, dict(SETTINGS, IRIS_AUG_GAMMA='1.2,1.4')):
             with self.assertRaises(ValueError):

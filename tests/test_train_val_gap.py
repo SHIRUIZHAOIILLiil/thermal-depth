@@ -13,11 +13,11 @@ def rows(train, val):
 class TrainValGap(unittest.TestCase):
     def test_gap_reduction_boundary(self):
         base = rows(1.48, 2.79)
-        self.assertEqual(tool.decision(dict(tmax1=base, strongaug=rows(1.70, 2.81)))['next'], 'tune_augmentation')
-        self.assertEqual(tool.decision(dict(tmax1=base, strongaug=rows(1.60, 2.80)))['next'], 'close_augmentation')
+        self.assertEqual(tool.decision(dict(tmax1=base, candidate=rows(1.70, 2.81)))['next'], 'tune_augmentation')
+        self.assertEqual(tool.decision(dict(tmax1=base, candidate=rows(1.60, 2.80)))['next'], 'close_augmentation')
 
     def test_reduction_sign(self):
-        out = tool.decision(dict(tmax1=rows(1.5, 2.8), strongaug=rows(1.4, 2.8)))
+        out = tool.decision(dict(tmax1=rows(1.5, 2.8), candidate=rows(1.4, 2.8)))
         self.assertAlmostEqual(out['reduction_m'], -.1)
 
     def test_control_needs_both_splits(self):

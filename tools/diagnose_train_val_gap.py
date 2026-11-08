@@ -1,6 +1,6 @@
-"""Did strong augmentation shrink the train-to-validation gap at 16k?
+"""Did an augmentation arm shrink the train-to-validation gap at 16k?
 
-tmax1 and its strong-augmentation arm, same 96 + 96 frames and SSI-log as the earlier
+tmax1 and one candidate arm, same 96 + 96 frames and SSI-log as the earlier
 diagnostics. The rule below was fixed before this script ran. Inference only, no test.
 """
 import argparse
@@ -20,7 +20,7 @@ from tools import diagnose_far_gap_curve as curve
 from tools import diagnose_far_target_source as source_tool
 from tools import diagnose_model_far_gap as gap_tool
 
-RUNS = dict(tmax1='sd2_cap_pct_logtn_img_l0100_tmax1_s43', strongaug='sd2_cap_pct_logtn_img_l0100_tmax1_strongaug_s43')
+BASELINE_RUN = 'sd2_cap_pct_logtn_img_l0100_tmax1_s43'
 STEP = 16000
 # job 9229268, tmax1 16k on these frames
 ANCHOR = dict(train=1.4837547212281368, val=2.7980045794905712)
@@ -31,7 +31,7 @@ KEYS = ('abs_rel', 'rmse', 'a1')
 
 def decision(rows):
     gaps = {name: row['val']['rmse']-row['train']['rmse'] for name, row in rows.items()}
-    reduction = gaps['tmax1']-gaps['strongaug']
+    reduction = gaps['tmax1']-gaps['candidate']
     return dict(gaps=gaps, reduction_m=reduction, limit_m=GAP_REDUCTION_M,
                 next='tune_augmentation' if reduction >= GAP_REDUCTION_M-1e-12 else 'close_augmentation')
 
@@ -58,6 +58,9 @@ def run(a):
         raise RuntimeError('Requires CUDA')
     job = a.runs/f'outputs/lotus_line_v2/iris_far_target_source_fitonly_v2/job_{gap_tool.DIAGNOSTIC_JOB}'
     reference = json.loads((job/'summary.json').read_text())
+    if not a.candidate.startswith('sd2_cap_pct_logtn_img_l0100_tmax1_') or a.candidate == BASELINE_RUN:
+        raise ValueError(f'Unexpected candidate run {a.candidate}')
+    runs = dict(tmax1=BASELINE_RUN, candidate=a.candidate)
     a.out.mkdir(parents=True, exist_ok=False)
     c = prior.parent.parent_inputs(a.runs)['contract']
     splits = {}
@@ -69,7 +72,7 @@ def run(a):
     recipe = SimpleNamespace(**c['recipe'])
     model = RouteModel(recipe, torch.device('cuda'), torch.float16)
     rows, far, weights = {}, {}, {}
-    for name, run_name in RUNS.items():
+    for name, run_name in runs.items():
         path = a.runs/'iris_ms2'/run_name/'converted'/f'step{STEP}_weights.pt'
         payload = torch.load(path, map_location='cpu', weights_only=False)
         curve.check_payload(payload, STEP)
@@ -94,10 +97,10 @@ def run(a):
         print(f'[scored] {name}', flush=True)
     checked = control(rows['tmax1'])
     result = decision(rows)
-    (a.out/'summary.json').write_text(json.dumps(dict(control=checked, rows=rows, far_60_80=far, decision=result,
+    (a.out/'summary.json').write_text(json.dumps(dict(candidate=a.candidate, control=checked, rows=rows, far_60_80=far, decision=result,
         weights=weights, script_sha256=sha256_file(__file__)), indent=2, allow_nan=False))
     print('[control]', json.dumps(checked), flush=True)
-    for name in RUNS:
+    for name in runs:
         for split in ('train', 'val'):
             print('[row]', name, split, json.dumps({k: round(v, 5) for k, v in rows[name][split].items()}),
                   'far60-80', json.dumps({k: round(v, 2) for k, v in far[name][split].items()}), flush=True)
@@ -109,5 +112,6 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('runs', 'out', 'data-root'):
         p.add_argument('--'+name, type=Path, required=True)
+    p.add_argument('--candidate', required=True)
     os.environ.update(IRIS_THERMAL_STRETCH='percentile', IRIS_DECODE_CLAMP='0', IRIS_TEXT_PADDING='legacy')
     run(p.parse_args())

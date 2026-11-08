@@ -34,17 +34,18 @@ def random_gamma(image, low, high):
 
 
 class StrongTransform(MS2ThermalTransform):
-    """Flip as before, then scale-crop, then gamma."""
+    """Flip as before, then scale-crop (skipped at max_scale 1), then gamma."""
 
     def __init__(self, random_flip):
         super().__init__(random_flip)
         self.max_scale = float(os.environ["IRIS_AUG_MAX_SCALE"])
         self.gamma = tuple(float(x) for x in os.environ["IRIS_AUG_GAMMA"].split(","))
-        if self.max_scale <= 1 or len(self.gamma) != 2 or not 0 < self.gamma[0] < 1 < self.gamma[1]:
+        if self.max_scale < 1 or len(self.gamma) != 2 or not 0 < self.gamma[0] < 1 < self.gamma[1]:
             raise ValueError(f"Invalid augmentation: {self.max_scale} {self.gamma}")
         print(f"[ms2-aug] flip={random_flip} max_scale={self.max_scale} gamma={self.gamma}", flush=True)
 
     def __call__(self, image, depth, *extra):
         image, depth, *extra = super().__call__(image, depth, *extra)
-        image, depth, *extra = random_scale_crop(image, depth, *extra, max_scale=self.max_scale)
+        if self.max_scale > 1:
+            image, depth, *extra = random_scale_crop(image, depth, *extra, max_scale=self.max_scale)
         return (random_gamma(image, *self.gamma), depth, *extra)
