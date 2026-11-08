@@ -21,8 +21,10 @@
 - 留出格子里的目标因此只剩校准后的伪深度，和平时没有 LiDAR 的地方一样。
 
 入口 `lotus/train_iris_ms2_holdout.py` 只替换 `MS2ThermalDataset`，两个带校验和的文件不动。
-数据集初始化时先用全部 LiDAR 重建前 8 帧的伪深度，必须与磁盘上存的伪 GT 逐位相同，
-否则拒绝训练（证明原始预测目录和校准流程对得上）。
+AnyThermal 原始输出没有迁移过来，但不需要它：存下的伪 GT 是原始输出（缩放到 GT 尺寸后）
+的仿射变换，在 80% LiDAR 上对它重新做仿射拟合，与对原始输出重新拟合是同一个最小二乘问题，
+只差浮点舍入（单测里两条路的差小于 1 mm）。数据集初始化时先用全部 LiDAR 对前 8 帧再拟合一次，
+必须得到尺度 1、偏移 0、整图变化不超过 1 mm，否则拒绝训练。
 
 checkpoint 每 4000 步存一次（`CKPT_STEP=4000`），只占约 25 GB。
 
@@ -47,11 +49,6 @@ r = (holdout − tmax1) / (target − tmax1)：
 
 ## 投递
 
-`build_config.json` 记的原始预测目录是旧账号的
-`/mnt/scratch/sc23sz/runs/pseudo_gt/official_train/raw_predictions_run/raw_predictions`
-（float32，76547 帧，0 失败），迁移后在 `from_sc23sz/runs/pseudo_gt/` 下同一相对路径。
-投递前检查文件数，冒烟时再逐位重建 8 帧验证。
-
 投递（冒烟 → 训练 → val → 判读 → 邮件）：
 
 ```bash
@@ -61,11 +58,8 @@ r = (holdout − tmax1) / (target − tmax1)：
   git pull --ff-only origin aire-hpc-setup
   unset IRIS_MS2_ROOT IRIS_MANIFEST_DIR IRIS_DATA
   export IRIS_RUNS=/mnt/scratch/dwdh0363/runs
-  RAW=/mnt/scratch/dwdh0363/from_sc23sz/runs/pseudo_gt/official_train/raw_predictions_run/raw_predictions
-  n=$(find "$RAW" -maxdepth 1 -name '*.npy' | wc -l)
-  [[ "$n" == 76547 ]] || { echo "原始预测只有 $n 个，不投"; exit 1; }
   RUN=sd2_cap_pct_logtn_img_l0100_tmax1_holdout_s43
-  out=$(TRAIN_ENTRY=train_iris_ms2_holdout.py IRIS_HOLDOUT_RAW_DIR="$RAW" CKPT_STEP=4000 \
+  out=$(TRAIN_ENTRY=train_iris_ms2_holdout.py CKPT_STEP=4000 \
     bash slurm/submit_arm.sh "$RUN" "--truncnorm_max 1.0")
   echo "$out"
   SM=$(echo "$out" | awk '$1=="smoke" && $2=="->"{print $3}')
@@ -78,5 +72,5 @@ r = (holdout − tmax1) / (target − tmax1)：
 )
 ```
 
-冒烟跑完先看两行：`[ms2-holdout] ... rebuilt 8 stored pseudo maps exactly; held LiDAR share 0.2xx`
+冒烟跑完先看两行：`[ms2-holdout] refit 8 stored pseudo maps on all LiDAR: max change ... m; held LiDAR share 0.2xx`
 和 `truncnorm_max 1.0`。没有 `[ms2-holdout]` 这一行就说明入口没换上，`scancel` 训练和后续作业。

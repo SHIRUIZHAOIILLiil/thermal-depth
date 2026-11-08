@@ -1,10 +1,8 @@
 import json
-import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -51,8 +49,7 @@ class Fixture:
         self.pseudo = pseudo
 
     def dataset(self):
-        with mock.patch.dict(os.environ, IRIS_HOLDOUT_RAW_DIR=str(self.folder/'raw')):
-            return holdout.HoldoutDataset(self.manifest, self.folder, self.pseudo, norm_type='log_truncnorm', truncnorm_max=1.)
+        return holdout.HoldoutDataset(self.manifest, self.folder, self.pseudo, norm_type='log_truncnorm', truncnorm_max=1.)
 
 
 class HoldoutTarget(unittest.TestCase):
@@ -77,8 +74,8 @@ class HoldoutTarget(unittest.TestCase):
             self.assertTrue(np.all(sparse[held] == 0) and np.allclose(sparse[fit], gt[fit]))
             self.assertTrue(np.allclose(dense[fit], gt[fit]))
             raw = np.load(fixture.folder/'raw'/f"{row['id']}.npy")
-            expected = calibrate_pseudo_depth(raw, gt, fit, min_fit_pixels=10)[0].astype(np.float32)
-            self.assertTrue(np.allclose(dense[held], np.clip(expected[held], .001, 80.)))
+            from_raw = calibrate_pseudo_depth(raw, gt, fit, min_fit_pixels=10)[0]
+            self.assertLess(np.abs(np.clip(from_raw[held], .001, 80.)-dense[held]).max(), 1e-3)
             self.assertFalse(np.allclose(dense[held], gt[held], atol=1e-3))
 
     def test_held_values_never_reach_the_target(self):
@@ -94,11 +91,11 @@ class HoldoutTarget(unittest.TestCase):
             for x, y in zip(before, after):
                 self.assertTrue(np.array_equal(x, y))
 
-    def test_wrong_raw_predictions_are_refused(self):
+    def test_uncalibrated_store_is_refused(self):
         with tempfile.TemporaryDirectory() as d:
             fixture = Fixture(Path(d))
-            path = fixture.folder/'raw'/'seq_000001.npy'
-            np.save(path, np.load(path)*1.01+.001)
+            path = fixture.pseudo/'seq_000001.npy'
+            np.save(path, np.load(path)*1.01+.5)
             with self.assertRaises(ValueError):
                 fixture.dataset()
 
