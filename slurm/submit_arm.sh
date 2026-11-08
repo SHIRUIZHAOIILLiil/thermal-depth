@@ -36,7 +36,9 @@ export IRIS_THERMAL_STRETCH=percentile IRIS_TEXT_PADDING=legacy
 export LAMBDA_IMAGE=0.1 LAMBDA_TAIL=0 TAIL_LOSS=none TAIL_ALIGN=none TAIL_HUBER_DELTA_M=5
 export TRAIN_MANIFEST="$IRIS_MANIFEST_DIR/ms2_train_official8_thermalcap_v3_1_untrimmed_20260821.jsonl"
 export VAL_MANIFEST="$IRIS_MANIFEST_DIR/ms2_val_official3_thermalcap_20260821.jsonl"
-export MAX_TRAIN_STEPS=20000 CKPT_STEP=1000 EXTRA_TRAIN_ARGS="$EXTRA"
+# CKPT_STEP may be raised to save disk; it must divide 16000 for the val step below.
+export MAX_TRAIN_STEPS=20000 CKPT_STEP="${CKPT_STEP:-1000}" EXTRA_TRAIN_ARGS="$EXTRA"
+(( 16000 % CKPT_STEP == 0 )) || { echo "CKPT_STEP=$CKPT_STEP 不整除 16000"; exit 1; }
 
 export RUN_TAG="$RUN" SMOKE=0
 if [[ "${RESUME:-0}" == "1" ]]; then
