@@ -7,6 +7,7 @@
 #SBATCH --error=%x-%A_%a.err
 # Synthetic training data for the Iris-style pretraining (docs/IRIS_SYNTH_PRETRAIN_V1.md).
 #   STEP=probe              one Hypersim scene + vKITTI headers, environment checks
+#   STEP=model              download InternVL3-8B into $HF_HOME (caption env)
 #   STEP=hypersim           array task, COUNT=<total shards>
 #   STEP=hypersim-finalize  every scene fetched; metadata.jsonl
 #   STEP=vkitti             download rgb/depth/textgt, extract, check layout, delete tars
@@ -23,13 +24,18 @@ HY="$SYN/hypersim" VK="$SYN/vkitti" TARS="$SYN/vkitti_tars"
 VK_URL=https://download.europe.naverlabs.com/virtual_kitti_2.0.3/vkitti_2.0.3_
 PARTS=(rgb.tar depth.tar textgt.tar.gz)
 
-case "${STEP:?STEP=probe|hypersim|hypersim-finalize|vkitti|vkitti-normals}" in
+case "${STEP:?STEP=probe|model|hypersim|hypersim-finalize|vkitti|vkitti-normals}" in
 probe)
   python tests/test_synth_data.py
   python -u tools/synth_data.py probe --out "$HY"
   if conda env list | grep -E '^caption ' >/dev/null; then echo "[probe] conda env caption: present"; else echo "[probe] conda env caption: MISSING"; fi
   if [[ -d "$HF_HOME/hub/models--OpenGVLab--InternVL3-8B" ]]; then echo "[probe] InternVL3-8B: cached"; else echo "[probe] InternVL3-8B: NOT in $HF_HOME"; fi
-  echo "[probe] scratch: $(du -sh "$SCRATCH" 2>/dev/null | cut -f1) used"
+  lfs quota -h -u "$USER" /scratch | tail -2
+  ;;
+model)
+  # InternVL3-8B into $HF_HOME (about 16 GB); synth_caption.sbatch then runs offline.
+  conda activate caption
+  python -c "from huggingface_hub import snapshot_download as d; print(d('OpenGVLab/InternVL3-8B'))"
   ;;
 hypersim)
   python -u tools/synth_data.py hypersim --out "$HY" --index "${SLURM_ARRAY_TASK_ID:-0}" --count "${COUNT:?}"
