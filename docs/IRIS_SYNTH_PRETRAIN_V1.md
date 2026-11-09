@@ -50,7 +50,13 @@ cd ~/Iris && git pull --ff-only origin aire-hpc-setup && unset IRIS_MS2_ROOT IRI
 - vKITTI 三个包的大小和首个条目；
 - caption 环境和 InternVL3-8B 是否在。
 
-确认磁盘放得下，再投全链：
+探针结果（2026-11-09，作业 9397647）：
+- Hypersim 公开 train 划分 59543 帧 / 365 个场景；ai_001_001 98/98 帧无 NaN，103 s，0.91 MiB/帧，全划分约 53 GiB。
+- vKITTI rgb.tar 7.0 GiB、depth.tar 7.6 GiB、textgt.tar.gz 很小；包内顶层直接是 `Scene01/...`。
+- 学长账号上没有 caption 环境，也没有 InternVL3-8B 缓存，所以全链前面加了建环境（`build_env.sbatch`）和下载模型（`STEP=model`）。
+- scratch 已用 1.38T / 3T，文件数 271 万 / 400 万，放得下。
+
+全链：
 
 ```bash
 (
@@ -58,14 +64,16 @@ cd ~/Iris && git pull --ff-only origin aire-hpc-setup && unset IRIS_MS2_ROOT IRI
   cd ~/Iris
   git pull --ff-only origin aire-hpc-setup
   unset IRIS_MS2_ROOT IRIS_MANIFEST_DIR IRIS_DATA
+  EN=$(sbatch --parsable --export=ALL,ENV_YAML=environment_caption.yaml,ENV_NAME=caption slurm/build_env.sbatch)
+  MD=$(sbatch --parsable --dependency=afterok:$EN --time=02:00:00 --export=ALL,STEP=model slurm/synth_data.sbatch)
   HY=$(sbatch --parsable --array=0-15%8 --export=ALL,STEP=hypersim,COUNT=16 slurm/synth_data.sbatch)
   HF=$(sbatch --parsable --dependency=afterok:$HY --time=01:00:00 --export=ALL,STEP=hypersim-finalize slurm/synth_data.sbatch)
   VK=$(sbatch --parsable --time=08:00:00 --export=ALL,STEP=vkitti slurm/synth_data.sbatch)
   VN=$(sbatch --parsable --dependency=afterok:$VK --partition=gpu --gres=gpu:1 --cpus-per-task=8 --mem=32G --time=04:00:00 --export=ALL,STEP=vkitti-normals slurm/synth_data.sbatch)
-  CP=$(sbatch --parsable --dependency=afterok:$HF:$VN --array=0-15%10 --export=ALL,COUNT=16 slurm/synth_caption.sbatch)
+  CP=$(sbatch --parsable --dependency=afterok:$HF:$VN:$MD --array=0-15%10 --export=ALL,COUNT=16 slurm/synth_caption.sbatch)
   CF=$(sbatch --parsable --dependency=afterok:$CP --time=00:30:00 --export=ALL,STEP=caption-finalize,COUNT=16 slurm/synth_data.sbatch)
-  sbatch --dependency=afterany:$CF -J synth_mail -t 00:10:00 --mem=1G -c 1 -o /dev/null --wrap="{ sacct -X -j $HY,$HF,$VK,$VN,$CP,$CF -o JobID,JobName%22,State,Elapsed,ExitCode; cat $SCRATCH/data/synth/hypersim/fetch_summary.json; tail -n 3 ~/Iris/iris_synth-${CF}_4294967294.out; } 2>&1 | mail -s 'synth data and captions' anmolidawn@gmail.com"
-  echo "hypersim $HY -> finalize $HF | vkitti $VK -> normals $VN | captions $CP -> $CF"
+  sbatch --dependency=afterany:$CF -J synth_mail -t 00:10:00 --mem=1G -c 1 -o /dev/null --wrap="{ sacct -X -j $EN,$MD,$HY,$HF,$VK,$VN,$CP,$CF -o JobID,JobName%22,State,Elapsed,ExitCode; cat $SCRATCH/data/synth/hypersim/fetch_summary.json; tail -n 3 ~/Iris/iris_synth-${CF}_4294967294.out; } 2>&1 | mail -s 'synth data and captions' anmolidawn@gmail.com"
+  echo "env $EN -> model $MD | hypersim $HY -> finalize $HF | vkitti $VK -> normals $VN | captions $CP -> $CF"
 )
 ```
 
