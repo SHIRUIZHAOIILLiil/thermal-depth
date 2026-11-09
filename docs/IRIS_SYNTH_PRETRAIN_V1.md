@@ -1,4 +1,4 @@
-# Iris 合成数据预训练线 V1（2026-11-09，第一段：数据和 caption）
+# Iris 合成数据预训练线 V1（2026-11-09）
 
 ## 想法
 
@@ -13,7 +13,7 @@ Iris 从 SD2 出发，在合成 RGB 数据上训练：Hypersim（室内，90% �
 没有占优（3.43/3.31/4.13，视差空间旧配方，不能直接和 tmax1 比）。所以合成预训练能不能救 RMSE，
 现在没有答案。
 
-## 第一段（本文件）：数据和 caption
+## 第一段：数据和 caption
 
 - `tools/synth_data.py`
   - Hypersim 不下 1.9 TB 整包：用 HTTP range 远程读每个场景的 zip，只取 `process_hypersim.py` 拷的三个文件
@@ -31,11 +31,43 @@ Iris 从 SD2 出发，在合成 RGB 数据上训练：Hypersim（室内，90% �
   因为加载器会整串替换这几个词，检查会拒绝这种路径。
 - 测试：`tests/test_synth_data.py`（5 项）、`tests/test_caption_synth.py`（4 项，含与两个加载器的 key 逐一对照）。
 
-## 第二段（还没写，等数据到位）
+## 第二段：合成预训练 → MS2 微调
 
-- Iris 合成预训练作业：`train_iris_g.py` 的校验依赖 NYU/KITTI 等评估集（`BASE_TEST_DATA_DIR`），要么备齐，要么关掉。
-- MS2 微调：tmax1 配方，起点换成合成预训练的 checkpoint，判定门槛与其他臂相同
-  （全量 val step 16000，对比 tmax1：RMSE 至少降 10 cm，AbsRel 增加不超过 0.002，δ1 下降不超过 0.003）。
+- `slurm/iris_synth_pretrain.sbatch`：参数逐行照抄 `train_scripts/train_iris_g_depth.sh`
+  （SD2、Hypersim 576 / vKITTI 375、P_HYPERSIM 0.9、trunc_disparity、bsz 4 × GAS 3、
+  LR 3e-5 constant、20000 步、seed 42、fp16、8-bit Adam、带 caption）。和 Iris 的差别：
+  - 不做训练中校验（他们评 NYU/KITTI 等，我们没有这些数据）；
+  - 只留最近 2 个 checkpoint（省盘，步数不变）；
+  - dataloader 6 个 worker（只影响读数据速度）；
+  - SD2 用所有 sd2 臂共用的 2.1-base 镜像（Iris 是 2.0-base，已知偏差）。
+- 墙钟没有实测。一个作业上限 2 天，所以挂两份同样的作业：第二份 `afterany` 第一份，
+  第一份超时就从最近的 checkpoint 续，已经训完就立刻退出。
+- MS2 微调：`submit_arm.sh` 原样（START=sd2，tmax1 配方），只多一个
+  `--init_unet_from <预训练输出>`：U-Net 换成合成预训练的，VAE 和文本编码器本来就冻结且与 SD2 相同。
+  臂名 `sd2_cap_pct_logtn_img_l0100_tmax1_synth_s43`。
+- 判定（事先定好，不看结果再改）：全量 val step 16000，对比 tmax1
+  （`sd2_cap_pct_logtn_img_l0100_tmax1_s43`）：RMSE 至少降 10 cm，AbsRel 增加不超过 0.002，δ1 下降不超过 0.003。
+
+第二段投递（挂在 caption 合并作业后面，作业号换成实际的 `$CF`）：
+
+```bash
+(
+  set -euo pipefail
+  cd ~/Iris
+  git pull --ff-only origin aire-hpc-setup
+  unset IRIS_MS2_ROOT IRIS_MANIFEST_DIR IRIS_DATA
+  export IRIS_RUNS=/mnt/scratch/dwdh0363/runs
+  CF=9398890
+  PS=$(sbatch --parsable --dependency=afterok:$CF --time=01:30:00 --export=ALL,SMOKE=1 slurm/iris_synth_pretrain.sbatch)
+  P1=$(sbatch --parsable --dependency=afterok:$PS --export=ALL,SMOKE=0 slurm/iris_synth_pretrain.sbatch)
+  P2=$(sbatch --parsable --dependency=afterany:$P1 --export=ALL,SMOKE=0 slurm/iris_synth_pretrain.sbatch)
+  echo "pretrain smoke $PS -> $P1 -> (timeout cover) $P2"
+  AFTER=$P2 bash slurm/submit_arm.sh sd2_cap_pct_logtn_img_l0100_tmax1_synth_s43     "--truncnorm_max 1.0 --init_unet_from $IRIS_RUNS/synth_pretrain/iris_g_synth_sd2_s42"
+)
+```
+
+MS2 冒烟跑完先看 `grep -h "U-Net initialised from" ~/Iris/sm_sd2_cap_pct_logtn_img_l010-<冒烟作业号>.*`，
+必须指向上面的预训练目录。
 
 ## 投递
 
