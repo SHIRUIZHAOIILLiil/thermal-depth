@@ -47,7 +47,8 @@ if [[ "${RESUME:-0}" == "1" ]]; then
   echo "train -> $TR  (续训)"
 else
   export RUN_TAG="${RUN}_smoke" SMOKE=1
-  SM=$(sbatch --parsable -J "sm_${RUN:0:26}" --time=00:45:00 --export=ALL slurm/iris_ms2.sbatch)
+  # AFTER=<job id>: hold the smoke until that job succeeds (e.g. a target build).
+  SM=$(sbatch --parsable -J "sm_${RUN:0:26}" --time=00:45:00 ${AFTER:+--dependency=afterok:$AFTER} --export=ALL slurm/iris_ms2.sbatch)
   echo "smoke -> $SM"
   export RUN_TAG="$RUN" SMOKE=0
   TR=$(sbatch --parsable -J "tr_${RUN:0:26}" --dependency=afterok:$SM --export=ALL slurm/iris_ms2.sbatch)
