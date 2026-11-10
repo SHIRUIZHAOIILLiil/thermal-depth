@@ -64,7 +64,10 @@ vkitti)
   rm -rf "$TARS"
   ;;
 vkitti-normals)
-  (cd lotus && PYTHONPATH="$PWD" python -u utils/depth2normal.py --data_path "$VK" --batch_size 10 --scenes 02 06 18 20)
+  # NORMAL_SCENES narrows the pass, e.g. to redo the scene a timed-out run was in
+  # (depth2normal walks the scenes in order and overwrites what it writes). The
+  # check below always covers all four.
+  (cd lotus && PYTHONPATH="$PWD" python -u utils/depth2normal.py --data_path "$VK" --batch_size 10 --scenes ${NORMAL_SCENES:-02 06 18 20})
   python -u tools/synth_data.py vkitti-check --out "$VK" --normals
   ;;
 caption-finalize)
