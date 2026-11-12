@@ -24,6 +24,11 @@
 #             saved by the trainer's final save_pretrained) exits at once, so a second
 #             copy can be chained with afterany to cover a wall-clock timeout.
 set -euo pipefail
+# common.sh refuses to start without the MS2 tree (2026-11-10: job 9399130 died in 1 s
+# on exactly that, the submit block unsets these). Same prelude as synth_data.sbatch.
+F="${SCRATCH:?}/from_sc23sz"
+export IRIS_MS2_ROOT="${IRIS_MS2_ROOT:-$F/data/ms2}"
+export IRIS_MANIFEST_DIR="${IRIS_MANIFEST_DIR:-$F/manifests/sequence_level_internvl3_8b}"
 source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 
 SYN="${SYNTH_ROOT:-$SCRATCH/data/synth}"

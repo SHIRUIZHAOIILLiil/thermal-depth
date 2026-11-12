@@ -48,21 +48,28 @@ Iris 从 SD2 出发，在合成 RGB 数据上训练：Hypersim（室内，90% �
 - 判定（事先定好，不看结果再改）：全量 val step 16000，对比 tmax1
   （`sd2_cap_pct_logtn_img_l0100_tmax1_s43`）：RMSE 至少降 10 cm，AbsRel 增加不超过 0.002，δ1 下降不超过 0.003。
 
-第二段投递（挂在 caption 合并作业后面，作业号换成实际的 `$CF`）：
+第二段投递。第一次（2026-11-09）挂在 caption 合并后面，预训练冒烟 9399130 一秒就失败：
+脚本没设 `IRIS_MS2_ROOT`，`common.sh` 的前置检查找不到 MS2 目录。已修；下面是重投版本，
+每个关键作业结束都发邮件：
 
 ```bash
 (
   set -euo pipefail
   cd ~/Iris
   git pull --ff-only origin aire-hpc-setup
+  scancel 9399131 9399132 9399133 9399134 9399135 9399518 || true
   unset IRIS_MS2_ROOT IRIS_MANIFEST_DIR IRIS_DATA
   export IRIS_RUNS=/mnt/scratch/dwdh0363/runs
-  CF=9398890
-  PS=$(sbatch --parsable --dependency=afterok:$CF --time=01:30:00 --export=ALL,SMOKE=1 slurm/iris_synth_pretrain.sbatch)
+  mailafter() { sbatch --dependency=afterany:$1 -J mail_$1 -t 00:10:00 --mem=1G -c 1 -o /dev/null --wrap="{ sacct -X -j $1 -o JobID,JobName%30,State,Elapsed,ExitCode; for f in ~/Iris/*-$1.out ~/Iris/*-$1.err; do echo \"--- \$f\"; tail -c 3000 \"\$f\" | tr '\r' '\n' | tail -n 12; done; } 2>&1 | mail -s \"iris job $1\" anmolidawn@gmail.com" >/dev/null; }
+  PS=$(sbatch --parsable --time=01:30:00 --export=ALL,SMOKE=1 slurm/iris_synth_pretrain.sbatch)
   P1=$(sbatch --parsable --dependency=afterok:$PS --export=ALL,SMOKE=0 slurm/iris_synth_pretrain.sbatch)
   P2=$(sbatch --parsable --dependency=afterany:$P1 --export=ALL,SMOKE=0 slurm/iris_synth_pretrain.sbatch)
-  echo "pretrain smoke $PS -> $P1 -> (timeout cover) $P2"
-  AFTER=$P2 bash slurm/submit_arm.sh sd2_cap_pct_logtn_img_l0100_tmax1_synth_s43     "--truncnorm_max 1.0 --init_unet_from $IRIS_RUNS/synth_pretrain/iris_g_synth_sd2_s42"
+  out=$(AFTER=$P2 bash slurm/submit_arm.sh sd2_cap_pct_logtn_img_l0100_tmax1_synth_s43 "--truncnorm_max 1.0 --init_unet_from $IRIS_RUNS/synth_pretrain/iris_g_synth_sd2_s42")
+  echo "$out"
+  SM=$(echo "$out" | sed -n 's/^smoke -> \([0-9]*\).*/\1/p')
+  VA=$(echo "$out" | sed -n 's/^val   -> \([0-9]*\).*/\1/p')
+  for j in $PS $P1 $SM $VA; do mailafter $j; done
+  echo "pretrain smoke $PS -> $P1 -> (timeout cover) $P2 | ms2 smoke $SM, val $VA | mail after $PS $P1 $SM $VA"
 )
 ```
 
