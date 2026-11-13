@@ -118,3 +118,42 @@ cd ~/Iris && git pull --ff-only origin aire-hpc-setup && unset IRIS_MS2_ROOT IRI
 
 全部可续跑：任何一步超时或失败，原样重投同一条即可，已完成的场景、文件和 caption 会跳过。
 caption 分片的 `--time` 按 L40S 2.4 s/帧估算（约 9.3 万张 / 16 片 ≈ 3.9 h），设 6 h。
+
+## 复现 Iris 零样本结果（2026-11-13 加，只评估不训练）
+
+目的：检验合成预训练本身复现得对不对。MS2 微调无论好坏，都要靠这个判断能不能归因到「这条路」而不是「复现有偏差」。
+
+- 测试集：Iris Table 1 的 NYUv2 / KITTI / ETH3D / ScanNet / DIODE，用 Lotus README 指向的 Marigold 评估包
+  （`share.phys.ethz.ch/~pf/bingkedata/marigold/evaluation_dataset/`）。
+- caption：Iris 评估 Lotus 系模型时，给测试图也配了 caption，由 `internVL/scripts/lotus_inference/inference_{nyu,kitti,eth3d,scannet,diode}.py`
+  生成：每个划分列表的第一列，从 tar 里读 `"./" + 路径`，模型、prompt 和生成设置都与训练集相同。他们没公开这些 JSON，
+  这里用 `tools/caption_eval_sets.py` 重生成。key 就是评估加载器的 `rgb_relative_path`（同一列），finalize 不允许有缺，
+  评估开 `--strict_text_mode`。
+  - 仓库 `marigold/Marigold_test_text/` 里有 Iris 公开的 2,605 条测试 caption（nyuv2 654 / kitti 697 / scannet 800 / eth3d 454，没有 DIODE），
+    但那是给 Marigold 评估用的 `.txt`。README 说 Lotus 和 E2E 的评估 caption 由 `lotus_inference` 脚本生成，所以这里不用它们。
+- 划分文件：Iris 仓库里 `lotus/datasets/eval/depth/data_split/` 不全（NYU 缺失，KITTI / ETH3D / DIODE 是空文件，只有 ScanNet 完整）。
+  从同一仓库的 `marigold/data_split/` 补齐；ScanNet 两份排序后逐行相同。共 3376 张：scannet 800、diode 771、kitti 697、nyu 654、eth3d 454。
+- 评估：`lotus/eval_rng.py`，参数照 `eval_scripts/eval-depth-g.sh`（generation、seed 42、half precision、`--disparity`，
+  即 least_square_disparity 对齐），评两个模型：
+  - Lotus-G 官方权重、空 prompt：和 Lotus 论文发表的数字对，检验评估管线本身；
+  - 我们的合成预训练、带 caption：和 Iris 论文 Table 1 对。
+- 已知偏差：SD 2.1-base（Iris 是 2.0-base）、一个种子、caption 重采样。所以是看有没有明显偏差，不是逐位复现。
+
+```bash
+(
+  set -euo pipefail
+  cd ~/Iris
+  git pull --ff-only origin aire-hpc-setup
+  unset IRIS_MS2_ROOT IRIS_MANIFEST_DIR IRIS_DATA
+  export IRIS_RUNS=/mnt/scratch/dwdh0363/runs
+  mailafter() { sbatch --dependency=afterany:$1 -J mail_$1 -t 00:10:00 --mem=1G -c 1 -o /dev/null --wrap="{ sacct -X -j $1 -o JobID,JobName%30,State,Elapsed,ExitCode; for f in ~/Iris/*-$1.out ~/Iris/*-$1.err; do echo \"--- \$f\"; tail -c 4000 \"\$f\" | tr '\r' '\n' | tail -n 40; done; } 2>&1 | mail -s \"iris job $1\" anmolidawn@gmail.com" >/dev/null; }
+  G="--partition=gpu --gres=gpu:1 --cpus-per-task=8"
+  DL=$(sbatch --parsable --export=ALL,STEP=download slurm/iris_eval_sets.sbatch)
+  CA=$(sbatch --parsable --dependency=afterok:$DL $G --mem=16G --time=02:00:00 --array=0-3 --export=ALL,STEP=caption,COUNT=4 slurm/iris_eval_sets.sbatch)
+  CF=$(sbatch --parsable --dependency=afterok:$CA --time=00:30:00 --export=ALL,STEP=caption-finalize,COUNT=4 slurm/iris_eval_sets.sbatch)
+  EL=$(sbatch --parsable --dependency=afterok:$DL $G --mem=32G --time=04:00:00 --export=ALL,STEP=eval,CAPTIONS=0,CKPT=jingheya/lotus-depth-g-v2-1-disparity,TAG=lotus_g_official_empty slurm/iris_eval_sets.sbatch)
+  EO=$(sbatch --parsable --dependency=afterok:$CF:9431551 $G --mem=32G --time=04:00:00 --export=ALL,STEP=eval,CAPTIONS=1,CKPT=$IRIS_RUNS/synth_pretrain/iris_g_synth_sd2_s42,TAG=iris_g_synth_sd2_s42_cap slurm/iris_eval_sets.sbatch)
+  for j in $DL $CA $CF $EL $EO; do mailafter $j; done
+  echo "download $DL -> captions $CA -> finalize $CF | lotus-g eval $EL | ours eval $EO (after $CF and pretrain 9431551)"
+)
+```
