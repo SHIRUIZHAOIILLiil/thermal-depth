@@ -79,7 +79,10 @@ eval)
           --diode_text_descriptions_path="$CAP/diode_depth_descriptions.json"
           --strict_text_mode)
   fi
-  echo "captions=${CAPTIONS:-1}"
+  # RNG_STATE=<lotus/rng_states/*.pkl>: the noise draws Lotus ships to reproduce its paper
+  # numbers exactly (Lotus README, "Optional"). Only meaningful for Lotus's own weights.
+  [[ -n "${RNG_STATE:-}" ]] && TEXT+=(--rng_state_path="$IRIS_REPO/lotus/$RNG_STATE")
+  echo "captions=${CAPTIONS:-1}  rng_state=${RNG_STATE:-<none>}"
   # Without captions eval_rng.py prints one "No text description..." line per image.
   python -u eval_rng.py \
     --pretrained_model_name_or_path="$CKPT" \
