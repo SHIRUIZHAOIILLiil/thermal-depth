@@ -24,13 +24,33 @@ HY="$SYN/hypersim" VK="$SYN/vkitti" TARS="$SYN/vkitti_tars"
 VK_URL=https://download.europe.naverlabs.com/virtual_kitti_2.0.3/vkitti_2.0.3_
 PARTS=(rgb.tar depth.tar textgt.tar.gz)
 
-case "${STEP:?STEP=probe|model|hypersim|hypersim-finalize|vkitti|vkitti-normals}" in
+case "${STEP:?STEP=probe|sd20|model|hypersim|hypersim-finalize|vkitti|vkitti-normals}" in
 probe)
   python tests/test_synth_data.py
   python -u tools/synth_data.py probe --out "$HY"
   if conda env list | grep -E '^caption ' >/dev/null; then echo "[probe] conda env caption: present"; else echo "[probe] conda env caption: MISSING"; fi
   if [[ -d "$HF_HOME/hub/models--OpenGVLab--InternVL3-8B" ]]; then echo "[probe] InternVL3-8B: cached"; else echo "[probe] InternVL3-8B: NOT in $HF_HOME"; fi
   lfs quota -h -u "$USER" /scratch | tail -2
+  ;;
+sd20)
+  # SD 2.0-base, the starting point Iris's train_iris_g_depth.sh names
+  # (stabilityai/stable-diffusion-2-base, unreachable: see iris_ms2.sbatch). Three unrelated
+  # mirrors (Manojb, PeggyWang, luongphamit) carry the same U-Net safetensors, sha256 below,
+  # plus the official 512-base-ema.safetensors; VAE and text encoder are byte-identical to
+  # the 2.1-base mirror every sd2 arm uses, so only the U-Net differs.
+  python - <<'PY'
+import hashlib, os
+from huggingface_hub import snapshot_download
+p = snapshot_download('Manojb/stable-diffusion-2-base',  # main was 64bf7b4f on 2026-11-14
+                      allow_patterns=['*.json', '*.txt', '*/model.safetensors', '*/diffusion_pytorch_model.safetensors'])
+h = hashlib.sha256()
+with open(os.path.join(p, 'unet', 'diffusion_pytorch_model.safetensors'), 'rb') as f:
+    for b in iter(lambda: f.read(1 << 24), b''):
+        h.update(b)
+want = 'c60b3631cc85148ca0cc524daff7767efb707fd26c40d46cc3cd217dc5252cd0'
+print(p, h.hexdigest())
+assert h.hexdigest() == want, 'U-Net sha256 mismatch'
+PY
   ;;
 model)
   # InternVL3-8B into $HF_HOME (about 16 GB); synth_caption.sbatch then runs offline.

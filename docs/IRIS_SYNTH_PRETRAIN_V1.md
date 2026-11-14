@@ -204,3 +204,22 @@ RMSE 至少再降 10 cm，AbsRel 增加不超过 0.002，δ1 下降不超过 0.0
 - MS2 微调臂 `sd2_cap_pct_logtn_img_l0100_tmax1_synth36_s43`：tmax1 配方 + `--init_unet_from` 新预训练。
   判定对比 **synth 臂**（0.0763 / 2.651 / 0.9491）：RMSE 至少再降 10 cm，AbsRel 增加不超过 0.002，δ1 下降不超过 0.003。
 - MS2 微调本身的有效 batch 也是 12（同一份脚本），这里不改，保持与所有 MS2 臂可比。
+
+## 配方审查与第二处修正（2026-11-14）
+
+逐项对照 Iris 补充材料 Lotus 段（第 14–15 页）和 `train_iris_g_depth.sh`：
+
+- 一致：Hypersim 39649 帧（文中约 39K）、NaN 过滤、576 / 375 分辨率、Hypersim 概率 0.9、trunc_disparity（truncnorm_min 默认 0.02）、
+  随机翻转 0.5、LR 3e-5 constant 无 warmup、8-bit Adam、fp16、timestep 999、20000 步、每图一条 InternVL3-8B caption、
+  caption 确实进入 batch（两个 collate 都带 `text_descriptions`）、评估管线（官方 Lotus-G 逐位复现 Lotus 原文）。
+- 已修正 1：有效 batch 12 → 36（上一节）。
+- 已修正 2：底座 SD 2.1-base → **SD 2.0-base**（Iris 脚本写的是 `stabilityai/stable-diffusion-2-base`）。官方仓库取不到；
+  `Manojb/stable-diffusion-2-base`、`PeggyWang/...`、`luongphamit/...` 三个互不相关的镜像 U-Net safetensors sha256 相同
+  （`c60b3631cc85…`），并带官方文件名 `512-base-ema.safetensors`；VAE 与文本编码器和 2.1-base 镜像逐字节相同，只有 U-Net 不同。
+  `synth_data.sbatch STEP=sd20` 下载并校验 sha256。
+- 不能补的：只有一个种子（Iris 自己重训 Lotus-G* 在 NYU 上就比 Lotus 原文差 1.3 AbsRel）；文中提到每 1000 步做校验，
+  没说 Table 1 用最后一步还是校验最好的一步，我们用最后一步；vKITTI 按加载器是 33580 帧，文中写约 20000（只占 10% 的步数）。
+- MS2 微调自身的有效 batch 也是 12，这是所有 MS2 臂共用的配方，不在这里改。
+
+替换上一节的 batch 36 链：预训练 `iris_g_synth_sd20_s42_bsz36`（SD 2.0-base + 有效 batch 36），
+MS2 臂 `sd2_cap_pct_logtn_img_l0100_tmax1_synth20b36_s43`，判定同上一节（对比 synth 臂 0.0763 / 2.651 / 0.9491，RMSE 至少再降 10 cm）。
