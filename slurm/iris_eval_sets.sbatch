@@ -82,7 +82,10 @@ eval)
   # RNG_STATE=<lotus/rng_states/*.pkl>: the noise draws Lotus ships to reproduce its paper
   # numbers exactly (Lotus README, "Optional"). Only meaningful for Lotus's own weights.
   [[ -n "${RNG_STATE:-}" ]] && TEXT+=(--rng_state_path="$IRIS_REPO/lotus/$RNG_STATE")
-  echo "captions=${CAPTIONS:-1}  rng_state=${RNG_STATE:-<none>}"
+  # EVAL_DATASETS="eth3d": rerun only those sets into the same output directory (the other
+  # sets' eval_metrics files stay). ETH3D's 6048x4032 frames OOM-killed both 32G runs.
+  [[ -n "${EVAL_DATASETS:-}" ]] && TEXT+=(--eval_datasets $EVAL_DATASETS)
+  echo "captions=${CAPTIONS:-1}  rng_state=${RNG_STATE:-<none>}  datasets=${EVAL_DATASETS:-all}"
   # Without captions eval_rng.py prints one "No text description..." line per image.
   python -u eval_rng.py \
     --pretrained_model_name_or_path="$CKPT" \
@@ -94,8 +97,10 @@ eval)
     --base_test_data_dir="$EV" \
     --eval_config_dir="$IRIS_REPO/lotus/datasets/eval/depth" \
     --half_precision \
-    --disparity > "$OUT/eval.log" 2>&1 || { grep -v -E "^ ?No text description" "$OUT/eval.log" | tail -n 40; exit 1; }
-  grep -v -E "^ ?No text description" "$OUT/eval.log" | grep -E "abs_relative_difference|Text Description|images without" || true
+    --disparity > "$OUT/eval.log" 2>&1 || { tr '' '
+' < "$OUT/eval.log" | grep -v "No text description" | tail -n 40; exit 1; }
+  tr '' '
+' < "$OUT/eval.log" | grep -E "abs_relative_difference|Text Description|images without" || true
   for f in "$OUT"/depth/*/eval_metrics*.txt; do echo "--- $f"; cat "$f"; done
   ;;
 *) echo "unknown STEP=$STEP"; exit 1 ;;
