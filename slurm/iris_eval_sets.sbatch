@@ -97,10 +97,8 @@ eval)
     --base_test_data_dir="$EV" \
     --eval_config_dir="$IRIS_REPO/lotus/datasets/eval/depth" \
     --half_precision \
-    --disparity > "$OUT/eval.log" 2>&1 || { tr '' '
-' < "$OUT/eval.log" | grep -v "No text description" | tail -n 40; exit 1; }
-  tr '' '
-' < "$OUT/eval.log" | grep -E "abs_relative_difference|Text Description|images without" || true
+    --disparity > "$OUT/eval.log" 2>&1 || { tr '\r' '\n' < "$OUT/eval.log" | grep -v "No text description" | tail -n 40; exit 1; }
+  tr '\r' '\n' < "$OUT/eval.log" | grep -E "abs_relative_difference|Text Description|images without" || true
   for f in "$OUT"/depth/*/eval_metrics*.txt; do echo "--- $f"; cat "$f"; done
   ;;
 *) echo "unknown STEP=$STEP"; exit 1 ;;
