@@ -157,3 +157,16 @@ caption 分片的 `--time` 按 L40S 2.4 s/帧估算（约 9.3 万张 / 16 片 �
   echo "download $DL -> captions $CA -> finalize $CF | lotus-g eval $EL | ours eval $EO (after $CF and pretrain 9431551)"
 )
 ```
+
+## MS2 微调结果（2026-11-14，val 作业 9431554，全量 val 14249 帧，step 16000）
+
+| 臂 | AbsRel | RMSE (m) | δ1 |
+|---|---|---|---|
+| tmax1 16k（对照） | 0.08137 | 2.7571 | 0.93937 |
+| self2 16k（第二轮自训练） | 0.0770 | 2.705 | 0.9454 |
+| synth 16k（合成预训练起点） | 0.0763 | 2.651 | 0.9491 |
+
+- 对 tmax1：AbsRel −0.0051，RMSE −10.6 cm，δ1 +0.0097。三条门槛全部满足（RMSE 至少降 10 cm），**通过**。
+- 有待确认：MS2 冒烟日志里 `U-Net initialised from` 指向 `synth_pretrain/iris_g_synth_sd2_s42`（邮件截断没看到）。
+- 对 NeWCRF：tmax1 在全量 val 上的 RMSE 差距约 28.6 cm，这一臂补回约 10.6 cm，仍差约 18 cm。
+- 只有 val，一个种子；没跑 test。零样本复现在 DIODE 上偏低（AbsRel 28.1 对 Iris-G 24.3），其余数据集待看。
