@@ -170,3 +170,11 @@ caption 分片的 `--time` 按 L40S 2.4 s/帧估算（约 9.3 万张 / 16 片 �
 - 有待确认：MS2 冒烟日志里 `U-Net initialised from` 指向 `synth_pretrain/iris_g_synth_sd2_s42`（邮件截断没看到）。
 - 对 NeWCRF：tmax1 在全量 val 上的 RMSE 差距约 28.6 cm，这一臂补回约 10.6 cm，仍差约 18 cm。
 - 只有 val，一个种子；没跑 test。零样本复现在 DIODE 上偏低（AbsRel 28.1 对 Iris-G 24.3），其余数据集待看。
+
+## 叠加臂（2026-11-14 预登记）
+
+`sd2_cap_pct_logtn_img_l0100_tmax1_synth_self2_s43`：合成预训练起点（`--init_unet_from`）+ 第二轮自训练目标
+（`PSEUDO_DIR=self_tmax1_16k`，tmax1 16k 对齐后的预测，LiDAR 覆盖其上），其余同 tmax1 配方。
+
+判定：全量 val step 16000，对比 **synth 臂**（0.0763 / 2.651 / 0.9491），不是 tmax1：
+RMSE 至少再降 10 cm，AbsRel 增加不超过 0.002，δ1 下降不超过 0.003。
