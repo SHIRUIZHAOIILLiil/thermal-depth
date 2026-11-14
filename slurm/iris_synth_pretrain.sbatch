@@ -34,6 +34,10 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 SYN="${SYNTH_ROOT:-$SCRATCH/data/synth}"
 MODEL_NAME="${SD2_REPO:-Manojb/stable-diffusion-2-1-base}"
 TAG="${RUN_TAG:-iris_g_synth_sd2_s42}"
+# GAS: gradient accumulation. 3 is train_iris_g_depth.sh's single-GPU value (effective
+# batch 12). Iris's supplementary (Lotus paragraph) trained 4 per step x 3 accumulation x
+# 3 RTX 3090s = 36; on one GPU that is GAS=9 (same 20000 optimizer steps, 3x the samples).
+GAS="${GAS:-3}"
 OUT="$IRIS_RUNS/synth_pretrain/$TAG"
 HYP_TEXT="$SYN/captions/hypersim_depth_descriptions.json"
 VK_TEXT="$SYN/captions/vkitti_depth_descriptions.json"
@@ -51,7 +55,7 @@ elif [[ -s "$OUT/unet/diffusion_pytorch_model.safetensors" ]]; then
   echo "[done] $OUT/unet already saved; nothing to do"; exit 0
 fi
 mkdir -p "$OUT"
-echo "model=$MODEL_NAME  out=$OUT  steps=$STEPS"
+echo "model=$MODEL_NAME  out=$OUT  steps=$STEPS  effective batch=$((4 * GAS))"
 echo "captions: hypersim $(python -c "import json;print(len(json.load(open('$HYP_TEXT'))))")  vkitti $(python -c "import json;print(len(json.load(open('$VK_TEXT'))))")"
 
 cd "$IRIS_REPO/lotus"
@@ -70,7 +74,7 @@ accelerate launch --config_file=accelerate_configs/0.yaml --mixed_precision="fp1
   --norm_type=trunc_disparity \
   --dataloader_num_workers=6 \
   --train_batch_size=4 \
-  --gradient_accumulation_steps=3 \
+  --gradient_accumulation_steps=$GAS \
   --gradient_checkpointing \
   --max_grad_norm=1 \
   --seed=42 \
