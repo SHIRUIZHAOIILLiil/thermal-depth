@@ -72,3 +72,20 @@ synth 臂（`sd2_cap_pct_logtn_img_l0100_tmax1_synth_s43`，全量 val 0.0763 / 
 
 脚本先检查所有要读的文件（synth 臂 9 个 checkpoint、converted 16k、NeWCRF 两份存档、q98 decoder run），缺任何一个就不投。
 三个作业各挂一封 `afterany` 邮件，带 `[control] [row] [use_average] [reproduced] [selected] [verdict]` 行。
+
+## 结果
+
+**权重平均（作业 9489609）：** 对照 2.67386 逐位复现。96 帧 val：step 16000 0.07678 / 2.6739 / 0.94918 →
+平均 0.07540 / 2.6435 / 0.94946，三项都不差，`use_average` 为真。（tmax1 的 5 cm 旧门槛 `passed: false` 只记录。）
+
+**decoder 冒烟（作业 9489610）：** 平均权重的全量 val（14249 帧，step 0，即「只做平均」）：
+
+| 全量 val，`ssi_log` | AbsRel | RMSE (m) | δ1 |
+|---|---|---|---|
+| synth 16k | 0.0763 | 2.651 | 0.9491 |
+| 平均 12k–20k | 0.07462 | 2.5950 | 0.95157 |
+| NeWCRF `ssi_log`（job 9488948） | 0.07286 | 2.5625 | 0.95039 |
+
+- 平均单独：AbsRel −0.0017、RMSE −5.6 cm、δ1 +0.0025（比 96 帧上大）。
+- 对 NeWCRF：δ1 已经领先 0.0012；RMSE 还差 3.2 cm；AbsRel 还差 0.0018。
+- GT 隔离、4 步训练、冻结检查全部通过。
