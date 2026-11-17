@@ -296,3 +296,19 @@ train RMSE 1.484、val 2.798，落差 1.31 m；训练帧上比 NeWCRF 准，val 
   train 不变时落差最多缩小约这么多，这条门槛事先就几乎不可能达到。以后按臂的预期幅度定门槛。
 - 同一批 96 帧 val、同为 `ssi_log`（`docs/DIAGNOSIS_TO_STRONG_AUG_20261107.md` 第 7 步）：NeWCRF 0.0749 / 2.573 / 0.9474；
   synth 臂 0.0768 / 2.674 / 0.9492，RMSE 差约 10 cm，δ1 高 0.0018。只是 96 帧，全量 val 上的同对齐差距没量过。
+
+## 全量 val 同一对齐下对 NeWCRF（2026-11-17，作业 9488948，CPU）
+
+`tools/score_newcrf_val_ssi_log.py`：job 9167854 的 NeWCRF 缓存图，14249 帧，与 val 作业同一个 `evaluate_sample`。
+对照：`ssi` RMSE 逐位复现存档 2.470983 m，通过。
+
+| 全量 val 14249 帧 | AbsRel | RMSE (m) | δ1 |
+|---|---|---|---|
+| NeWCRF，`ssi`（原主表口径） | 0.08455 | 2.4710 | 0.9422 |
+| NeWCRF，`ssi_log` | 0.07286 | 2.5625 | 0.9504 |
+| synth 臂，`ssi_log` | 0.0763 | 2.651 | 0.9491 |
+| tmax1，`ssi_log` | 0.08137 | 2.7571 | 0.93937 |
+
+- 同一对齐（`ssi_log`）下 NeWCRF 三项都赢 synth 臂：AbsRel 0.0034，RMSE 8.9 cm，δ1 0.0013。
+- 各用各的对齐时，RMSE 差 18 cm，而 AbsRel、δ1 是我们好；这个「优势」来自对齐不同（与 11-07 第 7 步 96 帧结论一致，现在全量确认）。
+- 只有 val、一个种子；未跑 test。表里 NeWCRF 用哪种对齐、怎么披露，由用户决定。
