@@ -419,7 +419,7 @@ def parse_args():
     parser.add_argument(
         "--norm_type",
         type=str,
-        choices=['instnorm','truncnorm','perscene_norm','disparity','trunc_disparity'],
+        choices=['instnorm','truncnorm','perscene_norm','disparity','trunc_disparity','log_truncnorm'],
         default='trunc_disparity',
         help='The normalization type for the depth prediction'
     )
@@ -446,6 +446,12 @@ def parse_args():
         "--truncnorm_min",
         type=float,
         default=0.02,
+    )
+    parser.add_argument(
+        "--truncnorm_max",
+        type=float,
+        default=None,
+        help="Upper quantile; default 1 - truncnorm_min. The MS2 tmax1 recipe uses 1.0 with log_truncnorm.",
     )
     parser.add_argument(
         "--timestep",
@@ -846,7 +852,7 @@ def main():
     train_hypersim_dataset, preprocess_train_hypersim, collate_fn_hypersim = get_hypersim_dataset_depth_normal(
         args.train_data_dir_hypersim, args.resolution_hypersim, args.random_flip, 
         norm_type=args.norm_type, truncnorm_min=args.truncnorm_min, align_cam_normal=args.align_cam_normal,
-        text_descriptions_path=args.hypersim_text_descriptions_path
+        text_descriptions_path=args.hypersim_text_descriptions_path, truncnorm_max=args.truncnorm_max
         )
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
@@ -864,7 +870,7 @@ def main():
     )
     # -------------------- Dataset2: VKITTI --------------------
     transform_vkitti = VKITTITransform(random_flip=args.random_flip)
-    train_dataset_vkitti = VKITTIDataset(args.train_data_dir_vkitti, transform_vkitti, args.norm_type, truncnorm_min=args.truncnorm_min, text_descriptions_path=args.vkitti_text_descriptions_path)
+    train_dataset_vkitti = VKITTIDataset(args.train_data_dir_vkitti, transform_vkitti, args.norm_type, truncnorm_min=args.truncnorm_min, text_descriptions_path=args.vkitti_text_descriptions_path, truncnorm_max=args.truncnorm_max)
     train_dataloader_vkitti = torch.utils.data.DataLoader(
         train_dataset_vkitti, 
         shuffle=True,

@@ -38,6 +38,11 @@ TAG="${RUN_TAG:-iris_g_synth_sd2_s42}"
 # batch 12). Iris's supplementary (Lotus paragraph) trained 4 per step x 3 accumulation x
 # 3 RTX 3090s = 36; on one GPU that is GAS=9 (same 20000 optimizer steps, 3x the samples).
 GAS="${GAS:-3}"
+# NORM_TYPE: the depth target. trunc_disparity is Iris/Lotus (near = +1); log_truncnorm is the MS2
+# fine-tune's target (near = -1), with TRUNCNORM_MAX=1.0 as in the tmax1 recipe.
+NORM_TYPE="${NORM_TYPE:-trunc_disparity}"
+NORM_ARGS=(--norm_type="$NORM_TYPE")
+[[ -n "${TRUNCNORM_MAX:-}" ]] && NORM_ARGS+=(--truncnorm_max="$TRUNCNORM_MAX")
 OUT="$IRIS_RUNS/synth_pretrain/$TAG"
 HYP_TEXT="$SYN/captions/hypersim_depth_descriptions.json"
 VK_TEXT="$SYN/captions/vkitti_depth_descriptions.json"
@@ -55,9 +60,10 @@ elif [[ -s "$OUT/unet/diffusion_pytorch_model.safetensors" ]]; then
   echo "[done] $OUT/unet already saved; nothing to do"; exit 0
 fi
 mkdir -p "$OUT"
-echo "model=$MODEL_NAME  out=$OUT  steps=$STEPS  effective batch=$((4 * GAS))"
+echo "model=$MODEL_NAME  out=$OUT  steps=$STEPS  effective batch=$((4 * GAS))  ${NORM_ARGS[*]}"
 echo "captions: hypersim $(python -c "import json;print(len(json.load(open('$HYP_TEXT'))))")  vkitti $(python -c "import json;print(len(json.load(open('$VK_TEXT'))))")"
 
+python "$IRIS_REPO/tests/test_synth_log_target.py"
 cd "$IRIS_REPO/lotus"
 git -C "$IRIS_REPO" log --oneline -1
 accelerate launch --config_file=accelerate_configs/0.yaml --mixed_precision="fp16" \
@@ -71,7 +77,7 @@ accelerate launch --config_file=accelerate_configs/0.yaml --mixed_precision="fp1
   --prob_hypersim=0.9 \
   --mix_dataset \
   --random_flip \
-  --norm_type=trunc_disparity \
+  "${NORM_ARGS[@]}" \
   --dataloader_num_workers=6 \
   --train_batch_size=4 \
   --gradient_accumulation_steps=$GAS \

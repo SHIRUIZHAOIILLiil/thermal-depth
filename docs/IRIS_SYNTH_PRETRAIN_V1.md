@@ -446,3 +446,22 @@ NeWCRF val `ssi` 2.457972（容差 2 mm）。
 - 0–10 m：训练帧上也比 NeWCRF 差 17–55%（绝对值小，下方 0.31 对 0.20 m）。这一段是**精度上限**，不是覆盖问题。
 - 10–80 m：训练帧上我们比 NeWCRF 好（0.86–0.98），到陌生路线变差（16-08-46 1.07–1.23）。这一段是**泛化**。
 - RMSE 按米计，差额主要在 10–80 m，所以 RMSE 的差距是泛化问题；0–10 m 的精度上限对 RMSE 影响小，主要影响 AbsRel。
+
+## log 空间合成预训练（2026-11-17 预登记）
+
+想法：合成起点是唯一证实能修泛化的手段（val −12.4 cm，train 不动）。预训练目标是 Lotus 的 `trunc_disparity`
+（视差，近处 = +1），MS2 微调是 `log_truncnorm`（log 深度，近处 = −1）：U-Net 进 MS2 时输出既要换空间又要反向。
+这一臂让预训练直接用 MS2 的目标。没有直接证据，只是这条线上唯一还没对齐的地方。
+
+改动（只此一处，其余与 synth20b36 相同：SD 2.0-base、有效 batch 36、20000 步、Iris 其余参数）：
+- `lotus/utils/log_target.py`：与 `ms2_thermal_dataset.py` 的 `log_truncnorm` 逐行相同的公式；
+  Hypersim 用全部有限正深度，vKITTI 用加载器自己的有效掩码（天空 ≥ 80 m 不在掩码里，裁到 +1 = 远）。
+- `hypersim_dataset.py` / `vkitti_dataset.py` / `train_iris_g.py`：新增 `log_truncnorm` 选项和 `--truncnorm_max`（默认不变）。
+- 预训练 `NORM_TYPE=log_truncnorm TRUNCNORM_MAX=1.0`，输出 `synth_pretrain/iris_g_synth_sd20_s42_bsz36_log`。
+- `tests/test_synth_log_target.py`：与 MS2 公式一致、近处低远处高、视差方向相反、天空裁到 +1、默认上界不变；
+  预训练作业开跑前执行，失败即退出。
+- 不做零样本复现：Lotus 评估器按视差 / 深度对齐，log 输出不适用，也不是这一臂要回答的问题。
+
+MS2 臂 `sd2_cap_pct_logtn_img_l0100_tmax1_synth20b36log_s43`，tmax1 配方 + `--init_unet_from` 上面的预训练。判定（全量 val，step 16000）：
+- 归因：对 synth20b36（0.0770 / 2.686 / 0.9454）报告三项差值，回答 log 预训练有没有用。
+- 进展（唯一算数的门槛）：对 synth 臂（0.0763 / 2.651 / 0.9491），RMSE 至少降 10 cm，AbsRel 增加不超过 0.002，δ1 下降不超过 0.003。

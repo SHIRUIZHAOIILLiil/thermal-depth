@@ -9,6 +9,11 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 import json
 
+try:
+    from .log_target import log_truncnorm
+except ImportError:  # imported as a top-level module
+    from log_target import log_truncnorm
+
 
 class VKITTITransform:
     '''Crop images to KITTI benchmark size and randomly flip. '''
@@ -66,7 +71,7 @@ class VKITTITransform:
 
 class VKITTIDataset(Dataset):
     #mod add text_descriptions_path
-    def __init__(self, root_dir, transform=None, norm_type='truncnorm', truncnorm_min=0.02, text_descriptions_path=None):
+    def __init__(self, root_dir, transform=None, norm_type='truncnorm', truncnorm_min=0.02, text_descriptions_path=None, truncnorm_max=None):
         """
         Args:
             root_dir (string): Directory with all the images and depths.
@@ -90,7 +95,8 @@ class VKITTIDataset(Dataset):
 
         self.norm_type = norm_type
         self.truncnorm_min = truncnorm_min
-        self.truncnorm_max = 1 - truncnorm_min
+        # None keeps Lotus's symmetric pair; log_truncnorm runs take 1.0 like the MS2 tmax1 recipe.
+        self.truncnorm_max = 1 - truncnorm_min if truncnorm_max is None else float(truncnorm_max)
         
         # mod Load text descriptions if provided
         self.text_descriptions = {}
@@ -193,6 +199,9 @@ class VKITTIDataset(Dataset):
             disparity_max = torch.quantile(disparity[valid_mask], self.truncnorm_max)
             disparity_norm = ((disparity - disparity_min)/(disparity_max - disparity_min + 1e-5) - 0.5) * 2.0
             depth_norm = disparity_norm
+        elif self.norm_type == "log_truncnorm":
+            # Sky (>= d_max) is outside valid_mask and lands above the far bound, so it clips to +1 (far).
+            depth_norm = log_truncnorm(depth, valid_mask, self.truncnorm_min, self.truncnorm_max)
         else:
             raise TypeError(f"Not supported normalization type: {self.norm_type}. ")
         

@@ -9,6 +9,11 @@ import random
 from torchvision import transforms
 import json
 
+try:
+    from .log_target import log_truncnorm
+except ImportError:  # imported as a top-level module
+    from log_target import log_truncnorm
+
 def hypersim_distance_to_depth(npyDistance):
     intWidth=1024
     intHeight=768
@@ -54,12 +59,13 @@ def align_normals(normal, depth, K, H, W):
     return normal 
 
 class HypersimImageDepthNormalTransform:
-    def __init__(self, size, random_flip, norm_type, truncnorm_min=0.02, align_cam_normal=False) -> None:
+    def __init__(self, size, random_flip, norm_type, truncnorm_min=0.02, align_cam_normal=False, truncnorm_max=None) -> None:
         self.size = size
         self.random_flip = random_flip
         self.norm_type = norm_type
         self.truncnorm_min = truncnorm_min
-        self.truncnorm_max = 1 - truncnorm_min
+        # None keeps Lotus's symmetric pair; log_truncnorm runs take 1.0 like the MS2 tmax1 recipe.
+        self.truncnorm_max = 1 - truncnorm_min if truncnorm_max is None else float(truncnorm_max)
         self.d_max = 65
         self.align_cam_normal = align_cam_normal
     
@@ -134,6 +140,8 @@ class HypersimImageDepthNormalTransform:
             disparity_max = torch.quantile(disparity, self.truncnorm_max)
             disparity_norm = ((disparity - disparity_min)/(disparity_max - disparity_min + 1e-5) - 0.5) * 2
             depth_norm = disparity_norm
+        elif self.norm_type == "log_truncnorm":
+            depth_norm = log_truncnorm(depth, torch.isfinite(depth) & (depth > 0), self.truncnorm_min, self.truncnorm_max)
         else:
             raise TypeError(f"Not supported normalization type: {self.norm_type}. ")
         
@@ -146,7 +154,7 @@ class HypersimImageDepthNormalTransform:
         return image, depth, normal
 
 #mod add text descriptions
-def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_type, truncnorm_min, align_cam_normal=False, split='train', text_descriptions_path=None):
+def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_type, truncnorm_min, align_cam_normal=False, split='train', text_descriptions_path=None, truncnorm_max=None):
     split_dir = os.path.join(data_dir, split)
     
     # mod Load text descriptions if provided
@@ -203,7 +211,7 @@ def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_ty
         new_h = resolution
         new_w = int(resolution * w / h)
     
-    transforms = HypersimImageDepthNormalTransform((new_h, new_w), random_flip, norm_type, truncnorm_min, align_cam_normal)
+    transforms = HypersimImageDepthNormalTransform((new_h, new_w), random_flip, norm_type, truncnorm_min, align_cam_normal, truncnorm_max=truncnorm_max)
 
     def preprocess_hypersim(examples):
         # convert image to RGB
