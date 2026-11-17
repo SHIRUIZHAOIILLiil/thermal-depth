@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
-#SBATCH --time=01:30:00
+#SBATCH --time=01:00:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 # Near-range synth-vs-NeWCRF check on the 96 train + 96 val frames (tools/train_val_pixel_gap.py).
@@ -16,4 +16,5 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 cd "$IRIS_REPO"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 OMP_NUM_THREADS=1
 base="$IRIS_RUNS/outputs/lotus_line_v2"
-python -u tools/train_val_pixel_gap.py --runs "$IRIS_RUNS" --data-root "$IRIS_MS2_ROOT" \n    --out "$base/train_val_pixel_gap_v1/job_${SLURM_JOB_ID:?}"
+python -u tools/train_val_pixel_gap.py --runs "$IRIS_RUNS" --data-root "$IRIS_MS2_ROOT" \
+    --out "$base/train_val_pixel_gap_v1/job_${SLURM_JOB_ID:?}"
