@@ -43,11 +43,26 @@ GAS="${GAS:-3}"
 NORM_TYPE="${NORM_TYPE:-trunc_disparity}"
 NORM_ARGS=(--norm_type="$NORM_TYPE")
 [[ -n "${TRUNCNORM_MAX:-}" ]] && NORM_ARGS+=(--truncnorm_max="$TRUNCNORM_MAX")
+# NO_CAPTIONS=1: Iris's no-text baseline (Lotus-G*): same data and steps, every prompt "".
+# train_iris_g.py feeds "" when no description file is given. The tag must say nocap, and
+# only a nocap tag may run without captions, so the two arms can never share a directory.
+NO_CAPTIONS="${NO_CAPTIONS:-0}"
+case "$NO_CAPTIONS:$TAG" in
+  1:*nocap*|0:*) ;;
+  *) echo "!! NO_CAPTIONS=$NO_CAPTIONS does not match RUN_TAG=$TAG (nocap tag <-> NO_CAPTIONS=1)"; exit 1 ;;
+esac
+[[ "$NO_CAPTIONS" == "1" || "$TAG" != *nocap* ]] || { echo "!! RUN_TAG=$TAG says nocap but NO_CAPTIONS=0"; exit 1; }
 OUT="$IRIS_RUNS/synth_pretrain/$TAG"
 HYP_TEXT="$SYN/captions/hypersim_depth_descriptions.json"
 VK_TEXT="$SYN/captions/vkitti_depth_descriptions.json"
 
-for f in "$SYN/hypersim/train/metadata.jsonl" "$HYP_TEXT" "$VK_TEXT"; do
+if [[ "$NO_CAPTIONS" == "1" ]]; then
+  NEED=("$SYN/hypersim/train/metadata.jsonl") TEXT_ARGS=()
+else
+  NEED=("$SYN/hypersim/train/metadata.jsonl" "$HYP_TEXT" "$VK_TEXT")
+  TEXT_ARGS=(--hypersim_text_descriptions_path="$HYP_TEXT" --vkitti_text_descriptions_path="$VK_TEXT")
+fi
+for f in "${NEED[@]}"; do
   [[ -s "$f" ]] || { echo "!! missing $f (synth data / caption chain not finished)"; exit 1; }
 done
 [[ -d "$HF_HOME/hub/models--${MODEL_NAME//\//--}" ]] || { echo "!! $MODEL_NAME not in $HF_HOME"; exit 1; }
@@ -61,7 +76,11 @@ elif [[ -s "$OUT/unet/diffusion_pytorch_model.safetensors" ]]; then
 fi
 mkdir -p "$OUT"
 echo "model=$MODEL_NAME  out=$OUT  steps=$STEPS  effective batch=$((4 * GAS))  ${NORM_ARGS[*]}"
-echo "captions: hypersim $(python -c "import json;print(len(json.load(open('$HYP_TEXT'))))")  vkitti $(python -c "import json;print(len(json.load(open('$VK_TEXT'))))")"
+if [[ "$NO_CAPTIONS" == "1" ]]; then
+  echo "captions: off (every prompt is the empty string, Lotus-G* baseline)"
+else
+  echo "captions: hypersim $(python -c "import json;print(len(json.load(open('$HYP_TEXT'))))")  vkitti $(python -c "import json;print(len(json.load(open('$VK_TEXT'))))")"
+fi
 
 python "$IRIS_REPO/tests/test_synth_log_target.py"
 cd "$IRIS_REPO/lotus"
@@ -95,7 +114,6 @@ accelerate launch --config_file=accelerate_configs/0.yaml --mixed_precision="fp1
   --output_dir="$OUT" \
   "${RESUME[@]}" \
   --use_8bit_adam \
-  --hypersim_text_descriptions_path="$HYP_TEXT" \
-  --vkitti_text_descriptions_path="$VK_TEXT"
+  "${TEXT_ARGS[@]}"
 [[ -s "$OUT/unet/diffusion_pytorch_model.safetensors" ]] || { echo "!! trainer exited without $OUT/unet"; exit 1; }
 echo "[done] $OUT"

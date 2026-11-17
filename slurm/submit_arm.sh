@@ -29,8 +29,18 @@ else
   [[ ! -e "$IRIS_RUNS/iris_ms2/$RUN" ]] || { echo "!! $IRIS_RUNS/iris_ms2/$RUN 已存在，换个名字（中途断了用 RESUME=1）"; exit 1; }
 fi
 
+# NO_CAPTIONS=1: the empty-caption arm (train on "", select on the empty prompt). Only an arm
+# named sd2_nocap_* may set it, and an sd2_nocap_* arm must set it.
+NO_CAPTIONS="${NO_CAPTIONS:-0}"
+case "$NO_CAPTIONS:$RUN" in
+  1:sd2_nocap_*) PROMPT=empty ;;
+  0:sd2_nocap_*) echo "!! $RUN is a nocap arm but NO_CAPTIONS=0"; exit 1 ;;
+  0:*) PROMPT=correct ;;
+  *) echo "!! NO_CAPTIONS=$NO_CAPTIONS needs an sd2_nocap_* arm name, got $RUN"; exit 1 ;;
+esac
+
 # The l100 recipe (λ sweep control config with λ_image = 0.1, no tail).
-export START=sd2 SEED=43 NO_CAPTIONS=0 RANDOM_FLIP=1 PURE_PSEUDO=0
+export START=sd2 SEED=43 NO_CAPTIONS RANDOM_FLIP=1 PURE_PSEUDO=0
 export NORMTYPE=log_truncnorm PREDICTION_TYPE=sample
 export IRIS_THERMAL_STRETCH=percentile IRIS_TEXT_PADDING=legacy
 export LAMBDA_IMAGE=0.1 LAMBDA_TAIL=0 TAIL_LOSS=none TAIL_ALIGN=none TAIL_HUBER_DELTA_M=5
@@ -56,7 +66,7 @@ else
 fi
 
 export RUN STEPS=16000 FIXED_STEP=16000 VAL_ONLY=1 VAL_STRIDE=1
-export SEL_PROMPT=correct TEST_PROMPTS=correct ALIGN_MODE=ssi_log ROUTE=b_thermal_unet
+export SEL_PROMPT=$PROMPT TEST_PROMPTS=$PROMPT ALIGN_MODE=ssi_log ROUTE=b_thermal_unet
 VA=$(sbatch --parsable -J "v_${RUN:0:27}" --time=05:00:00 --dependency=afterok:$TR --export=ALL slurm/iris_ms2_pipeline.sbatch)
 echo "val   -> $VA  (等 $TR)"
 
@@ -65,10 +75,10 @@ S=eval_eval_affine_invariant_log_space.json
 R="$IRIS_RUNS/eval"
 echo
 if [[ -n "$SM" ]]; then
-  echo "冒烟跑完先看：grep -h truncnorm_max ~/Iris/sm_${RUN:0:26}-$SM.err ；不对就 scancel $TR $VA"
+  echo "冒烟跑完先看：grep -h -E 'truncnorm_max|captions' ~/Iris/sm_${RUN:0:26}-$SM.* ；不对就 scancel $TR $VA"
 else
   echo "续训开始后先看：grep -h -E 'Resuming|truncnorm_max' ~/Iris/tr_${RUN:0:26}-$TR.out ~/Iris/tr_${RUN:0:26}-$TR.err"
 fi
 echo "val 作业号 $VA（下游作业可挂 --dependency=afterok:$VA）"
 echo "全部完成后比较："
-echo "python3 tools/select_loss_sweep.py --control l100=$R/sd2_cap_pct_logtn_img_l0100_s43_val_${fp}_stride1_correct_s16000/$S --candidate new=$R/${RUN}_val_${fp}_stride1_correct_s16000/$S"
+echo "python3 tools/select_loss_sweep.py --control l100=$R/sd2_cap_pct_logtn_img_l0100_s43_val_${fp}_stride1_correct_s16000/$S --candidate new=$R/${RUN}_val_${fp}_stride1_${PROMPT}_s16000/$S"

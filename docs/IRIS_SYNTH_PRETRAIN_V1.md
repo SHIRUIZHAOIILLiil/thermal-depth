@@ -475,3 +475,53 @@ MS2 臂 `sd2_cap_pct_logtn_img_l0100_tmax1_synth20b36log_s43`，tmax1 配方 + `
   SD2.1 + batch 36 没有对应的视差臂，结果无法归因；synth 与 synth20b36 之间 3.5 cm 是单种子、两处改动混在一起，不作为选底座的依据。
 - 5 cm 大于两条 synth 臂之间 3.5 cm 的差；过线时 RMSE ≤ 2.636，也优于 synth 臂（2.651）。
 - 本臂过线后，作为新的 U-Net 底座再走 `docs/SYNTH_POSTHOC_V1.md` 的权重平均 + decoder 链。
+
+## 全程空 caption 的配对臂（2026-11-17 预登记）
+
+问题：合成起点上，caption 的作用还在不在。稿子里的 caption 证据全部来自 SD2 起点的 `sd2_cap` / `sd2_nocap` 配对；
+从 Lotus（空 prompt 训练的深度模型）起训时看不到 caption 效应，合成起点也是训练好的深度模型，所以要单独验证。
+
+对照按 Iris 的做法：Iris 的无文本基线是 Lotus-G*（SD2、同样数据和步数、prompt 全空），对 Iris-G（预训练和推理都带 caption）。
+这里配 log b36 那条（`iris_g_synth_sd20_s42_bsz36_log` → `sd2_cap_pct_logtn_img_l0100_tmax1_synth20b36log_s43`），只差 caption：
+
+- 预训练 `iris_g_synth_sd20_s42_bsz36_log_nocap`：`NO_CAPTIONS=1`，不传两个 caption 文件，`train_iris_g.py` 每帧喂 `""`；其余同 log 臂
+  （SD2.0-base、有效 batch 36、log_truncnorm、`--truncnorm_max 1.0`、20000 步、seed 42）。
+- MS2 臂 `sd2_nocap_pct_logtn_img_l0100_tmax1_synth20b36log_s43`：tmax1 配方 + `--init_unet_from` 上面的预训练，
+  `NO_CAPTIONS=1` 训练，val 用空 prompt 选点（`SEL_PROMPT=empty`）；caption 臂用真 caption。
+- 防错：`iris_synth_pretrain.sbatch` 要求 tag 含 `nocap` 当且仅当 `NO_CAPTIONS=1`；`submit_arm.sh` 要求臂名以 `sd2_nocap_` 开头当且仅当 `NO_CAPTIONS=1`。
+
+判定（全量 val，step 16000，各用自己的 prompt，`ssi_log`），报告 caption 臂 − 空 caption 臂的三项差值：
+- 三项都是 caption 臂更好：caption 效应在合成起点上保留。
+- 三项都是空 caption 臂更好：反向。
+- 其余：混合，如实记录。
+块配对的区间按稿子现有方式另算，不改上面的判定。不做打乱 caption 的对照。
+
+一个种子；如果 log 臂没过 5 cm 门槛、最终改用 synth20b36（视差目标），还要另补视差版的空 caption 预训练。
+
+投递（与 caption 链并行；端口错开，免得两条预训练落到同一节点时冲突）：
+
+```bash
+(
+  set -euo pipefail
+  cd ~/Iris
+  git pull --ff-only origin aire-hpc-setup
+  unset IRIS_MS2_ROOT IRIS_MANIFEST_DIR IRIS_DATA
+  export IRIS_RUNS=/mnt/scratch/dwdh0363/runs
+  export NO_CAPTIONS=1 MAIN_PROCESS_PORT=13225 MAIN_PORT=13226
+  export SD2_REPO=Manojb/stable-diffusion-2-base GAS=9 NORM_TYPE=log_truncnorm TRUNCNORM_MAX=1.0 RUN_TAG=iris_g_synth_sd20_s42_bsz36_log_nocap
+  mailafter() { sbatch --dependency=afterany:$1 -J mail_$1 -t 00:10:00 --mem=1G -c 1 -o /dev/null --wrap="{ sacct -X -j $1 -o JobID,JobName%30,State,Elapsed,ExitCode; for f in ~/Iris/*-$1.out ~/Iris/*-$1.err; do echo \"--- \$f\"; tail -c 4000 \"\$f\" | tr '\r' '\n' | tail -n 25; done; } 2>&1 | mail -s \"iris job $1\" anmolidawn@gmail.com" >/dev/null; }
+  PS=$(sbatch --parsable --time=01:30:00 --export=ALL,SMOKE=1 slurm/iris_synth_pretrain.sbatch)
+  P1=$(sbatch --parsable --dependency=afterok:$PS --export=ALL,SMOKE=0 slurm/iris_synth_pretrain.sbatch)
+  P2=$(sbatch --parsable --dependency=afterany:$P1 --export=ALL,SMOKE=0 slurm/iris_synth_pretrain.sbatch)
+  unset SD2_REPO GAS NORM_TYPE TRUNCNORM_MAX RUN_TAG
+  out=$(AFTER=$P2 bash slurm/submit_arm.sh sd2_nocap_pct_logtn_img_l0100_tmax1_synth20b36log_s43 "--truncnorm_max 1.0 --init_unet_from $IRIS_RUNS/synth_pretrain/iris_g_synth_sd20_s42_bsz36_log_nocap")
+  echo "$out"
+  SM=$(echo "$out" | sed -n 's/^smoke -> \([0-9]*\).*/\1/p')
+  TR=$(echo "$out" | sed -n 's/^train -> \([0-9]*\).*/\1/p')
+  VA=$(echo "$out" | sed -n 's/^val   -> \([0-9]*\).*/\1/p')
+  for j in $PS $P1 $P2 $SM $TR $VA; do mailafter $j; done
+  echo "nocap pretrain smoke $PS -> $P1 -> $P2 | ms2 smoke $SM -> train $TR -> val $VA | mail after all six"
+)
+```
+
+预训练冒烟邮件里要看到 `captions: off`；MS2 冒烟里 `captions  = off`，`U-Net initialised from` 指向 `_bsz36_log_nocap`。
