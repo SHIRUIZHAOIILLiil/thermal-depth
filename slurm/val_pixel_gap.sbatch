@@ -16,7 +16,9 @@ source "${IRIS_REPO:-$HOME/Iris}/slurm/common.sh"
 cd "$IRIS_REPO"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 OMP_NUM_THREADS=1
 base="$IRIS_RUNS/outputs/lotus_line_v2"
+python tests/test_val_pixel_gap_split.py
+# v2 adds the exact per-band AbsRel / delta1 split; job 9489118 is the v1 output.
 python -u tools/val_pixel_gap.py --runs "$IRIS_RUNS" --data-root "$IRIS_MS2_ROOT" \
     --newcrf "$base/newcrf_val_ssi_log_v1/job_9488948/per_frame.csv" \
     --previous "$base/iris_pair_rmse_val_v1/job_9167854" \
-    --out "$base/val_pixel_gap_v1/job_${SLURM_JOB_ID:?}"
+    --out "$base/val_pixel_gap_v2/job_${SLURM_JOB_ID:?}"

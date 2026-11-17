@@ -525,3 +525,22 @@ MS2 臂 `sd2_cap_pct_logtn_img_l0100_tmax1_synth20b36log_s43`，tmax1 配方 + `
 ```
 
 预训练冒烟邮件里要看到 `captions: off`；MS2 冒烟里 `captions  = off`，`U-Net initialised from` 指向 `_bsz36_log_nocap`。
+
+## AbsRel 输在哪个距离段（2026-11-17 预登记，GPU 推理约 5 分钟，只用 val）
+
+背景：上面「帧内哪里输」只拆了 RMSE（平方误差）；「AbsRel 的差距主要来自近处」是从 RMSE 比值和点数推的，没有量过。
+11-07 的同对齐拆分里，0–40 m 的 RMSE 差距 69% 在 20–40 m，所以差距也可能在 10–40 m。
+
+做法：`tools/val_pixel_gap.py` v2（`slurm/val_pixel_gap.sbatch`，输出 `val_pixel_gap_v2/`），同一批 1426 帧、同一 synth 16k、
+同一 NeWCRF 缓存。AbsRel 和 δ1 都是「帧内对有效点平均、再对帧平均」，所以每个格子的贡献是
+mean_f(Σ_{格内点} x / N_f)，各格严格相加等于序列的帧平均值，不是近似。
+- 对照：每帧各格之和与评估器同一帧的 AbsRel / δ1 相差 ≤ 1e-9；每帧 RMSE、AbsRel、δ1 复现存档逐帧 CSV
+  （synth：RMSE 1 mm、AbsRel 1e-4、δ1 2e-3；NeWCRF 1e-6）。`tests/test_val_pixel_gap_split.py` 在作业开头跑。
+- 报告每个序列和全部帧（`all`）：各距离段（上中下三行合并）的点数占比、AbsRel 差值及占总差距比例、δ1 差值及占比。
+
+判读（看结果前定，看 `all` 的 AbsRel 差距，三段只有一段 ≥ 50% 才归类）：
+- 0–10 m ≥ 50%：近处精度（训练帧上也输的那一段）。
+- 10–20 m + 20–40 m ≥ 50%：中段，即 10–40 m。
+- 40–80 m ≥ 50%：远处。
+- 都不到 50%：分散，如实记录各段；两段以上过 50%（有段我们领先、份额为负时可能出现）：记为 ambiguous。
+δ1 同样报告，不判读。结果只用来决定下一步攻哪一段，不改任何门槛。
