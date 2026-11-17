@@ -5,6 +5,7 @@ No U-Net continuation, no q98 decoder transplant, no test split.
 """
 import argparse
 import dataclasses
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,23 @@ CODE = tuple(dict.fromkeys((*old.CODE, 'tools/train_iris_tmax1_decoder.py',
     'tools/train_iris_tmax1_bias.py', 'tools/eval_iris_decoder_only.py',
     'tests/test_iris_tmax1_decoder.py', 'slurm/iris_tmax1_decoder.sbatch',
     'slurm/submit_iris_tmax1_decoder.sh')))
+
+
+@dataclass(frozen=True)
+class Start:
+    """Which frozen U-Net the decoder stage starts from. Everything else is shared."""
+    experiment: str
+    label: str
+    resolve: object          # argparse namespace -> weights path
+    load: object             # (model, path) -> None
+    require_start: object    # full-val metrics of the frozen start -> None (raises on mismatch)
+    source_step: object
+    code: tuple = ()
+
+
+TMAX1 = Start(experiment='iris_tmax1_decoder_v1', label='tmax1 original 16000',
+    resolve=lambda a: tmax.check_source(a.source), load=lambda model, path: pair.old.load_arm(model, path, 'frame'),
+    require_start=tmax.require_start, source_step=16000)
 
 
 def make_dataset(contract, data_root):
@@ -78,14 +96,14 @@ def compare_metrics(candidate, incumbent, reference):
         incumbent_vs_newcrf=comparison(incumbent,reference))
 
 
-def run(a):
+def run(a, start=TMAX1):
     from tools.train_route_suite import RouteModel
     if not torch.cuda.is_available():
         raise RuntimeError('Requires CUDA')
     # Reuse the frozen data/inference recipe, NOT this q98 parent's U-Net or decoder.
     inputs = old.parent.parent_inputs(a.runs)
     c = inputs['contract']
-    source = tmax.check_source(a.source)
+    source = start.resolve(a)
     samples, ti = pair.checked_manifest(Path(c['train']['path']),a.data_root,'train',75688)
     val, vi = pair.checked_manifest(Path(c['val']['path']),a.data_root,'val',14249)
     if ti!=c['train'] or vi!=c['val']:
@@ -104,10 +122,10 @@ def run(a):
         raise ValueError('Dataset/manifest order differs')
     pair.seed_all(old.SEED)
     model = RouteModel(recipe,torch.device('cuda'),torch.float16)
-    pair.old.load_arm(model,source,'frame')
+    start.load(model,source)
     decoder, params = old.make_decoder(model)  # original VAE; never load the q98 adapted decoder
-    settings = dict(experiment='iris_tmax1_decoder_v1', source=str(source),
-        source_sha256=pair.sha256_file(source), source_step=16000,
+    settings = dict(experiment=start.experiment, source=str(source),
+        source_sha256=pair.sha256_file(source), source_step=start.source_step,
         source_training=dict(image_l1=.1,quantiles=[LOWER,UPPER]), decoder_initialization='original fp32 VAE',
         recipe=c['recipe'], train=ti, val=vi, pseudo=c['pseudo'], pseudo_config_sha256=c['pseudo_config'],
         quantiles=[LOWER,UPPER], trainable=list(params), lr=old.LR, batch=old.BATCH,
@@ -117,7 +135,7 @@ def run(a):
         pixel_loss_weight=.05, pair_weight=old.bias.PAIR_WEIGHT, bias_weight=old.bias.BIAS_WEIGHT,
         prediction_inputs='thermal + frame caption + manifest index; target_latent=None',
         policy=old.POLICY,newcrf=reference,incumbent=incumbent,
-        code={p:pair.sha256_file(ROOT/p) for p in CODE})
+        code={p:pair.sha256_file(ROOT/p) for p in dict.fromkeys((*CODE, *start.code))})
     settings = json.loads(json.dumps(settings))
     smoke = a.mode=='smoke'
     folder = a.run/('smoke' if smoke else 'train')
@@ -127,8 +145,8 @@ def run(a):
             raise FileExistsError('Run contract already exists')
         pair.json_write(a.run/'contract.json',settings)
         baseline = old.validate(model,decoder,val,recipe,verify_initial=True)
-        tmax.require_start(baseline['metrics'])
-        print('[reproduced] tmax1 original 16000',baseline,flush=True)
+        start.require_start(baseline['metrics'])
+        print('[reproduced]',start.label,baseline,flush=True)
         original = samples[0]
         poisoned = dataclasses.replace(original,thermal_gt_path='/GT_MUST_NOT_BE_READ/missing.png')
         raw,z = old.predict_frozen(model,old.InferenceInput.from_sample(original),recipe)
@@ -160,7 +178,7 @@ def run(a):
         selected=compare_metrics(curve[chosen]['metrics'],prior[str(incumbent['selected'])]['metrics'],reference['metrics']))
     path = folder/f'decoder_{chosen}.pt' if chosen else None
     pair.json_write(folder/'summary.json',dict(selected=chosen,curve=curve,decision=decision,
-        source_step=16000,selected_decoder=str(path) if path else None,
+        source_step=start.source_step,selected_decoder=str(path) if path else None,
         selected_sha256=pair.sha256_file(path) if path else None,training=report,
         contract_sha256=pair.sha256_file(a.run/'contract.json'),comparisons=comparisons,
         comparison_note=incumbent['note']))

@@ -1,7 +1,12 @@
-"""Does averaging tmax1 U-Net weights over late checkpoints reduce generalisation error?
+"""Does averaging a run's U-Net weights over late checkpoints reduce generalisation error?
 
 One frozen window, steps 12000 to 20000. The result is still one model and one forward pass.
 Scored on the 96 + 96 frames of the earlier diagnostics, SSI-log. No training, no test.
+
+Two sources, each with its own control (step 16000 on the same 96 val frames):
+- tmax1 (job 9229303, 2026-11-07): the original 5 cm gate decides whether weights are saved.
+- synth (docs/SYNTH_POSTHOC_V1.md, pre-registered 2026-11-17): the average is saved and used for
+  the decoder stage iff it is no worse than step 16000 on all three val metrics (`use_average`).
 """
 import argparse
 import json
@@ -23,6 +28,11 @@ from tools.diagnose_model_far_gap import DIAGNOSTIC_JOB
 WINDOW = tuple(range(12000, 20001, 1000))
 BASELINE = 16000
 BASELINE_VAL_RMSE = 2.7980045794905712  # job 9229268, same frames and recipe
+TMAX1_RUN = 'sd2_cap_pct_logtn_img_l0100_tmax1_s43'
+SYNTH_RUN = 'sd2_cap_pct_logtn_img_l0100_tmax1_synth_s43'
+# Step-16000 val RMSE on the same 96 frames: tmax1 job 9229268, synth job 9488823.
+SOURCES = {TMAX1_RUN: dict(control_val_rmse=BASELINE_VAL_RMSE, save='gate'),
+           SYNTH_RUN: dict(control_val_rmse=2.67386, save='not_worse')}
 TOLERANCE_M = .002
 RMSE_GAIN_M, ABSREL_INCREASE = .05, .002
 KEYS = ('abs_rel', 'rmse', 'a1')
@@ -55,6 +65,19 @@ def gate(average, baseline):
                 passed=gain >= RMSE_GAIN_M-1e-12 and increase <= ABSREL_INCREASE+1e-12)
 
 
+def not_worse(average, baseline):
+    """The synth rule: the average replaces step 16000 only if no headline metric gets worse."""
+    return (average['abs_rel'] <= baseline['abs_rel'] and average['rmse'] <= baseline['rmse']
+            and average['a1'] >= baseline['a1'])
+
+
+def missing_checkpoints(source):
+    """Everything the window needs, checked before any GPU work."""
+    need = [source/'converted'/f'step{BASELINE}_weights.pt']
+    need += [source/f'checkpoint-{s}' for s in WINDOW if s != BASELINE]
+    return [str(p) for p in need if not p.exists()]
+
+
 def run(a):
     import torch
     from tools import eval_iris_decoder_only as prior
@@ -63,8 +86,12 @@ def run(a):
 
     if not torch.cuda.is_available():
         raise RuntimeError('Requires CUDA')
-    if a.source.name != 'sd2_cap_pct_logtn_img_l0100_tmax1_s43':
-        raise ValueError('Expected the tmax1 caption run')
+    if a.source.name not in SOURCES:
+        raise ValueError(f'No control registered for {a.source.name}')
+    policy = SOURCES[a.source.name]
+    missing = missing_checkpoints(a.source)
+    if missing:
+        raise FileNotFoundError(f'Window checkpoints missing: {missing}')
     job = a.runs/f'outputs/lotus_line_v2/iris_far_target_source_fitonly_v2/job_{DIAGNOSTIC_JOB}'
     reference = json.loads((job/'summary.json').read_text())
     a.out.mkdir(parents=True, exist_ok=False)
@@ -108,22 +135,28 @@ def run(a):
     averaged = average_states(states)
     del states
     result = score(averaged)
-    checked = dict(expected=BASELINE_VAL_RMSE, measured=baseline['val']['rmse'], tolerance_m=TOLERANCE_M,
-                   passed=abs(baseline['val']['rmse']-BASELINE_VAL_RMSE) <= TOLERANCE_M)
+    expected = policy['control_val_rmse']
+    checked = dict(expected=expected, measured=baseline['val']['rmse'], tolerance_m=TOLERANCE_M,
+                   passed=abs(baseline['val']['rmse']-expected) <= TOLERANCE_M)
     decision = gate(result['val'], baseline['val'])
+    use_average = checked['passed'] and not_worse(result['val'], baseline['val'])
+    save = decision['passed'] if policy['save'] == 'gate' else use_average
     weights = None
-    if decision['passed'] and checked['passed']:
+    if save and checked['passed']:
         weights = a.out/'average_12000_20000.pt'
         torch.save(dict(route='b_thermal_unet', caption_mode='correct', global_step=20000, averaged_steps=list(WINDOW),
-                        state_dicts=dict(unet=averaged)), weights)
+                        source_run=a.source.name, state_dicts=dict(unet=averaged)), weights)
     (a.out/'summary.json').write_text(json.dumps(dict(control=checked, baseline=baseline, average=result, gate=decision,
-        window=list(WINDOW), weights=str(weights) if weights else None, script_sha256=sha256_file(__file__)),
+        source=str(a.source), source_run=a.source.name, policy=policy, use_average=use_average,
+        window=list(WINDOW), weights=str(weights) if weights else None,
+        weights_sha256=sha256_file(weights) if weights else None, script_sha256=sha256_file(__file__)),
         indent=2, allow_nan=False))
     print('[control]', json.dumps(checked), flush=True)
     for name, row in (('step16000', baseline), ('average', result)):
         for split in ('train', 'val'):
             print('[row]', name, split, json.dumps({k: round(v, 5) for k, v in row[split].items()}), flush=True)
     print('[gate]', json.dumps(decision), flush=True)
+    print('[use_average]', use_average, flush=True)
     print('[completed]', a.out/'summary.json', flush=True)
 
 
