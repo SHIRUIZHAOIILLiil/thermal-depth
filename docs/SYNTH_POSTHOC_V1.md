@@ -89,3 +89,20 @@ synth 臂（`sd2_cap_pct_logtn_img_l0100_tmax1_synth_s43`，全量 val 0.0763 / 
 - 平均单独：AbsRel −0.0017、RMSE −5.6 cm、δ1 +0.0025（比 96 帧上大）。
 - 对 NeWCRF：δ1 已经领先 0.0012；RMSE 还差 3.2 cm；AbsRel 还差 0.0018。
 - GT 隔离、4 步训练、冻结检查全部通过。
+
+**decoder 训练 + 全量 val（作业 9489611，run_Pu1YrC5F）：** 选中 +1000 次更新（冻结的选点规则）。
+
+| 全量 val，`ssi_log` | AbsRel | RMSE (m) | δ1 |
+|---|---|---|---|
+| synth 16k | 0.0763 | 2.651 | 0.9491 |
+| 平均 12k–20k（起点） | 0.07462 | 2.5950 | 0.95157 |
+| **平均 + decoder +1000** | **0.07311** | **2.5599** | **0.95318** |
+| NeWCRF `ssi_log` | 0.07286 | 2.5625 | 0.95039 |
+| NeWCRF `ssi`（自己的对齐） | 0.08455 | 2.4710 | 0.94220 |
+
+- 判定：**`passed` 为否**。对 NeWCRF `ssi_log`：RMSE −0.26 cm、δ1 +0.0028 两项领先，AbsRel +0.00025 落后。
+- decoder 单独：AbsRel −0.0015、RMSE −3.5 cm、δ1 +0.0016（RMSE 比前两次的 6.7 cm 小，AbsRel 比预期好）。
+- 对 synth 16k 合计：AbsRel −0.0032、RMSE −9.1 cm、δ1 +0.0041；三项都优于此前最好的 q98 decoder（7.753 / 2.6754 / 94.69）。
+- 对 NeWCRF 自己的对齐：AbsRel、δ1 领先，RMSE 落后 8.9 cm。
+- 与 NeWCRF 的三项差都很小（RMSE 2.6 mm、AbsRel 0.00025），一个种子、decoder 步数在 val 上选，按差距大小只能说同对齐下与 NeWCRF 打平。
+- 按预登记不跑 test。只有 caption 臂；空 caption 臂没做后处理。

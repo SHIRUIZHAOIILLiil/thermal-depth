@@ -71,3 +71,22 @@ def depth2disparity(depth, return_mask=False):
 
 def disparity2depth(disparity, **kwargs):
     return depth2disparity(disparity, **kwargs)
+
+
+# ******************** log space (not part of Lotus / Iris) ********************
+def align_depth_least_square_log(gt_arr, pred_arr, valid_mask_arr, max_resolution=None):
+    """Affine fit of the raw prediction to log GT, then exp: the MS2 `ssi_log` protocol.
+
+    For models trained on a log-depth target (docs/IRIS_SYNTH_PRETRAIN_V1.md). Lotus and Iris
+    evaluate in disparity space; numbers from this mode are not comparable with their tables.
+    The exponent is clipped to [-9, 9] before exp, as ms2_eval/official_protocol.py does.
+    """
+    gt = np.asarray(gt_arr)
+    valid = np.asarray(valid_mask_arr).astype(bool) & (gt > 0)
+    gt_log = np.zeros(gt.shape, np.float64)
+    gt_log[valid] = np.log(gt[valid].astype(np.float64))
+    log_pred, scale, shift = align_depth_least_square(
+        gt_arr=gt_log, pred_arr=pred_arr, valid_mask_arr=valid,
+        return_scale_shift=True, max_resolution=max_resolution,
+    )
+    return np.exp(np.clip(log_pred, -9.0, 9.0)), scale, shift

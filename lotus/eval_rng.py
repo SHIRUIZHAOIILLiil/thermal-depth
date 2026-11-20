@@ -54,6 +54,11 @@ def parse_args():
         action="store_true",
     )
     parser.add_argument(
+        "--log_space",
+        action="store_true",
+        help="Align in log-depth space (MS2 ssi_log) for log-target models; not the Lotus/Iris protocol.",
+    )
+    parser.add_argument(
         "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
     )
 
@@ -417,7 +422,10 @@ def main():
                     continue
                 eval_dir = os.path.join(args.output_dir, args.task_name, dataset_name)
                 test_dataset_config = os.path.join(eval_config_dir, config_path)
-                alignment_type = "least_square_disparity" if args.disparity else "least_square"
+                if args.disparity and args.log_space:
+                    raise ValueError("--disparity and --log_space are exclusive")
+                alignment_type = ("least_square_log" if args.log_space else
+                                  "least_square_disparity" if args.disparity else "least_square")
                 metric_tracker = evaluation_depth(eval_dir, test_dataset_config, test_data_dir, eval_mode="generate_prediction",
                                                   gen_prediction=gen_depth_with_text, pipeline=pipeline, alignment=alignment_type,
                                                   processing_res=None, max_samples=args.max_eval_samples)

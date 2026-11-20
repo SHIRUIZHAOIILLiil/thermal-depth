@@ -577,3 +577,72 @@ mean_f(Σ_{格内点} x / N_f)，各格严格相加等于序列的帧平均值�
 - ≤ 0.0003：**excluded**，排除这个机制，不开臂。
 - 之间：**partial**，如实记录，由用户决定。
 限制：是训练帧上目标本身的代价，不是模型在 val 上的误差；模型可能学不到这么准，也可能在别处补回。
+
+**结果（2026-11-18，作业 9490420，训练集 2000 帧）：** 对照通过（下界差 0；代价差 1.1e-7）。
+（邮件里第一组 `3.50/3.50/3.50` 是作业开头单元测试的合成帧输出，不是结果。）
+
+| 近端分位 | 近端界（m，p10 / p50 / p90） | 0–10 m LiDAR 落在界下 | 0–10 m 的 AbsRel 代价 |
+|---|---|---|---|
+| 0.02（现用） | 3.43 / 4.27 / 5.08 | 2.6% | 0.00060 |
+| 0.01 | 3.35 / 4.14 / 4.96 | 2.0% | 0.00045 |
+| 0.005 | 3.29 / 4.05 / 4.86 | 1.6% | 0.00034 |
+| 0（只报告） | 2.96 / 3.71 / 4.39 | 0% | 0 |
+
+- 按规则：0.00060 在 0.0003 与 0.0010 之间，**partial**；0.01、0.005 都去不掉 80%，`suggested_truncnorm_min` 为空。由用户决定。
+- 截断最多解释 val 上 0–10 m AbsRel 差距（0.00242）的约四分之一；其余约 0.0018 来自别处。
+- 代价只在 10 m 以内（10 m 外全为 0）。q=0 的界 p10 为 2.96 m，这 2000 帧里没看到稠密图最小值被离群点拉到很近，但预登记里 q=0 不选，不因结果改。
+
+## log 预训练臂与全程空 caption 配对：结果（2026-11-20）
+
+预训练 9489796（48 h 超时）+ 9489797（续完）；空 caption 预训练 9489843 + 9489844。MS2 训练 9489799 / 9489846，val 9489800 / 9489847。
+全量 val 14249 帧，step 16000，`ssi_log`，各用自己的 prompt。
+
+| 臂 | AbsRel | RMSE (m) | δ1 |
+|---|---|---|---|
+| synth20b36（视差预训练，判定对照） | 0.0770 | 2.686 | 0.9454 |
+| synth20b36log（log 预训练，caption） | 0.0771 | 2.690 | 0.9466 |
+| synth20b36log nocap（全程空 caption） | 0.0768 | 2.682 | 0.9475 |
+
+- log 预训练：对 synth20b36 AbsRel +0.0001、RMSE +0.4 cm（要求 −5 cm）、δ1 +0.0012。**不通过**；log 目标对 MS2 没有作用。
+  按预登记不走后处理链。
+- caption 效应（caption − 空 caption）：AbsRel +0.0003、RMSE +0.8 cm、δ1 −0.0009，三项都是空 caption 臂更好，按规则为**反向**。
+  量级很小、一个种子；块配对区间另算，不改判读。合成起点上看不到 caption 的好处，与 Lotus 起点上的现象一致。
+
+## 完整复现 Iris 的 caption 对照：Lotus-G* 重训（2026-11-20 预登记）
+
+目的：在 Iris 自己的五个零样本集上，复现 Iris 论文的核心对照——Iris-G（预训练带 caption、推理带 caption）对
+Lotus-G*（同配方、prompt 全空）。我们已有 Iris-G 的忠实复现（synth20b36：SD2.0-base、有效 batch 36、`trunc_disparity`，
+零样本作业 9455030，与 Iris-G 差在一个点以内），缺的是同配方的 Lotus-G*。
+
+log 那一对不能用：Iris 的评估按视差最小二乘对齐（`--disparity`），log 输出不是 Iris 的协议。
+
+- 新预训练 `iris_g_synth_sd20_s42_bsz36_nocap`：与 synth20b36 逐项相同（SD2.0-base、GAS=9、`trunc_disparity`、对称 2%/98% 分位、
+  20000 步、seed 42），只有 `NO_CAPTIONS=1`（每帧 prompt 为空）。
+- 零样本评估全部走 `slurm/iris_eval_sets.sbatch STEP=eval`（eval_rng.py，seed 42，半精度，`--disparity`），四格：
+
+| 格 | 预训练 | 推理 prompt | 作业 |
+|---|---|---|---|
+| A Iris-G*（Train & Infer） | synth20b36 | caption | 已有（9455030） |
+| B Lotus-G* | nocap | 空 | 新 |
+| C 只训练带文本 | synth20b36 | 空 | 新，现在就能跑 |
+| D 只推理带文本 | nocap | caption | 新 |
+
+判读（看结果前定，主比较 A − B，看五个集的 AbsRel）：
+- A 在至少 4 个集上 AbsRel 低于 B：**复现了** Iris 的 caption 结论。
+- A 最多在 1 个集上低于 B：**没复现**。
+- 其余：部分复现，如实记录。
+同时报告每个集 A − B 与 Iris 论文 Iris-G − Lotus-G* 的差值（AbsRel：NYU −0.8、KITTI −0.3、ETH3D −0.2、ScanNet −1.2、DIODE −1.1）和 δ1。
+C、D 只报告，用于拆分训练时文本与推理时文本各自的作用，不判读。一个种子。
+ETH3D 原图 6048×4032，以前 32G 内存 OOM 过，这次评估申请 96G。
+
+## 方向二：log 那一对在 Iris 五个集上的零样本（2026-11-20 预登记，只评估）
+
+问题：合成预训练阶段（还没碰 MS2）caption 有没有用。用已训好的 log 那一对，不新训。
+- 评估同上一节的 `iris_eval_sets.sbatch STEP=eval`，只把对齐换成 log 空间（`ALIGN=log` → `eval_rng.py --log_space`，
+  `lotus/evaluation/util/alignment.py::align_depth_least_square_log`：对 log GT 做仿射拟合再取指数，与 MS2 `ssi_log` 相同；
+  `tests/test_lotus_log_alignment.py` 核对与 `ms2_eval` 的 `ssi_log` 指标一致到 1e-5）。原有两种对齐不变。
+- caption 预训练（`..._bsz36_log`）用测试集 caption 推理；空 caption 预训练（`..._bsz36_log_nocap`）用空 prompt。
+- 这组数字**不能**和 Iris 论文的表比（Iris 用视差对齐），只比这一对内部。
+
+判读（看结果前定，与上一节同一规则）：caption 预训练在至少 4 个集上 AbsRel 更低 → 预训练阶段 caption 有用；
+最多 1 个 → 没用；其余部分。δ1 同样报告。一个种子。

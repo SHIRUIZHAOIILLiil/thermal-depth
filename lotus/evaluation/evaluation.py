@@ -22,6 +22,7 @@ from .dataset_normal.normal_dataloader import *
 from .util import metric
 from .util.alignment import (
     align_depth_least_square,
+    align_depth_least_square_log,
     depth2disparity,
     disparity2depth,
 )
@@ -209,6 +210,14 @@ def evaluation_depth(output_dir, dataset_config, base_data_dir, eval_mode, pred_
                 disparity_pred, a_min=1e-3, a_max=None
             )  # avoid 0 disparity
             depth_pred = disparity2depth(disparity_pred)
+        elif "least_square_log" == alignment:
+            # Added for log-depth targets; not a Lotus/Iris protocol (see util/alignment.py).
+            depth_pred, scale, shift = align_depth_least_square_log(
+                gt_arr=depth_raw,
+                pred_arr=depth_pred,
+                valid_mask_arr=valid_mask,
+                max_resolution=alignment_max_res,
+            )
 
         # Clip to dataset min max
         depth_pred = np.clip(

@@ -85,7 +85,14 @@ eval)
   # EVAL_DATASETS="eth3d": rerun only those sets into the same output directory (the other
   # sets' eval_metrics files stay). ETH3D's 6048x4032 frames OOM-killed both 32G runs.
   [[ -n "${EVAL_DATASETS:-}" ]] && TEXT+=(--eval_datasets $EVAL_DATASETS)
-  echo "captions=${CAPTIONS:-1}  rng_state=${RNG_STATE:-<none>}  datasets=${EVAL_DATASETS:-all}"
+  # ALIGN=disparity (default): Lotus/Iris's least_square_disparity. ALIGN=log: log-space affine
+  # (MS2 ssi_log) for log-target pretrains; those numbers are not comparable with Iris's table.
+  case "${ALIGN:-disparity}" in
+    disparity) ALIGN_ARG=--disparity ;;
+    log) ALIGN_ARG=--log_space; [[ "$TAG" == *logalign* ]] || { echo "!! ALIGN=log needs a TAG containing logalign"; exit 1; } ;;
+    *) echo "!! ALIGN must be disparity or log"; exit 1 ;;
+  esac
+  echo "captions=${CAPTIONS:-1}  align=${ALIGN:-disparity}  rng_state=${RNG_STATE:-<none>}  datasets=${EVAL_DATASETS:-all}"
   # Without captions eval_rng.py prints one "No text description..." line per image.
   python -u eval_rng.py \
     --pretrained_model_name_or_path="$CKPT" \
@@ -97,7 +104,7 @@ eval)
     --base_test_data_dir="$EV" \
     --eval_config_dir="$IRIS_REPO/lotus/datasets/eval/depth" \
     --half_precision \
-    --disparity > "$OUT/eval.log" 2>&1 || { tr '\r' '\n' < "$OUT/eval.log" | grep -v "No text description" | tail -n 40; exit 1; }
+    "$ALIGN_ARG" > "$OUT/eval.log" 2>&1 || { tr '\r' '\n' < "$OUT/eval.log" | grep -v "No text description" | tail -n 40; exit 1; }
   tr '\r' '\n' < "$OUT/eval.log" | grep -E "abs_relative_difference|Text Description|images without" || true
   for f in "$OUT"/depth/*/eval_metrics*.txt; do echo "--- $f"; cat "$f"; done
   ;;
