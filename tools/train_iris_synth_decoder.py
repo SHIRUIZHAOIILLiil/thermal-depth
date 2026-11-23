@@ -1,4 +1,7 @@
-"""Synth-start caption arm -> frozen U-Net -> original depth decoder adaptation (docs/SYNTH_POSTHOC_V1.md).
+"""Caption arm -> frozen U-Net -> original depth decoder adaptation (docs/SYNTH_POSTHOC_V1.md, docs/SD2_POSTHOC_V1.md).
+
+`--source-run` picks the arm: the synth arm (default, run_Pu1YrC5F) or tmax1 (SD2 start, the ablation's
+final SD2-start model). Each has its own step-16000 full-val reproduction.
 
 The decoder stage is train_iris_tmax1_decoder.py unchanged (budget, loss, data, 0/500/1000 selection);
 only the frozen U-Net differs. It is the synth arm's step 16000, or its 12000-20000 weight average
@@ -15,7 +18,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools import train_iris_tmax1_decoder as stage
-from tools.diagnose_checkpoint_average import SYNTH_RUN, WINDOW
+from tools.diagnose_checkpoint_average import SYNTH_RUN, TMAX1_RUN, WINDOW
 from tools.iris_tmax1_selection import checked_metrics
 
 pair = stage.pair
@@ -24,52 +27,59 @@ pair = stage.pair
 EXPECTED_16K = dict(abs_rel=.0763, rmse=2.65101, a1=.9491)
 TOLERANCE = dict(abs_rel=.00006, rmse=.002, a1=.00006)
 NEWCRF_SSI_LOG_JOB = 9488948
+EXPERIMENT = {SYNTH_RUN: 'iris_synth_decoder_v1', TMAX1_RUN: 'iris_tmax1_avg_decoder_v1'}
 KEYS = ('abs_rel', 'rmse', 'a1')
 
 
-def require_16k(metrics):
+def require_16k(metrics, source_run=SYNTH_RUN):
+    if source_run == TMAX1_RUN:
+        return stage.tmax.require_start(metrics)  # 0.08137 / 2.7571 / 0.93937, val job of the tmax1 arm
     checked_metrics(metrics)
     for key, tol in TOLERANCE.items():
         if abs(metrics[key]-EXPECTED_16K[key]) > tol:
             raise ValueError(f'synth step 16000 does not reproduce {key}: {metrics[key]} vs {EXPECTED_16K[key]}')
 
 
-def resolve(summary_path, runs):
+def resolve(summary_path, runs, source_run=SYNTH_RUN):
     """(weights path, kind) chosen by the averaging job's pre-registered rule."""
     summary = json.loads(Path(summary_path).read_text())
-    if summary.get('source_run') != SYNTH_RUN or not summary['control']['passed']:
-        raise ValueError('Averaging job is not a passed synth control')
+    if summary.get('source_run') != source_run or not summary['control']['passed']:
+        raise ValueError(f'Averaging job is not a passed {source_run} control')
+    if source_run == TMAX1_RUN and summary.get('policy', {}).get('save') != 'not_worse':
+        raise ValueError('tmax1 averaging must use the not_worse rule (docs/SD2_POSTHOC_V1.md)')
     if summary['use_average']:
         path = Path(summary['weights'])
         if pair.sha256_file(path) != summary['weights_sha256']:
             raise ValueError('Averaged weights changed since the averaging job')
         return path, 'average'
-    return Path(runs)/'iris_ms2'/SYNTH_RUN/'converted/step16000_weights.pt', 'step16000'
+    return Path(runs)/'iris_ms2'/source_run/'converted/step16000_weights.pt', 'step16000'
 
 
-def load_average(model, path):
+def load_average(model, path, source_run=SYNTH_RUN):
     import torch
     payload = torch.load(path, map_location='cpu', weights_only=False)
     if (payload.get('route') != 'b_thermal_unet' or payload.get('caption_mode') != 'correct'
-            or payload.get('averaged_steps') != list(WINDOW) or payload.get('source_run') != SYNTH_RUN
+            or payload.get('averaged_steps') != list(WINDOW) or payload.get('source_run') != source_run
             or set(payload.get('state_dicts', {})) != {'unet'}):
-        raise ValueError(f'Not the synth 12000-20000 average: {path}')
+        raise ValueError(f'Not the {source_run} 12000-20000 average: {path}')
     model.load_state_dicts(payload['state_dicts'], str(path))
     model.unet.requires_grad_(False)
     model.set_train(False)
 
 
 def start_for(a):
-    path, kind = resolve(a.average_summary, a.runs)
+    run = getattr(a, 'source_run', SYNTH_RUN)
+    name = 'synth' if run == SYNTH_RUN else 'tmax1'
+    path, kind = resolve(a.average_summary, a.runs, run)
     code = ('tools/train_iris_synth_decoder.py', 'tools/diagnose_checkpoint_average.py')
     if kind == 'average':
         # No full-val number exists for the average yet: the smoke's step-0 validation is that number.
-        return stage.Start(experiment='iris_synth_decoder_v1', label='synth 12000-20000 average',
-            resolve=lambda _: path, load=load_average, require_start=checked_metrics,
+        return stage.Start(experiment=EXPERIMENT[run], label=f'{name} 12000-20000 average',
+            resolve=lambda _: path, load=lambda model, p: load_average(model, p, run), require_start=checked_metrics,
             source_step='average 12000-20000', code=code)
-    return stage.Start(experiment='iris_synth_decoder_v1', label='synth original 16000',
+    return stage.Start(experiment=EXPERIMENT[run], label=f'{name} original 16000',
         resolve=lambda _: path, load=lambda model, p: pair.old.load_arm(model, p, 'frame'),
-        require_start=require_16k, source_step=16000, code=code)
+        require_start=lambda m: require_16k(m, run), source_step=16000, code=code)
 
 
 def newcrf_ssi_log(runs):
@@ -109,5 +119,6 @@ if __name__ == '__main__':
     p.add_argument('mode', choices=('smoke', 'train'))
     for name in ('runs', 'run', 'data-root', 'average-summary', 'comparison-run'):
         p.add_argument('--'+name, type=Path, required=True)
+    p.add_argument('--source-run', choices=(SYNTH_RUN, TMAX1_RUN), default=SYNTH_RUN)
     os.environ.update(IRIS_THERMAL_STRETCH='percentile', IRIS_TEXT_PADDING='legacy', IRIS_DECODE_CLAMP='0')
     run(p.parse_args())

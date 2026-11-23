@@ -88,7 +88,11 @@ def run(a):
         raise RuntimeError('Requires CUDA')
     if a.source.name not in SOURCES:
         raise ValueError(f'No control registered for {a.source.name}')
-    policy = SOURCES[a.source.name]
+    policy = dict(SOURCES[a.source.name])
+    if a.save_rule == 'not_worse':
+        # 2026-11-23 (docs/SD2_POSTHOC_V1.md): the tmax1 rerun for the ablation's final SD2-start model
+        # uses the synth rule; the default keeps each source's registered rule (tmax1 job 9229303: gate).
+        policy['save'] = 'not_worse'
     missing = missing_checkpoints(a.source)
     if missing:
         raise FileNotFoundError(f'Window checkpoints missing: {missing}')
@@ -164,5 +168,6 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('runs', 'out', 'data-root', 'source'):
         p.add_argument('--'+name, type=Path, required=True)
+    p.add_argument('--save-rule', choices=('registered', 'not_worse'), default='registered')
     os.environ.update(IRIS_THERMAL_STRETCH='percentile', IRIS_DECODE_CLAMP='0', IRIS_TEXT_PADDING='legacy')
     run(p.parse_args())

@@ -114,6 +114,29 @@ class Decoder(unittest.TestCase):
         self.assertFalse(r['vs_newcrf_ssi']['beats_all_three'])  # RMSE still behind under NeWCRF's own alignment
         self.assertAlmostEqual(r['vs_start']['rmse_m'], 2.56-2.651)
 
+    def test_tmax1_source_needs_the_not_worse_rule_and_its_own_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, weights = self.summary(root, True, source_run=avg.TMAX1_RUN)
+            data = json.loads(path.read_text())
+            data['policy'] = dict(save='gate')
+            path.write_text(json.dumps(data))
+            with self.assertRaises(ValueError):
+                synth.resolve(path, root, avg.TMAX1_RUN)
+            data['policy'] = dict(save='not_worse')
+            path.write_text(json.dumps(data))
+            self.assertEqual(synth.resolve(path, root, avg.TMAX1_RUN), (weights, 'average'))
+            with self.assertRaises(ValueError):
+                synth.resolve(path, root)  # a tmax1 job is not a synth job
+            synth.load_average(FakeModel(), weights, avg.TMAX1_RUN)
+            with self.assertRaises(ValueError):
+                synth.load_average(FakeModel(), weights)
+            start = synth.start_for(type('A', (), dict(average_summary=path, runs=root, source_run=avg.TMAX1_RUN))())
+            self.assertEqual((start.experiment, start.label), ('iris_tmax1_avg_decoder_v1', 'tmax1 12000-20000 average'))
+        synth.require_16k(stage.tmax.EXPECTED, avg.TMAX1_RUN)
+        with self.assertRaises(ValueError):
+            synth.require_16k(synth.EXPECTED_16K, avg.TMAX1_RUN)
+
     def test_tmax1_stage_defaults_unchanged(self):
         t = stage.TMAX1
         self.assertEqual((t.experiment, t.source_step, t.code), ('iris_tmax1_decoder_v1', 16000, ()))
