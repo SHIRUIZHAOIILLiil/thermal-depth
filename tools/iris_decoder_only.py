@@ -9,6 +9,9 @@ from tools.iris_tmax1_selection import select as select_reference
 
 STEPS = (0, 500, 1000)
 LR, BATCH, ACCUM, SEED = 1e-5, 4, 3, 43
+# The empty-caption arm (docs/SD2_POSTHOC_V1.md) feeds "" on purpose. A blank caption stays an
+# error everywhere else; only this explicit marker becomes the empty prompt.
+EMPTY_PROMPT = '<<empty prompt: no-caption arm>>'
 
 
 @dataclass(frozen=True)
@@ -41,7 +44,7 @@ def predict_frozen(model, item, recipe):
     row = dict(id=item.sample_id, image_path=item.image_path, manifest_index=item.manifest_index)
     with torch.no_grad():
         image, _ = load_input_tensor(row, model.modality, recipe)
-        prompt = model.encode_prompt(item.caption)
+        prompt = model.encode_prompt('' if item.caption == EMPTY_PROMPT else item.caption)
         raw, latent = model.predict_disparity(row, image, prompt,
             target_latent=None, return_latent=True, noise_offset=0)
     # no inference_mode tensors: the detached latent must support decoder backward.

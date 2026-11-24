@@ -20,6 +20,7 @@ SOURCE_RUN="${SOURCE_RUN:-sd2_cap_pct_logtn_img_l0100_tmax1_s43}"
 case "$SOURCE_RUN" in
   sd2_cap_pct_logtn_img_l0100_tmax1_s43) OUT_BASE=iris_checkpoint_average_v1 ;;
   sd2_cap_pct_logtn_img_l0100_tmax1_synth_s43) OUT_BASE=iris_checkpoint_average_synth_v1 ;;
+  sd2_nocap_pct_logtn_img_l0100_tmax1_s43) OUT_BASE=iris_checkpoint_average_tmax1_nocap_v1 ;;
   *) echo "!! no control registered for $SOURCE_RUN"; exit 1 ;;
 esac
 # SAVE_RULE=not_worse: save and use the average when no headline metric gets worse (docs/SD2_POSTHOC_V1.md).

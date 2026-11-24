@@ -42,20 +42,30 @@ def selection(run, stage):
     return contract, curve[chosen], chosen, path
 
 
+def prompt_arm(contract):
+    """'empty' for the no-caption arm (its contract records it), else the frame's own caption."""
+    arm = contract.get('prompt_arm', 'frame')
+    if arm not in ('frame', 'empty'):
+        raise ValueError(f'Unknown prompt arm {arm!r}')
+    return arm
+
+
 def load_unet(model, contract):
     source = Path(contract['source'])
+    arm = prompt_arm(contract)
     if pair.sha256_file(source) != contract['source_sha256']:
         raise ValueError(f'U-Net weights changed since training: {source}')
     payload = torch.load(source, map_location='cpu', weights_only=False)
     if 'averaged_steps' in payload:
-        if (payload.get('route') != 'b_thermal_unet' or payload.get('caption_mode') != 'correct'
+        mode = 'empty' if arm == 'empty' else 'correct'
+        if (payload.get('route') != 'b_thermal_unet' or payload.get('caption_mode') != mode
                 or set(payload.get('state_dicts', {})) != {'unet'}):
             raise ValueError(f'Unexpected averaged payload: {source}')
         model.load_state_dicts(payload['state_dicts'], str(source))
         model.unet.requires_grad_(False)
         model.set_train(False)
     else:
-        pair.old.load_arm(model, source, 'frame')
+        pair.old.load_arm(model, source, arm)
     return source
 
 
@@ -82,7 +92,7 @@ def reproduce(a):
     if info != contract['val']:
         raise ValueError('Validation manifest differs from the run')
     tmp = out/'val_frames.tmp'
-    measured = pilot.score(samples, pilot.iris.predict_samples(model, samples, 'frame', recipe),
+    measured = pilot.score(samples, pilot.iris.predict_samples(model, samples, prompt_arm(contract), recipe),
                            {s.sample_id for s in samples}, tmp)['full']
     prior.check_reproduction(measured, expected)
     os.replace(tmp, out/'val_frames.csv')
@@ -109,7 +119,7 @@ def test(a):
     if (len(wanted), len(crawl)) != pilot.COMMON[a.condition]:
         raise ValueError('Official fold differs')
     provenance = dict(manifest=manifest, condition=a.condition, alignment='ssi_log', valid_gt_m=[.001, 80.],
-                      stage=a.stage, step=step, unet_sha256=contract['source_sha256'], decoder_sha256=digest,
+                      stage=a.stage, prompt=prompt_arm(contract), step=step, unet_sha256=contract['source_sha256'], decoder_sha256=digest,
                       contract_sha256=pair.sha256_file(a.run/'contract.json'), runner_sha256=pair.sha256_file(__file__))
     out = base/a.condition
     out.mkdir(parents=True, exist_ok=True)
@@ -120,7 +130,7 @@ def test(a):
         return
     model, recipe = build(contract, decoder)
     tmp = out/'frame_frames.tmp'
-    results = pilot.score(samples, pilot.iris.predict_samples(model, samples, 'frame', recipe), wanted, tmp)
+    results = pilot.score(samples, pilot.iris.predict_samples(model, samples, prompt_arm(contract), recipe), wanted, tmp)
     os.replace(tmp, out/'frame_frames.csv')
     pair.json_write(out/'summary.json', dict(provenance=provenance, frames=n, common_frames=len(wanted),
                                              missing_official_ids=missing, results={'frame': results}))

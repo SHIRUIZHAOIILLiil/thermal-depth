@@ -30,9 +30,13 @@ BASELINE = 16000
 BASELINE_VAL_RMSE = 2.7980045794905712  # job 9229268, same frames and recipe
 TMAX1_RUN = 'sd2_cap_pct_logtn_img_l0100_tmax1_s43'
 SYNTH_RUN = 'sd2_cap_pct_logtn_img_l0100_tmax1_synth_s43'
-# Step-16000 val RMSE on the same 96 frames: tmax1 job 9229268, synth job 9488823.
+NOCAP_RUN = 'sd2_nocap_pct_logtn_img_l0100_tmax1_s43'
+# Step-16000 val RMSE on the same 96 frames: tmax1 job 9229268, synth job 9488823. The empty-caption
+# tmax1 arm (docs/SD2_POSTHOC_V1.md) is new, so it has no registered number: control is None and the
+# decoder stage reproduces its full-val step 16000 from the arm's own val job instead.
 SOURCES = {TMAX1_RUN: dict(control_val_rmse=BASELINE_VAL_RMSE, save='gate'),
-           SYNTH_RUN: dict(control_val_rmse=2.67386, save='not_worse')}
+           SYNTH_RUN: dict(control_val_rmse=2.67386, save='not_worse'),
+           NOCAP_RUN: dict(control_val_rmse=None, save='not_worse', prompt='empty')}
 TOLERANCE_M = .002
 RMSE_GAIN_M, ABSREL_INCREASE = .05, .002
 KEYS = ('abs_rel', 'rmse', 'a1')
@@ -71,6 +75,41 @@ def not_worse(average, baseline):
             and average['a1'] >= baseline['a1'])
 
 
+def prompt_of(policy):
+    """'frame' (the arm's own caption) or 'empty'; also the converted checkpoints' caption_mode."""
+    return policy.get('prompt', 'frame')
+
+
+def caption_mode(prompt):
+    return 'empty' if prompt == 'empty' else 'correct'
+
+
+def control(expected, measured):
+    if expected is None:
+        return dict(expected=None, measured=measured, tolerance_m=TOLERANCE_M, passed=True,
+                    note='new arm: no registered 96-frame number')
+    return dict(expected=expected, measured=measured, tolerance_m=TOLERANCE_M,
+                passed=abs(measured-expected) <= TOLERANCE_M)
+
+
+def window_weights(step, a, mode):
+    """diagnose_far_gap_curve.weights with the arm's caption mode."""
+    import subprocess
+    if step == BASELINE:
+        return a.source/'converted'/f'step{BASELINE}_weights.pt', False
+    path = a.out/f'step{step}.tmp.pt'
+    subprocess.run([sys.executable, str(ROOT/'tools/convert_iris_ms2_checkpoint.py'), '--source',
+                    str(a.source/f'checkpoint-{step}'), '--output', str(path), '--caption-mode', mode,
+                    '--step', str(step)], check=True)
+    return path, True
+
+
+def check_window_payload(payload, step, mode):
+    if (payload.get('route') != 'b_thermal_unet' or payload.get('caption_mode') != mode
+            or payload.get('global_step') != step or set(payload.get('state_dicts', {})) != {'unet'}):
+        raise ValueError(f'Wrong converted checkpoint for step {step} ({mode})')
+
+
 def missing_checkpoints(source):
     """Everything the window needs, checked before any GPU work."""
     need = [source/'converted'/f'step{BASELINE}_weights.pt']
@@ -93,6 +132,8 @@ def run(a):
         # 2026-11-23 (docs/SD2_POSTHOC_V1.md): the tmax1 rerun for the ablation's final SD2-start model
         # uses the synth rule; the default keeps each source's registered rule (tmax1 job 9229303: gate).
         policy['save'] = 'not_worse'
+    prompt = prompt_of(policy)
+    mode = caption_mode(prompt)
     missing = missing_checkpoints(a.source)
     if missing:
         raise FileNotFoundError(f'Window checkpoints missing: {missing}')
@@ -116,7 +157,7 @@ def run(a):
         result = {}
         for split, frames in splits.items():
             rows = {k: [] for k in KEYS}
-            predictions = prior.pilot.iris.predict_samples(model, frames, 'frame', recipe)
+            predictions = prior.pilot.iris.predict_samples(model, frames, prompt, recipe)
             for s, (ident, raw, gt) in zip(frames, predictions, strict=True):
                 if ident != s.sample_id:
                     raise ValueError('Prediction order differs')
@@ -128,9 +169,9 @@ def run(a):
 
     states, baseline = [], None
     for step in WINDOW:
-        path, temporary = curve.weights(step, a)
+        path, temporary = window_weights(step, a, mode)
         payload = torch.load(path, map_location='cpu', weights_only=False)
-        curve.check_payload(payload, step)
+        check_window_payload(payload, step, mode)
         states.append(payload['state_dicts']['unet'])
         if temporary:
             path.unlink()
@@ -140,15 +181,14 @@ def run(a):
     del states
     result = score(averaged)
     expected = policy['control_val_rmse']
-    checked = dict(expected=expected, measured=baseline['val']['rmse'], tolerance_m=TOLERANCE_M,
-                   passed=abs(baseline['val']['rmse']-expected) <= TOLERANCE_M)
+    checked = control(expected, baseline['val']['rmse'])
     decision = gate(result['val'], baseline['val'])
     use_average = checked['passed'] and not_worse(result['val'], baseline['val'])
     save = decision['passed'] if policy['save'] == 'gate' else use_average
     weights = None
     if save and checked['passed']:
         weights = a.out/'average_12000_20000.pt'
-        torch.save(dict(route='b_thermal_unet', caption_mode='correct', global_step=20000, averaged_steps=list(WINDOW),
+        torch.save(dict(route='b_thermal_unet', caption_mode=mode, global_step=20000, averaged_steps=list(WINDOW),
                         source_run=a.source.name, state_dicts=dict(unet=averaged)), weights)
     (a.out/'summary.json').write_text(json.dumps(dict(control=checked, baseline=baseline, average=result, gate=decision,
         source=str(a.source), source_run=a.source.name, policy=policy, use_average=use_average,

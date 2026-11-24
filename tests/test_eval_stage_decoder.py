@@ -79,6 +79,20 @@ class Selection(unittest.TestCase):
         with self.assertRaises(ValueError):
             tool.load_unet(FakeModel(), contract)
 
+    def test_prompt_arm_comes_from_the_contract(self):
+        self.assertEqual(tool.prompt_arm({}), 'frame')
+        self.assertEqual(tool.prompt_arm(dict(prompt_arm='empty')), 'empty')
+        with self.assertRaises(ValueError):
+            tool.prompt_arm(dict(prompt_arm='permuted'))
+        unet, _ = write_run(self.root)
+        contract = json.loads((self.root/'contract.json').read_text())
+        contract['prompt_arm'] = 'empty'  # the averaged payload above says caption_mode 'correct'
+        with self.assertRaises(ValueError):
+            tool.load_unet(FakeModel(), contract)
+        torch.save(dict(route='b_thermal_unet', caption_mode='empty', averaged_steps=[12000], state_dicts=dict(unet={})), unet)
+        contract['source_sha256'] = tool.pair.sha256_file(unet)
+        self.assertEqual(tool.load_unet(FakeModel(), contract), unet)
+
     def test_stage_folders_are_separate(self):
         self.assertNotEqual(tool.folder(self.root, 'start'), tool.folder(self.root, 'selected'))
 

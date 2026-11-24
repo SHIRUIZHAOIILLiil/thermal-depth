@@ -37,6 +37,7 @@ class Start:
     require_start: object    # full-val metrics of the frozen start -> None (raises on mismatch)
     source_step: object
     code: tuple = ()
+    empty_prompt: bool = False  # the no-caption arm: every frame is predicted with the empty prompt
 
 
 TMAX1 = Start(experiment='iris_tmax1_decoder_v1', label='tmax1 original 16000',
@@ -106,6 +107,10 @@ def run(a, start=TMAX1):
     source = start.resolve(a)
     samples, ti = pair.checked_manifest(Path(c['train']['path']),a.data_root,'train',75688)
     val, vi = pair.checked_manifest(Path(c['val']['path']),a.data_root,'val',14249)
+    if start.empty_prompt:
+        from tools.iris_decoder_only import EMPTY_PROMPT
+        samples = [dataclasses.replace(s, caption=EMPTY_PROMPT) for s in samples]
+        val = [dataclasses.replace(s, caption=EMPTY_PROMPT) for s in val]
     if ti!=c['train'] or vi!=c['val']:
         raise ValueError('Frozen manifests changed')
     if pair.sha256_file(Path(c['pseudo']).parent/'build_config.json') != c['pseudo_config']:
@@ -136,6 +141,9 @@ def run(a, start=TMAX1):
         prediction_inputs='thermal + frame caption + manifest index; target_latent=None',
         policy=old.POLICY,newcrf=reference,incumbent=incumbent,
         code={p:pair.sha256_file(ROOT/p) for p in dict.fromkeys((*CODE, *start.code))})
+    if start.empty_prompt:
+        # Only the no-caption arm records this, so earlier caption-arm contracts stay byte-identical.
+        settings.update(prompt_arm='empty', prediction_inputs='thermal + empty prompt + manifest index; target_latent=None')
     settings = json.loads(json.dumps(settings))
     smoke = a.mode=='smoke'
     folder = a.run/('smoke' if smoke else 'train')

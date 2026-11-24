@@ -137,6 +137,69 @@ class Decoder(unittest.TestCase):
         with self.assertRaises(ValueError):
             synth.require_16k(synth.EXPECTED_16K, avg.TMAX1_RUN)
 
+    def test_empty_caption_arm_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, weights = self.summary(root, True, source_run=avg.NOCAP_RUN)
+            data = json.loads(path.read_text())
+            data['policy'] = dict(save='not_worse', prompt='empty')
+            path.write_text(json.dumps(data))
+            with self.assertRaises(ValueError):  # the payload says caption_mode 'correct'
+                synth.load_average(FakeModel(), weights, avg.NOCAP_RUN)
+            torch.save(dict(route='b_thermal_unet', caption_mode='empty', global_step=20000,
+                            averaged_steps=list(avg.WINDOW), source_run=avg.NOCAP_RUN,
+                            state_dicts=dict(unet=dict(w=torch.ones(1)))), weights)
+            data['weights_sha256'] = synth.pair.sha256_file(weights)
+            path.write_text(json.dumps(data))
+            synth.load_average(FakeModel(), weights, avg.NOCAP_RUN)
+            a = type('A', (), dict(average_summary=path, runs=root, source_run=avg.NOCAP_RUN))()
+            start = synth.start_for(a)
+            self.assertEqual((start.experiment, start.empty_prompt), ('iris_tmax1_nocap_avg_decoder_v1', True))
+            # step 16000 start: the expected numbers come from the arm's own val CSV
+            data['use_average'] = False
+            path.write_text(json.dumps(data))
+            ev = root/'eval'/f'{avg.NOCAP_RUN}_val_{synth.VAL_FP}_stride1_empty_s16000'
+            ev.mkdir(parents=True)
+            rows = ['id,abs_rel,rmse,a1'] + [f'f{i},0.08,2.7,0.94' for i in range(14249)]
+            (ev/'eval_eval_affine_invariant_log_space_per_sample.csv').write_text(chr(10).join(rows)+chr(10))
+            start = synth.start_for(a)
+            self.assertTrue(start.empty_prompt)
+            start.require_start(dict(abs_rel=.08001, rmse=2.701, a1=.94001))
+            with self.assertRaises(ValueError):
+                start.require_start(dict(abs_rel=.0815, rmse=2.70, a1=.94))
+        self.assertFalse(stage.TMAX1.empty_prompt)
+
+    def test_averaging_prompt_helpers(self):
+        self.assertEqual(avg.prompt_of(avg.SOURCES[avg.NOCAP_RUN]), 'empty')
+        self.assertEqual(avg.prompt_of(avg.SOURCES[avg.TMAX1_RUN]), 'frame')
+        self.assertEqual((avg.caption_mode('empty'), avg.caption_mode('frame')), ('empty', 'correct'))
+        self.assertTrue(avg.control(None, 2.7)['passed'])
+        self.assertFalse(avg.control(2.70, 2.71)['passed'])
+        good = dict(route='b_thermal_unet', caption_mode='empty', global_step=13000, state_dicts=dict(unet={}))
+        avg.check_window_payload(good, 13000, 'empty')
+        with self.assertRaises(ValueError):
+            avg.check_window_payload(good, 13000, 'correct')
+
+    def test_empty_prompt_marker_maps_to_the_empty_string(self):
+        from unittest import mock
+        from tools import iris_decoder_only as dec
+        seen = []
+
+        class Model:
+            modality = 'thermal'
+            def encode_prompt(self, text):
+                seen.append(text)
+                return text
+            def predict_disparity(self, row, image, prompt, **kw):
+                return torch.zeros(1), torch.zeros(1)
+
+        with mock.patch('tools.train_route_suite.load_input_tensor', return_value=(torch.zeros(1), None)):
+            dec.predict_frozen(Model(), dec.InferenceInput('f', 'x.png', dec.EMPTY_PROMPT, 0), None)
+            dec.predict_frozen(Model(), dec.InferenceInput('f', 'x.png', 'a road', 0), None)
+            with self.assertRaises(ValueError):
+                dec.predict_frozen(Model(), dec.InferenceInput('f', 'x.png', '', 0), None)
+        self.assertEqual(seen, ['', 'a road'])
+
     def test_tmax1_stage_defaults_unchanged(self):
         t = stage.TMAX1
         self.assertEqual((t.experiment, t.source_step, t.code), ('iris_tmax1_decoder_v1', 16000, ()))
