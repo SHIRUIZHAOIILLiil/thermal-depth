@@ -59,5 +59,11 @@ td=$(sbatch --parsable --kill-on-invalid-dep=yes --dependency=afterok:$rd -J iri
     -o "%x-%A_%a.out" -e "%x-%A_%a.err" slurm/eval_stage_decoder.sbatch test "$run" selected)
 { echo "arm smoke -> $SM | train -> $TR | val -> $VA"; echo "average -> $avg"; echo "decoder smoke -> $smoke";
   echo "decoder train+val -> $train"; echo "reproduce start -> $rs | selected -> $rd"; echo "test start -> $ts | selected -> $td"; } | tee "$run/jobs.txt"
-for j in $SM $TR $VA $avg $smoke $train $rs $rd $ts $td; do mailafter $j; done
-echo "run dir: $run | averaging dir: $avg_dir | mail after all ten"
+# Three mails: the arm's smoke and its long training (submit_arm.sh jobs stall silently on a failed
+# dependency, so these two must mail on their own), then one summary after everything else ends.
+# Every post-hoc job uses --kill-on-invalid-dep, so a failure anywhere still lets the summary fire.
+mailafter $SM
+mailafter $TR
+rest="$VA:$avg:$smoke:$train:$rs:$rd:$ts:$td"
+sbatch --dependency=afterany:$rest -J mail_nocap_summary -t 00:10:00 --mem=1G -c 1 -o /dev/null --wrap="{ sacct -X -j ${rest//:/,} -o JobID,JobName%30,State,Elapsed,ExitCode; for j in ${rest//:/ }; do for f in $IRIS_REPO/*-\$j.out $IRIS_REPO/*-\${j}_*.out; do [[ -f \"\$f\" ]] || continue; echo \"--- \$f\"; grep -h -E '^\[(control|row|use_average|reproduced|selected|verdict|test-official)\]|affine_invariant_log_space: abs_rel' \"\$f\" | sort -u || true; done; done; } 2>&1 | mail -s 'iris nocap twin summary' $MAIL_TO" >/dev/null
+echo "run dir: $run | averaging dir: $avg_dir | mail: arm smoke, arm train, one summary at the end"

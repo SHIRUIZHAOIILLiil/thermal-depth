@@ -100,7 +100,7 @@ GT 隔离、4 步训练、冻结检查全部通过。
   只是每一帧都用空 prompt：`tools/iris_decoder_only.py` 的 `EMPTY_PROMPT` 标记映射到空串（普通的空 caption 仍报错）；
   权重平均与 converted checkpoint 用 `caption_mode=empty`；评估器从合同的 `prompt_arm` 读取。
 - 新臂没有事先登记的 96 帧数，平均作业的 control 记为「无」；若 decoder 起点用 step 16000，须复现该臂自己的全量 val。
-- 一条命令：`bash slurm/submit_sd2_nocap.sh`（训练约 21 h，后处理与 test 约 6 h，十个作业各挂邮件）。
+- 一条命令：`bash slurm/submit_sd2_nocap.sh`（训练约 21 h，后处理与 test 约 6 h；三封邮件：臂的冒烟、臂的训练、全部结束后一封汇总）。
 
 判读（看结果前定，只看均值）：第 7 行（最终模型）caption 臂对空 caption 臂，test 三种天气 × 三个指标：
 - 9 格 caption 臂都更好：caption 在最终模型上有用；
