@@ -34,9 +34,15 @@ NOCAP_RUN = 'sd2_nocap_pct_logtn_img_l0100_tmax1_s43'
 # Step-16000 val RMSE on the same 96 frames: tmax1 job 9229268, synth job 9488823. The empty-caption
 # tmax1 arm (docs/SD2_POSTHOC_V1.md) is new, so it has no registered number: control is None and the
 # decoder stage reproduces its full-val step 16000 from the arm's own val job instead.
+# The l100 pair (docs/SD2_L100_POSTHOC_V1.md): the same post-hoc chain without tmax1. Neither has a
+# registered 96-frame number either.
+L100_RUN = 'sd2_cap_pct_logtn_img_l0100_s43'
+NOCAP_L100_RUN = 'sd2_nocap_pct_logtn_img_l0100_s43'
 SOURCES = {TMAX1_RUN: dict(control_val_rmse=BASELINE_VAL_RMSE, save='gate'),
            SYNTH_RUN: dict(control_val_rmse=2.67386, save='not_worse'),
-           NOCAP_RUN: dict(control_val_rmse=None, save='not_worse', prompt='empty')}
+           NOCAP_RUN: dict(control_val_rmse=None, save='not_worse', prompt='empty'),
+           L100_RUN: dict(control_val_rmse=None, save='not_worse'),
+           NOCAP_L100_RUN: dict(control_val_rmse=None, save='not_worse', prompt='empty')}
 TOLERANCE_M = .002
 RMSE_GAIN_M, ABSREL_INCREASE = .05, .002
 KEYS = ('abs_rel', 'rmse', 'a1')

@@ -204,7 +204,44 @@ class Decoder(unittest.TestCase):
         # iris_decoder_only.py is hash-pinned by the q98 comparator's contract: it must not learn the marker.
         self.assertFalse(hasattr(dec, 'EMPTY_PROMPT'))
 
+    def test_l100_pair_starts(self):
+        self.assertEqual(avg.SOURCES[avg.L100_RUN], dict(control_val_rmse=None, save='not_worse'))
+        self.assertEqual(avg.prompt_of(avg.SOURCES[avg.NOCAP_L100_RUN]), 'empty')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for run, empty in ((avg.L100_RUN, False), (avg.NOCAP_L100_RUN, True)):
+                path, weights = self.summary(root, True, source_run=run)
+                data = json.loads(path.read_text())
+                data['policy'] = dict(save='not_worse')
+                torch.save(dict(route='b_thermal_unet', caption_mode='empty' if empty else 'correct', global_step=20000,
+                                averaged_steps=list(avg.WINDOW), source_run=run,
+                                state_dicts=dict(unet=dict(w=torch.ones(1)))), weights)
+                data['weights_sha256'] = synth.pair.sha256_file(weights)
+                path.write_text(json.dumps(data))
+                a = type('A', (), dict(average_summary=path, runs=root, source_run=run))()
+                start = synth.start_for(a)
+                self.assertEqual((start.truncnorm_max, start.empty_prompt), (.98, empty))
+                synth.load_average(FakeModel(), weights, run)
+                with self.assertRaises(ValueError):  # a tmax1 averaging job is not an l100 one
+                    synth.resolve(path, root, avg.TMAX1_RUN)
+                data['use_average'] = False
+                path.write_text(json.dumps(data))
+                if empty:
+                    ev = root/'eval'/f'{run}_val_{synth.VAL_FP}_stride1_empty_s16000'
+                    ev.mkdir(parents=True)
+                    rows = ['id,abs_rel,rmse,a1'] + [f'f{i},0.081,2.9,0.94' for i in range(14249)]
+                    (ev/'eval_eval_affine_invariant_log_space_per_sample.csv').write_text(chr(10).join(rows)+chr(10))
+                    synth.start_for(a).require_start(dict(abs_rel=.081, rmse=2.9, a1=.94))
+                else:
+                    start = synth.start_for(a)
+                    start.require_start(dict(abs_rel=.07969, rmse=2.9365, a1=.94142))
+                    with self.assertRaises(ValueError):  # the tmax1 start, not l100
+                        start.require_start(dict(abs_rel=.08137, rmse=2.7571, a1=.93937))
+        for run in (avg.SYNTH_RUN, avg.TMAX1_RUN, avg.NOCAP_RUN):
+            self.assertEqual(synth.ARMS[run][3], 1.)
+
     def test_tmax1_stage_defaults_unchanged(self):
+        self.assertEqual((stage.TMAX1.truncnorm_max, stage.UPPER), (1., 1.))
         t = stage.TMAX1
         self.assertEqual((t.experiment, t.source_step, t.code), ('iris_tmax1_decoder_v1', 16000, ()))
         self.assertIs(t.require_start, stage.tmax.require_start)

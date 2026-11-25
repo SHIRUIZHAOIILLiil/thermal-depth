@@ -48,6 +48,8 @@ class Start:
     source_step: object
     code: tuple = ()
     empty_prompt: bool = False  # the no-caption arm: every frame is predicted with the empty prompt
+    # upper log-depth quantile the frozen U-Net was trained with: 1.0 for tmax1 arms, 0.98 for l100 arms
+    truncnorm_max: float = UPPER
 
 
 TMAX1 = Start(experiment='iris_tmax1_decoder_v1', label='tmax1 original 16000',
@@ -55,10 +57,10 @@ TMAX1 = Start(experiment='iris_tmax1_decoder_v1', label='tmax1 original 16000',
     require_start=tmax.require_start, source_step=16000)
 
 
-def make_dataset(contract, data_root):
+def make_dataset(contract, data_root, upper=UPPER):
     from lotus.utils.ms2_thermal_dataset import MS2ThermalDataset
     return MS2ThermalDataset(Path(contract['train']['path']), data_root, Path(contract['pseudo']),
-        norm_type='log_truncnorm', truncnorm_min=LOWER, truncnorm_max=UPPER, use_captions=True)
+        norm_type='log_truncnorm', truncnorm_min=LOWER, truncnorm_max=upper, use_captions=True)
 
 
 def check_comparator_contract(contract, current, reference):
@@ -131,7 +133,7 @@ def run(a, start=TMAX1):
     if (recipe.route!='b_thermal_unet' or not recipe.gt_decode_fp32
             or recipe.condition_latent!='mode' or recipe.num_inference_steps!=1):
         raise ValueError('Unexpected deployed inference recipe')
-    dataset = make_dataset(c,a.data_root)
+    dataset = make_dataset(c,a.data_root,start.truncnorm_max)
     if [s.sample_id for s in samples] != [r['id'] for r in dataset.rows]:
         raise ValueError('Dataset/manifest order differs')
     pair.seed_all(old.SEED)
@@ -142,9 +144,9 @@ def run(a, start=TMAX1):
     decoder, params = old.make_decoder(model)  # original VAE; never load the q98 adapted decoder
     settings = dict(experiment=start.experiment, source=str(source),
         source_sha256=pair.sha256_file(source), source_step=start.source_step,
-        source_training=dict(image_l1=.1,quantiles=[LOWER,UPPER]), decoder_initialization='original fp32 VAE',
+        source_training=dict(image_l1=.1,quantiles=[LOWER,start.truncnorm_max]), decoder_initialization='original fp32 VAE',
         recipe=c['recipe'], train=ti, val=vi, pseudo=c['pseudo'], pseudo_config_sha256=c['pseudo_config'],
-        quantiles=[LOWER,UPPER], trainable=list(params), lr=old.LR, batch=old.BATCH,
+        quantiles=[LOWER,start.truncnorm_max], trainable=list(params), lr=old.LR, batch=old.BATCH,
         accumulation=old.ACCUM, budget=1000, steps=list(old.STEPS), seed=old.SEED,
         image_cursor=4000*old.BATCH*old.ACCUM, weight_decay=.01, augmentation='none: deployment input',
         image_cursor_reason='match the prior decoder-stage sample order; not a resumed tmax optimizer',

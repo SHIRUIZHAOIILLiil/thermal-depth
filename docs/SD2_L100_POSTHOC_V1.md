@@ -1,0 +1,35 @@
+# 不带 tmax1 的后处理链：l100 + 权重平均 + decoder，及其空 caption 孪生臂（2026-11-25 预登记）
+
+## 为什么
+
+`docs/SD2_POSTHOC_V1.md` 的最终模型建在 tmax1 臂上，但 tmax1 这一步本身没有通过 2026-10 的冻结选择规则：
+全量 val 上 RMSE 降 0.179 m，AbsRel 退步 0.0017、δ1 退步 0.0020，超过门槛（`VERIFICATION_20261015.md` 第 10 节，保留 l100）。
+已有的 test（不同选点、不同帧集，只作背景）：l100 s18000 全帧 day 6.70 / 2.702 / 95.38，tmax1 s16000 官方子集 day 7.03 / 2.707 / 94.90。
+消融表每一步都要站得住，所以对 l100 走一遍完全相同的后处理，再用同一条规则在 val 上决定最终模型建在哪一臂上。
+
+## 做法（`slurm/submit_sd2_l100.sh`，一条命令）
+
+- **caption 臂** `sd2_cap_pct_logtn_img_l0100_s43`（训练 8214242，2026-10；`submit_loss_sweep.sh` 的 λ=0.1 配置）。
+  step 16000 全量 val（val 8214243）：0.07967 / 2.9360 / 0.94140。
+- **空 caption 臂** `sd2_nocap_pct_logtn_img_l0100_s43`：新训，`NO_CAPTIONS=1 bash slurm/submit_arm.sh <臂> "--truncnorm_max 0.98"`。
+  `0.98` 就是 l100 的默认上界（`1 - truncnorm_min`，浮点相等已核对），只因 `submit_arm.sh` 要求非空参数而写出。
+  两臂除训练文本外配方相同；caption 臂由 `submit_loss_sweep.sh` 训练、空臂由 `submit_arm.sh` 训练，后者注释即「l100 配方」。
+- 两臂各自：权重平均 12k–20k（not_worse，`iris_checkpoint_average_l100{,_nocap}_v1`）→ decoder 冒烟 → decoder 训练 + 全量 val
+  （`iris_l100{,_nocap}_avg_decoder_v1`）→ 两个 stage 复现全量 val → test day / night / rain 各一次（官方子集，`ssi_log`）。
+  与 tmax1 链唯一的配方差别：decoder 阶段的训练目标用 l100 的上界分位 0.98（`Start.truncnorm_max`；tmax1 臂仍为 1.0）。
+- 平均与 decoder 规则、选点规则、对照 q98 run、评估器全部与 `SD2_POSTHOC_V1.md` 相同。新臂都没有登记的 96 帧数，control 记为「无」。
+- 邮件四封：空臂冒烟、空臂训练、每臂一封汇总。
+
+## 判定（看结果前定，只看均值）
+
+1. **最终模型建在哪一臂（只看 val）。** 用 2026-10 的冻结规则（`tools/select_loss_sweep.py`）：l100 链为对照，tmax1 链为候选，
+   比较各自 decoder 选中点的全量 val（14249 帧）。tmax1 链只有在 AbsRel 退步 ≤ 0.0005 且 δ1 退步 ≤ 0.001 时才有资格，
+   有资格时按 RMSE 低者入选；否则最终模型为 l100 链。test 只报告，不参与这一选择。
+2. **caption 在 l100 最终模型上是否有用**：第 7 行等价物，caption 臂对空 caption 臂，test 三种天气 × 三个指标；
+   9 格 caption 臂都更好 → 有用；9 格都更差 → 有害；其余为混合，如实记录。与 tmax1 孪生臂的规则相同。
+3. 对 NeWCRF 的比较照 `SD2_POSTHOC_V1.md`：发表协议（1 参数）为主，2 参数 `ssi` 同时报告。
+
+## 尚未覆盖
+
+- l100 单个 checkpoint 的 test 目前只有 s18000 全帧数；进消融表需用已有逐帧 CSV 折算到官方子集（CPU，`tools/subset_to_official.py`）。
+- 一个种子。

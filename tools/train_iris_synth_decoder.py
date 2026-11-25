@@ -19,7 +19,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools import train_iris_tmax1_decoder as stage
-from tools.diagnose_checkpoint_average import NOCAP_RUN, SYNTH_RUN, TMAX1_RUN, WINDOW
+from tools.diagnose_checkpoint_average import NOCAP_L100_RUN, L100_RUN, NOCAP_RUN, SYNTH_RUN, TMAX1_RUN, WINDOW
 from tools.iris_tmax1_selection import checked_metrics
 
 pair = stage.pair
@@ -28,16 +28,23 @@ pair = stage.pair
 EXPECTED_16K = dict(abs_rel=.0763, rmse=2.65101, a1=.9491)
 TOLERANCE = dict(abs_rel=.00006, rmse=.002, a1=.00006)
 NEWCRF_SSI_LOG_JOB = 9488948
-EXPERIMENT = {SYNTH_RUN: 'iris_synth_decoder_v1', TMAX1_RUN: 'iris_tmax1_avg_decoder_v1',
-              NOCAP_RUN: 'iris_tmax1_nocap_avg_decoder_v1'}
+# Per arm: label, output experiment, empty prompt, upper log-depth quantile of its training target.
+ARMS = {SYNTH_RUN: ('synth', 'iris_synth_decoder_v1', False, 1.),
+        TMAX1_RUN: ('tmax1', 'iris_tmax1_avg_decoder_v1', False, 1.),
+        NOCAP_RUN: ('tmax1 empty-caption', 'iris_tmax1_nocap_avg_decoder_v1', True, 1.),
+        L100_RUN: ('l100', 'iris_l100_avg_decoder_v1', False, .98),
+        NOCAP_L100_RUN: ('l100 empty-caption', 'iris_l100_nocap_avg_decoder_v1', True, .98)}
+EXPERIMENT = {run: arm[1] for run, arm in ARMS.items()}
 VAL_FP = 'c26a5859'
 NOCAP_TOLERANCE = dict(abs_rel=.00005, rmse=.002, a1=.00005)
+# l100 step 16000 full val (val job 8214243; docs/RESULTS_20261011_ABLATION_CAPTION_DATA.md, 5 / 4 / 5 places).
+EXPECTED_L100 = dict(abs_rel=.07967, rmse=2.9360, a1=.94140)
 
 
-def nocap_expected(runs):
-    """Step-16000 full val of the empty arm, from its own val job (per-frame CSV, empty prompt)."""
+def nocap_expected(runs, run=NOCAP_RUN):
+    """Step-16000 full val of an empty arm, from its own val job (per-frame CSV, empty prompt)."""
     import csv
-    path = (Path(runs)/'eval'/f'{NOCAP_RUN}_val_{VAL_FP}_stride1_empty_s16000'/
+    path = (Path(runs)/'eval'/f'{run}_val_{VAL_FP}_stride1_empty_s16000'/
             'eval_eval_affine_invariant_log_space_per_sample.csv')
     with open(path, newline='') as f:
         rows = list(csv.DictReader(f))
@@ -68,7 +75,7 @@ def resolve(summary_path, runs, source_run=SYNTH_RUN):
     summary = json.loads(Path(summary_path).read_text())
     if summary.get('source_run') != source_run or not summary['control']['passed']:
         raise ValueError(f'Averaging job is not a passed {source_run} control')
-    if source_run in (TMAX1_RUN, NOCAP_RUN) and summary.get('policy', {}).get('save') != 'not_worse':
+    if source_run != SYNTH_RUN and summary.get('policy', {}).get('save') != 'not_worse':
         raise ValueError(f'{source_run} averaging must use the not_worse rule (docs/SD2_POSTHOC_V1.md)')
     if summary['use_average']:
         path = Path(summary['weights'])
@@ -81,7 +88,7 @@ def resolve(summary_path, runs, source_run=SYNTH_RUN):
 def load_average(model, path, source_run=SYNTH_RUN):
     import torch
     payload = torch.load(path, map_location='cpu', weights_only=False)
-    mode = 'empty' if source_run == NOCAP_RUN else 'correct'
+    mode = 'empty' if ARMS[source_run][2] else 'correct'
     if (payload.get('route') != 'b_thermal_unet' or payload.get('caption_mode') != mode
             or payload.get('averaged_steps') != list(WINDOW) or payload.get('source_run') != source_run
             or set(payload.get('state_dicts', {})) != {'unet'}):
@@ -93,23 +100,24 @@ def load_average(model, path, source_run=SYNTH_RUN):
 
 def start_for(a):
     run = getattr(a, 'source_run', SYNTH_RUN)
-    name = {SYNTH_RUN: 'synth', TMAX1_RUN: 'tmax1', NOCAP_RUN: 'tmax1 empty-caption'}[run]
-    empty = run == NOCAP_RUN
+    name, experiment, empty, upper = ARMS[run]
     path, kind = resolve(a.average_summary, a.runs, run)
     code = ('tools/train_iris_synth_decoder.py', 'tools/diagnose_checkpoint_average.py', 'tools/iris_decoder_only.py')
     if kind == 'average':
         # No full-val number exists for the average yet: the smoke's step-0 validation is that number.
-        return stage.Start(experiment=EXPERIMENT[run], label=f'{name} 12000-20000 average',
+        return stage.Start(experiment=experiment, label=f'{name} 12000-20000 average',
             resolve=lambda _: path, load=lambda model, p: load_average(model, p, run), require_start=checked_metrics,
-            source_step='average 12000-20000', code=code, empty_prompt=empty)
+            source_step='average 12000-20000', code=code, empty_prompt=empty, truncnorm_max=upper)
     if empty:
-        expected = nocap_expected(a.runs)
+        expected = nocap_expected(a.runs, run)
         require = lambda m: require_close(m, expected, NOCAP_TOLERANCE, name)
+    elif run == L100_RUN:
+        require = lambda m: require_close(m, EXPECTED_L100, NOCAP_TOLERANCE, name)
     else:
         require = lambda m: require_16k(m, run)
-    return stage.Start(experiment=EXPERIMENT[run], label=f'{name} original 16000',
+    return stage.Start(experiment=experiment, label=f'{name} original 16000',
         resolve=lambda _: path, load=lambda model, p: pair.old.load_arm(model, p, 'empty' if empty else 'frame'),
-        require_start=require, source_step=16000, code=code, empty_prompt=empty)
+        require_start=require, source_step=16000, code=code, empty_prompt=empty, truncnorm_max=upper)
 
 
 def newcrf_ssi_log(runs):
@@ -149,6 +157,6 @@ if __name__ == '__main__':
     p.add_argument('mode', choices=('smoke', 'train'))
     for name in ('runs', 'run', 'data-root', 'average-summary', 'comparison-run'):
         p.add_argument('--'+name, type=Path, required=True)
-    p.add_argument('--source-run', choices=(SYNTH_RUN, TMAX1_RUN, NOCAP_RUN), default=SYNTH_RUN)
+    p.add_argument('--source-run', choices=tuple(ARMS), default=SYNTH_RUN)
     os.environ.update(IRIS_THERMAL_STRETCH='percentile', IRIS_TEXT_PADDING='legacy', IRIS_DECODE_CLAMP='0')
     run(p.parse_args())
