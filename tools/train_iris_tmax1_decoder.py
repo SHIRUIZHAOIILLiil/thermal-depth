@@ -25,6 +25,16 @@ CODE = tuple(dict.fromkeys((*old.CODE, 'tools/train_iris_tmax1_decoder.py',
     'tools/train_iris_tmax1_bias.py', 'tools/eval_iris_decoder_only.py',
     'tests/test_iris_tmax1_decoder.py', 'slurm/iris_tmax1_decoder.sbatch',
     'slurm/submit_iris_tmax1_decoder.sh')))
+# The empty-caption arm (docs/SD2_POSTHOC_V1.md) feeds "" on purpose. iris_decoder_only.py rejects a
+# blank caption and is hash-pinned by earlier decoder contracts, so the marker is mapped here, on the
+# model's encode_prompt, and that file stays byte-identical.
+EMPTY_PROMPT = '<<empty prompt: no-caption arm>>'
+
+
+def map_empty_prompt(model):
+    encode = model.encode_prompt
+    model.encode_prompt = lambda text: encode('' if text == EMPTY_PROMPT else text)
+    return model
 
 
 @dataclass(frozen=True)
@@ -108,7 +118,6 @@ def run(a, start=TMAX1):
     samples, ti = pair.checked_manifest(Path(c['train']['path']),a.data_root,'train',75688)
     val, vi = pair.checked_manifest(Path(c['val']['path']),a.data_root,'val',14249)
     if start.empty_prompt:
-        from tools.iris_decoder_only import EMPTY_PROMPT
         samples = [dataclasses.replace(s, caption=EMPTY_PROMPT) for s in samples]
         val = [dataclasses.replace(s, caption=EMPTY_PROMPT) for s in val]
     if ti!=c['train'] or vi!=c['val']:
@@ -127,6 +136,8 @@ def run(a, start=TMAX1):
         raise ValueError('Dataset/manifest order differs')
     pair.seed_all(old.SEED)
     model = RouteModel(recipe,torch.device('cuda'),torch.float16)
+    if start.empty_prompt:
+        map_empty_prompt(model)
     start.load(model,source)
     decoder, params = old.make_decoder(model)  # original VAE; never load the q98 adapted decoder
     settings = dict(experiment=start.experiment, source=str(source),

@@ -97,7 +97,7 @@ GT 隔离、4 步训练、冻结检查全部通过。
 - 臂 `sd2_nocap_pct_logtn_img_l0100_tmax1_s43`：`NO_CAPTIONS=1 bash slurm/submit_arm.sh <臂> "--truncnorm_max 1.0"`，
   与 `sd2_cap_pct_logtn_img_l0100_tmax1_s43` 只差训练文本（空串）；val 用空 prompt。
 - 后处理与 caption 臂完全相同（同一权重平均窗口与 not_worse 规则、同一 decoder 配方与选点规则、同一评估器），
-  只是每一帧都用空 prompt：`tools/iris_decoder_only.py` 的 `EMPTY_PROMPT` 标记映射到空串（普通的空 caption 仍报错）；
+  只是每一帧都用空 prompt：`tools/train_iris_tmax1_decoder.py` 的 `EMPTY_PROMPT` 标记在模型的 `encode_prompt` 上映射到空串（普通的空 caption 仍报错）；
   权重平均与 converted checkpoint 用 `caption_mode=empty`；评估器从合同的 `prompt_arm` 读取。
 - 新臂没有事先登记的 96 帧数，平均作业的 control 记为「无」；若 decoder 起点用 step 16000，须复现该臂自己的全量 val。
 - 一条命令：`bash slurm/submit_sd2_nocap.sh`（训练约 21 h，后处理与 test 约 6 h；三封邮件：臂的冒烟、臂的训练、全部结束后一封汇总）。
@@ -107,3 +107,15 @@ GT 隔离、4 步训练、冻结检查全部通过。
 - 9 格空 caption 臂都更好：caption 在最终模型上有害；
 - 其余：混合，如实记录各格。
 第 6 行同样报告。空 caption 臂对 NeWCRF 的比较也一并列出。
+
+### 第一次投递（2026-11-24/25）
+
+- 臂冒烟 9622934、训练 9622935、全量 val 9622936：完成。step 16000 全量 val（空 prompt）
+  **0.0830 / 2.813 / 0.9363**；caption 臂同一位置 0.08137 / 2.7571 / 0.93937。
+- 平均 9622937：完成，`use_average` 为真。96 帧上 step 16000 0.08577 / 2.86051 / 0.93107 → 平均 0.08292 / 2.85289 / 0.93473。
+- decoder 冒烟 9622938 **失败**，其后 5 个作业被自动取消（run_wNYncDyl 只有 jobs.txt，弃用）。
+  原因：`EMPTY_PROMPT` 当时写进了 `tools/iris_decoder_only.py`，而 q98 对照 run 的合同锁定了该文件的哈希，
+  `eval_iris_decoder_only.selection` 拒绝运行。修正：该文件恢复为原字节（blob ae2ed0e57），标记改放在
+  `train_iris_tmax1_decoder.py`；投递脚本先用 `tools/check_contract_code.py` 在登录节点核对合同锁定的代码哈希；
+  汇总邮件改由 `slurm/mail_summary.sh` 发送，附失败作业 `.err` 的最后 20 行。
+- 续跑：`AVG_JOB=9622937 bash slurm/submit_sd2_nocap.sh`，从 decoder 冒烟开始，臂与平均不重跑。判读规则不变。

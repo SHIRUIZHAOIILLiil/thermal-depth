@@ -193,12 +193,16 @@ class Decoder(unittest.TestCase):
             def predict_disparity(self, row, image, prompt, **kw):
                 return torch.zeros(1), torch.zeros(1)
 
+        model = stage.map_empty_prompt(Model())
         with mock.patch('tools.train_route_suite.load_input_tensor', return_value=(torch.zeros(1), None)):
-            dec.predict_frozen(Model(), dec.InferenceInput('f', 'x.png', dec.EMPTY_PROMPT, 0), None)
-            dec.predict_frozen(Model(), dec.InferenceInput('f', 'x.png', 'a road', 0), None)
+            dec.predict_frozen(model, dec.InferenceInput('f', 'x.png', stage.EMPTY_PROMPT, 0), None)
+            dec.predict_frozen(model, dec.InferenceInput('f', 'x.png', 'a road', 0), None)
             with self.assertRaises(ValueError):
-                dec.predict_frozen(Model(), dec.InferenceInput('f', 'x.png', '', 0), None)
-        self.assertEqual(seen, ['', 'a road'])
+                dec.predict_frozen(model, dec.InferenceInput('f', 'x.png', '', 0), None)
+            dec.predict_frozen(Model(), dec.InferenceInput('f', 'x.png', 'a road', 0), None)
+        self.assertEqual(seen, ['', 'a road', 'a road'])
+        # iris_decoder_only.py is hash-pinned by the q98 comparator's contract: it must not learn the marker.
+        self.assertFalse(hasattr(dec, 'EMPTY_PROMPT'))
 
     def test_tmax1_stage_defaults_unchanged(self):
         t = stage.TMAX1
