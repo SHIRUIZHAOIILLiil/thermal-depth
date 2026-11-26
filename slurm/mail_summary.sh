@@ -13,7 +13,7 @@ ids=$(IFS=,; echo "$*")
         for f in "$repo"/*-"$j".out "$repo"/*-"$j"_*.out; do
             [[ -f "$f" ]] || continue
             echo "--- $f"
-            grep -h -E '^\[(preflight|control|row|use_average|reproduced|gt-isolation|selected|verdict|test-official)\]|^\[smoke\] PASS|affine_invariant_log_space: abs_rel' "$f" | sort -u || true
+            grep -h -E '^\[(preflight|control|row|use_average|reproduced|gt-isolation|selected|verdict|test-official|test-full)]|^\[smoke\] PASS|affine_invariant_log_space: abs_rel' "$f" | sort -u || true
         done
         for f in "$repo"/*-"$j".err "$repo"/*-"$j"_*.err; do
             [[ -f "$f" ]] && grep -q -E 'Traceback|Error|error:' "$f" || continue
